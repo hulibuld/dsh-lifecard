@@ -50,7 +50,7 @@ console.log('=== 1. 引文门：短引文 / 缺材料 / 假行号 ===')
   // 不指名材料：修复前会退化成「全库搜索」，引文在任意文件命中就算过，
   // 证据来源定位不到，也发现不了拼接。
   t('不指名材料被拒', core.verifyQuote({ evidence: { quote: '今天天气很热' } }, mats).ok === false)
-  t('材料名为空白被拒', core.verifyQuote({ evidence: { material: '   ', quote: '今天天气很热' } }, mats).ok === false)
+  t('材料名为空白被拒（对照）', core.verifyQuote({ evidence: { material: '   ', quote: '今天天气很热' } }, mats).ok === false)
 
   // 假行号：修复前 line_start 完全不校验，而提案 Markdown 优先渲染它，
   // 于是「证据：xxx L9999」会原样进人眼。
@@ -114,7 +114,7 @@ console.log('=== 2. 往返：_intro / 代码围栏 / 键名与数组元素 ===')
   const commaArr = core.stringifyYaml({ tags: ['a,b', 'c]d', 'e'] })
   const commaBack = core.parseYaml(commaArr)
   t('数组元素含逗号能往返', JSON.stringify(commaBack.tags) === JSON.stringify(['a,b', 'c]d', 'e']), commaBack.tags)
-  t('方括号元素没切坏结构', commaBack.tags.length === 3, commaBack.tags)
+  t('第一个元素没被逗号切开', commaBack.tags[0] === 'a,b', commaBack.tags)
 
   // latestAffect：修复前用 list.length 索引排序后的 withAt 数组，
   // 只要有一条 affect 没写 at 就返回最旧那条。
@@ -148,7 +148,7 @@ console.log('=== 3. 墓碑：残缺记录 / 材料过滤 ===')
   const gone = await store.readCard(root, 'people/mama.card.md')
   t('完整的墓碑仍然生效', gone.ok === false && String(gone.error).includes('撤回'), gone.error)
   // 清掉这条，后面的组要用这张卡
-  await fs.writeFile(path.join(root, '.lifecard/redactions.jsonl'), '', 'utf8')
+  await fs.writeFile(path.join(root, 'redactions.jsonl'), '', 'utf8')
 }
 
 console.log('=== 4. 墓碑：撤回的材料不进分析输入 ===')
@@ -189,8 +189,14 @@ console.log('=== 5. 路径越权：读写都不许出工作区 ===')
   const leaked = await fs.access(outsideCard).then(() => true).catch(() => false)
   t('工作区外真的没落文件', leaked === false)
 
-  const readOut = await store.readCard(root, '../../../etc/passwd')
+  // 造一张真的在工作区外面的卡：修复前 readCard 会把它读出来。
+  // 读 /etc/passwd 证明不了什么——那本来就存在不了，是被「文件不存在」拦的。
+  await fs.writeFile(outsideCard, [
+    '---', 'lifecard: "0.1"', 'id: outside', 'kind: real', 'world: reality', 'name: 外面的', '---', '', '## 自述', '', '不该被读到。',
+  ].join('\n'), 'utf8')
+  const readOut = await store.readCard(root, relOut)
   t('越界读卡被拒', readOut.ok === false, readOut)
+  t('越界读卡没泄露内容', !String(readOut.text ?? '').includes('不该被读到'), readOut.text)
   const readSibling = await store.readCard(root, '../' + path.basename(sibling) + '/x.card.md')
   t('只差后缀的兄弟目录也拒', readSibling.ok === false, readSibling)
   // findCardByRelOrId 是 applyProposal 的入口，越界必须返回 null 而不是路径。
