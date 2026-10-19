@@ -65,7 +65,7 @@ LifeCard/
 | `lib/prompts.js` | 454 | 11 类关系 × 问题库、`buildAnalyzePrompt` |
 | `lib/score.js` | 329 | **纯本地**体检打分 0–100、字数估算、占位符与世界书健康度 |
 | `skills/lifecard-interview/SKILL.md` | 192 | **会随包安装的那份**访谈 skill |
-| `test/` | 14 个测试 .mjs（+2 工具） | 598 项断言 |
+| `test/` | 12 个在 `all.mjs` 里 + `live.mjs`，另有 2 个工具 | 598 项断言 |
 | `locale/{zh,en}.json` | — | 侧栏 tab 的标题与描述 |
 | `cordis.patch.yml` | — | 装进 profile 时插入的插件条目 |
 | `node_modules/@deepseek-ai/schemastery` | — | 软链，见下面坑 #2 |
