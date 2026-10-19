@@ -357,10 +357,15 @@ export function decodeCardJson(json) {
   for (const key of Object.keys(root)) {
     if (!V2_KNOWN.includes(key) && !V3_KNOWN.includes(key)) preserved[key] = root[key]
   }
-  // 顶层（data 之外）的未知键也要保真，否则往返会丢
-  for (const key of Object.keys(json ?? {})) {
-    if (key === 'data' || key === 'spec' || key === 'spec_version') continue
-    preserved[`top.${key}`] = json[key]
+  // 顶层（data 之外）的未知键也要保真，否则往返会丢。
+  // 只在**真的有一层 data 包装**时才记 top.*：V1 平铺卡没有包装，root 就是 json
+  // 本身，这时候上面那个循环已经把每个键都收过了，再记一遍 top.* 等于同一份值
+  // 存两处——导出时它会既留在 data 里又出现在顶层，导入回来就翻倍。
+  if (root !== json) {
+    for (const key of Object.keys(json ?? {})) {
+      if (key === 'data' || key === 'spec' || key === 'spec_version') continue
+      preserved[`top.${key}`] = json[key]
+    }
   }
 
   const book = root.character_book ?? null

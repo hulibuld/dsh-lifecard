@@ -438,6 +438,9 @@ function needsQuote(s) {
   if (/^[\s]|[\s]$/.test(s)) return true
   if (/^[-?:,[\]{}#&*!|>'"%@`]/.test(s)) return true
   if (s.includes(': ') || s.includes(' #') || s.includes('\n')) return true
+  // 行内数组用 `[a, b]` 表示，元素里带 `,` `[` `]` `{` `}` 会把结构切坏：
+  // tags: ['a,b', 'c'] 会被读回三项。这些字符出现在中间也得加引号。
+  if (/[,[\]{}]/.test(s)) return true
   if (['null', 'true', 'false', '~'].includes(s)) return true
   if (/^-?\d+(\.\d+)?$/.test(s)) return true
   return false
@@ -474,8 +477,24 @@ export function splitSections(body) {
   const out = []
   const lines = String(body ?? '').split(/\r?\n/)
   let cur = { title: '_intro', body: [] }
+  // 围栏里的 `## xxx` 是代码/示例，不是小节标题。不认围栏的话，
+  // 存回去会把代码块从中间切开（`## 对话示例` 只剩一个 ```）。
+  let inFence = false
+  let fenceChar = ''
   for (const line of lines) {
-    const h = /^##\s+(.+?)\s*$/.exec(line)
+    const fence = /^\s*(```+|~~~+)/.exec(line)
+    if (fence !== null) {
+      if (!inFence) {
+        inFence = true
+        fenceChar = fence[1][0]
+      } else if (fence[1][0] === fenceChar) {
+        inFence = false
+        fenceChar = ''
+      }
+      cur.body.push(line)
+      continue
+    }
+    const h = inFence ? null : /^##\s+(.+?)\s*$/.exec(line)
     if (h !== null) {
       if (cur.body.join('\n').trim() !== '' || cur.title !== '_intro') out.push(cur)
       cur = { title: h[1].trim(), body: [] }
@@ -496,11 +515,16 @@ export function sectionBody(sections, title) {
 /** 把一张卡序列化回 Markdown。 */
 export function stringifyCard(data, sections) {
   const head = stringifyYaml(data)
-  const body = (sections ?? [])
-    .filter((s) => s.title !== '_intro' && String(s.body ?? '').trim() !== '')
+  const list = (sections ?? []).filter((s) => String(s.body ?? '').trim() !== '')
+  // `_intro` 是第一个 `##` 之前的正文，没有标题。原来整条被 filter 掉，
+  // 于是「读进来 → 存回去」会静默丢掉卡开头那段文字。
+  const intro = list.filter((s) => s.title === '_intro').map((s) => String(s.body).trim()).join('\n\n')
+  const body = list
+    .filter((s) => s.title !== '_intro')
     .map((s) => `## ${s.title}\n\n${String(s.body).trim()}`)
     .join('\n\n')
-  return `---\n${head}\n---\n\n${body}\n`
+  const parts = [intro, body].filter((part) => part !== '')
+  return `---\n${head}\n---\n\n${parts.join('\n\n')}\n`
 }
 
 // ── 校验 ──────────────────────────────────────────────────────────
@@ -847,7 +871,9 @@ export function latestAffect(affect) {
   if (list.length === 0) return undefined
   const withAt = list.filter((a) => typeof a.at === 'string')
   if (withAt.length === 0) return list[list.length - 1]
-  return withAt.slice().sort((a, b) => String(a.at).localeCompare(String(b.at)))[list.length - 1] ?? withAt[withAt.length - 1]
+  // 排序后的数组长度是 withAt.length，不是 list.length。用 list.length 当索引，
+  // 只要有一条 affect 没写 at，就会越界并回落到 withAt[last]（最旧的那条）。
+  return withAt.slice().sort((a, b) => String(a.at).localeCompare(String(b.at)))[withAt.length - 1] ?? withAt[withAt.length - 1]
 }
 
 function numOr(v, fallback) {

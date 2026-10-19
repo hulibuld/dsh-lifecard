@@ -1,6 +1,7 @@
 // 一把跑完全部测试。
 import { spawnSync } from 'node:child_process'
-const files = ['test/roundtrip.mjs', 'test/codec-test.mjs', 'test/store-test.mjs', 'test/score-test.mjs', 'test/json-extract.mjs', 'test/prompt.test.mjs', 'test/client-smoke.mjs', 'test/skill-register.mjs', 'test/routes-test.mjs', 'test/render-all.mjs']
+const files = ['test/roundtrip.mjs', 'test/codec-test.mjs', 'test/store-test.mjs', 'test/score-test.mjs', 'test/json-extract.mjs', 'test/prompt.test.mjs', 'test/client-smoke.mjs', 'test/skill-register.mjs', 'test/routes-test.mjs', 'test/hardening-routes.mjs', 'test/render-all.mjs']
+
 let failed = 0
 let total = 0
 for (const f of files) {
