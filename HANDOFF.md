@@ -7,7 +7,7 @@
 
 ## 一句话现状
 
-**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 311 项通过，对一个真实运行的 DSH 实例做的端到端验收 14/14 通过。**还没做的是：功能扩展（借鉴成熟产品的那些）、几处陈旧文档、上传 GitHub。**
+**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 396 项通过，对一个真实运行的 DSH 实例做的端到端验收 14/14 通过。**P0（上传 GitHub 前的准备）和 P1（陈旧文档）已经做完，P2 的功能扩展做了 3 项。**
 
 ---
 
@@ -64,7 +64,7 @@ LifeCard/
 | `lib/codec.js` | 676 | PNG tEXt 读写、CCv2/CCv3/CHARX、双 chunk 导出、保真字段 |
 | `lib/prompts.js` | 430 | 11 类关系 × 问题库、`buildAnalyzePrompt` |
 | `skills/lifecard-interview/SKILL.md` | 192 | **会随包安装的那份**访谈 skill |
-| `test/` | 11 个 .mjs | 约 1200 行，311 项断言 |
+| `test/` | 12 个 .mjs | 约 1500 行，396 项断言 |
 | `locale/{zh,en}.json` | — | 侧栏 tab 的标题与描述 |
 | `cordis.patch.yml` | — | 装进 profile 时插入的插件条目 |
 | `node_modules/@deepseek-ai/schemastery` | — | 软链，见下面坑 #2 |
@@ -78,10 +78,10 @@ LifeCard/
 ```bash
 cd .../LifeCard/plugin
 
-# 1. 全量单元测试：311 项
+# 1. 全量单元测试：396 项
 node test/all.mjs
 # → roundtrip 9 / codec 37 / store 38 / json-extract 10 / prompt 140
-#   client-smoke 15 / skill-register 18 / render-all 44
+#   score-test 51 / client-smoke 15 / skill-register 18 / render-all 53
 
 # 2. 对真实运行的 DSH 做端到端验收：14/14
 node test/live.mjs http://127.0.0.1:49192
@@ -90,7 +90,7 @@ node test/live.mjs http://127.0.0.1:49192
 node test/render-all.mjs
 ```
 
-**2026-10-19 20:20 的实测结果**：`all.mjs` 311 项全过；`live.mjs` 14/14 全过。
+**2026-10-20 03:40 的实测结果**：`all.mjs` 396 项全过；`live.mjs` 14/14 全过。
 
 live 那 14 项验的是：插件已激活 / 宿主有 llm / 建工作区 / 卡被列出 / 材料被列出 / 分析跑通 / 有可采纳条目 / 默认不勾选 / 每条都有引文 / 采纳成功 / 导出 PNG / 双 chunk 同源 / doctor 跑通 / 宿主段已写。
 
@@ -163,13 +163,13 @@ interview.questions  interview.plan  interview.record  interview.history
 
 ## 没做完的，按优先级
 
-### P0 — 上传 GitHub 之前必须做
+### P0 — 上传 GitHub 之前必须做（✅ 已全部完成）
 1. **`git init` 并首次提交**。现在零版本控制，一次误删就没了。
 2. **修 `package.json:44` 的死链**：`"test": "node test/smoke.mjs"` 指向不存在的文件，`pnpm test` 直接失败。改成 `node test/all.mjs`。
 3. **补 LICENSE 文件**。`package.json` 写着 MIT 但没有 LICENSE 文本，GitHub 上会显示"未授权"。
 4. **加 `.gitignore`**：至少忽略 `plugin/node_modules/`（里面是软链）。
 
-### P1 — 文档陈旧（5 分钟，但会误导人）
+### P1 — 文档陈旧（✅ 已完成）
 | 位置 | 现在写的 | 应该是 |
 |---|---|---|
 | `README.md:27` | 「96 项测试全部通过」 | 311 项 |
@@ -179,6 +179,8 @@ interview.questions  interview.plan  interview.record  interview.history
 另外 `plugin/README.md` 里的目录树和"三个入口"图还是旧说法，需要对着现在的界面重写一遍。
 
 ### P2 — 功能扩展（用户明确说要"借鉴成熟产品的功能设计"）
+
+**进度：第 1、2、6 项已完成并提交（commit e89cdbc）。第 3、4、5 项未做。**
 
 已经调研过两个 MIT 项目，**功能设计可以自由学，但代码按功能重写不要搬**（无 LICENSE 的仓库按著作权法默认保留一切权利，小改不改变；GPL/AGPL 有传染性，都不能并进来）。
 
