@@ -446,6 +446,41 @@ function truncate(s, n) {
   return t.length <= n ? t : t.slice(0, n) + '…'
 }
 
+/**
+ * 勾选状态旁路存一份 `proposals/<name>.checked.json`。
+ *
+ * 为什么需要它：Markdown 那份是**给人看**的清单，界面上的勾选如果只存在
+ * React state 里，就永远落不到盘上，`applyProposal` 读回 MD 会发现一条都没勾。
+ * 所以界面勾选走这个旁路文件；MD 里的 `[x]` 只作为「手改文件」的兼容入口。
+ *
+ * 存的是 accepted 数组的下标，不是引文指纹——指纹依赖 describeValue 的
+ * 措辞，改个标点就对不上，下标在同一份提案内是稳定的。
+ */
+function checkedRelOf(jsonRel) {
+  return jsonRel.replace(/\.json$/, '.checked.json')
+}
+
+/** 读旁路勾选（下标数组）。文件不存在时返回 null，表示「没人从界面勾过」。 */
+export async function readCheckedFile(root, jsonRel) {
+  try {
+    const raw = JSON.parse(await fs.readFile(path.join(root, checkedRelOf(jsonRel)), 'utf8'))
+    if (!Array.isArray(raw?.checked)) return null
+    return raw.checked.filter((n) => Number.isInteger(n) && n >= 0)
+  } catch {
+    return null
+  }
+}
+
+/** 写旁路勾选。传空数组等于「全不勾」，仍然写出文件以表达明确意图。 */
+export async function writeCheckedFile(root, jsonRel, checked) {
+  const list = Array.isArray(checked) ? checked : []
+  const clean = [...new Set(list.filter((n) => Number.isInteger(n) && n >= 0))].sort((a, b) => a - b)
+  const abs = path.join(root, checkedRelOf(jsonRel))
+  await fs.mkdir(path.dirname(abs), { recursive: true })
+  await fs.writeFile(abs, JSON.stringify({ checked: clean, updated_at: new Date().toISOString() }, null, 2) + '\n', 'utf8')
+  return { ok: true, checked: clean }
+}
+
 /** 读一份提案的 JSON，并解析对应 Markdown 里的勾选状态。 */
 export async function readProposal(root, jsonRel) {
   const abs = (rel) => path.join(root, rel)
@@ -462,6 +497,8 @@ export async function readProposal(root, jsonRel) {
   } catch {
     // 没有 md 就当作全不勾
   }
+  // 界面勾选存在旁路文件里，优先级高于手改 MD
+  const sidecar = await readCheckedFile(root, jsonRel)
   // 用引文片段做匹配键：md 里的顺序与 accepted 一致
   const checked = new Set()
   const lines = md.split('\n')
@@ -473,11 +510,12 @@ export async function readProposal(root, jsonRel) {
     checked.add(m[2].trim() + '\u0000' + (lines[i + 1] ?? '').trim())
   }
   const items = Array.isArray(record.accepted) ? record.accepted : []
-  const withChecked = items.map((item) => {
+  const withChecked = items.map((item, index) => {
     const key = describeValue(item) + '\u0000' + `证据：${item.evidence?.material ?? ''}${item.evidence?.line_start !== undefined ? ' L' + item.evidence.line_start : item.verified_line !== undefined ? ' L' + item.verified_line : ''}「${truncate(item.evidence?.quote, 80)}」`
     // 指纹不完全一致时退回「按描述前缀匹配」，避免一个空格差异就让勾选失效
     const loose = [...checked].some((c) => c.startsWith(describeValue(item)))
-    return { ...item, checked: checked.has(key) || loose }
+    const picked = sidecar === null ? (checked.has(key) || loose) : sidecar.includes(index)
+    return { ...item, index, checked: picked }
   })
   return { ok: true, mdRel, record, items: withChecked, checkedCount: withChecked.filter((i) => i.checked).length }
 }
@@ -516,7 +554,11 @@ export async function listProposals(root) {
  *
  * 只读 `[x]`。没勾的不写。这是「AI 不能直接写卡」的落地。
  */
-export async function applyProposal(root, jsonRel) {
+export async function applyProposal(root, jsonRel, options = {}) {
+  // 界面直接传勾选下标时先落盘，保证「看到的」和「写进去的」是同一份
+  if (Array.isArray(options.checked)) {
+    await writeCheckedFile(root, jsonRel, options.checked)
+  }
   const read = await readProposal(root, jsonRel)
   if (!read.ok) return read
   const aboutId = read.record?.about?.id
@@ -526,7 +568,7 @@ export async function applyProposal(root, jsonRel) {
   const card = await readCard(root, target)
   if (!card.ok) return card
   const chosen = read.items.filter((i) => i.checked)
-  if (chosen.length === 0) return { ok: false, error: '提案里没有勾选任何条目' }
+  if (chosen.length === 0) return { ok: false, error: '还没有勾选任何一条。先点一下要留下的条目。' }
 
   const data = { ...card.data }
   const sections = (card.sections ?? []).map((s) => ({ ...s }))
@@ -678,6 +720,8 @@ export default {
   saveProposal,
   renderProposalMarkdown,
   readProposal,
+  readCheckedFile,
+  writeCheckedFile,
   listProposals,
   applyProposal,
   findCardByRelOrId,

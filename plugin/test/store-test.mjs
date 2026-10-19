@@ -132,6 +132,48 @@ console.log('=== 8. 世界书条目导入 ===')
   t('世界被列出', list.worlds.some((w) => w.id === 'eldoria'), list.worlds)
 }
 
+console.log('=== 9. 界面勾选：只存在界面里也必须能采纳（回归） ===')
+{
+  // 真实崩溃现场：用户在侧栏里勾了条目、点「就用这 N 条」，
+  // 勾选只活在 React state，读回 Markdown 发现一条都没勾 -> 「提案里没有勾选任何条目」。
+  const matText = '丙说他二十三岁那年在码头扛过包。他最舍不得的是一辆二八自行车。'
+  const added = await store.appendMaterial(root, '丙', matText)
+  await store.writeCard(root, 'people/bing.card.md', { lifecard: '0.1', id: 'bing', kind: 'real', world: 'reality', name: '丙' }, [], { force: true })
+  const prop = {
+    spec: 'lifecard_proposal_v1',
+    about: { id: 'bing', name: '丙' },
+    items: [
+      { field: 'life', value: '二十三岁在码头扛包', source_level: '自述', evidence: { material: added.path, quote: '二十三岁那年在码头扛过包' } },
+      { field: 'tags', value: '二八自行车', source_level: '自述', evidence: { material: added.path, quote: '一辆二八自行车' } },
+    ],
+  }
+  const saved = await store.saveProposal(root, 'bing', prop, { [added.path]: matText })
+  t('提案 2 条通过', saved.accepted === 2, saved)
+
+  const before = await store.readProposal(root, saved.json)
+  t('没勾过时是 0 条勾选', before.checkedCount === 0, before.checkedCount)
+  t('每条都带下标（界面靠下标回写）', before.items.every((i, n) => i.index === n), before.items.map((i) => i.index))
+
+  // 模拟界面点第一下：立刻落盘
+  await store.writeCheckedFile(root, saved.json, [0])
+  const afterOne = await store.readProposal(root, saved.json)
+  t('界面勾 1 条后回读也是 1 条', afterOne.checkedCount === 1, afterOne.checkedCount)
+  t('勾的是第一条', afterOne.items[0].checked === true && afterOne.items[1].checked === false, afterOne.items.map((i) => i.checked))
+
+  // 采纳时直接带下标，不依赖任何事先落盘
+  const applied = await store.applyProposal(root, saved.json, { checked: [1] })
+  t('直接传勾选也能采纳', applied.ok === true, applied)
+  t('采纳的是传进去的那条', applied.applied === 1 && applied.appliedLabels[0] === '二八自行车', applied)
+  const card = await store.readCard(root, 'people/bing.card.md')
+  t('life 没被写（没勾）', card.data.life === undefined, card.data.life)
+  t('tags 写进去了', Array.isArray(card.data.tags) && card.data.tags.includes('二八自行车'), card.data.tags)
+
+  // 全不勾时给人话错误，不是内部文案
+  const none = await store.applyProposal(root, saved.json, { checked: [] })
+  t('全不勾时拒绝', none.ok === false, none)
+  t('拒绝的话是人话', typeof none.error === 'string' && !/提案里没有/.test(none.error), none.error)
+}
+
 await fs.rm(root, { recursive: true, force: true })
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

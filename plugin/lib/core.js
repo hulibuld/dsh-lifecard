@@ -86,7 +86,11 @@ function parseScalar(raw) {
   if (/^-?\d+$/.test(s)) return Number(s)
   if (/^-?\d+\.\d+$/.test(s)) return Number(s)
   if (s.startsWith('"') && s.endsWith('"') && s.length > 1) {
-    return s.slice(1, -1).replace(/\\"/g, '"').replace(/\\n/g, '\n')
+    // 双引号串由 JSON.stringify 产生，反转义必须覆盖它可能写出的全部转义，
+    // 否则值里带 tab / 反斜杠时会把 `\t` 这两个字符原样留在数据里。
+    return s.slice(1, -1).replace(/\\(["\\ntr])/g, (_, c) => (
+      c === 'n' ? '\n' : c === 't' ? '\t' : c === 'r' ? '\r' : c
+    ))
   }
   if (s.startsWith("'") && s.endsWith("'") && s.length > 1) return s.slice(1, -1).replace(/''/g, "'")
   if (s.startsWith('[') && s.endsWith(']')) {
@@ -184,6 +188,10 @@ export function parseYaml(text) {
         const key = rest.slice(0, at).trim()
         const valueText = rest.slice(at + 1).trim()
         const item = {}
+        // 值的下一层容器（嵌套 map / 嵌套数组）。列表项自己的帧仍要压栈，
+        // 但 `- nested:` 后面还有子行时，子行必须写进 item[key] 而不是 item 本身，
+        // 否则会丢一层键（`nested: {a: 1}` 退化成 `a: 1`）。
+        let nested = null
         if (valueText === '' || valueText === '|' || valueText === '>') {
           if (valueText === '|' || valueText === '>') {
             const [block, next] = readBlock(lines, i, indent)
@@ -194,9 +202,11 @@ export function parseYaml(text) {
             const look = peekContent(lines, i)
             if (look !== null && (look.text === '-' || look.text.startsWith('- '))) {
               item[key] = []
-              stack.push({ indent, container: item, pending: item[key], parentKey: key })
+              nested = { indent, container: item, pending: item[key], parentKey: key }
             } else {
-              stack.push({ indent, container: item, pending: undefined, parentKey: key })
+              const child = {}
+              item[key] = child
+              nested = { indent, container: child, pending: undefined }
             }
           }
         } else {
@@ -204,6 +214,7 @@ export function parseYaml(text) {
         }
         frame.pending.push(item)
         stack.push({ indent, container: item, pending: undefined })
+        if (nested !== null) stack.push(nested)
         continue
       }
       frame.pending.push(parseScalar(rest))

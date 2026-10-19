@@ -26,7 +26,7 @@ B 和 C 产出同一种东西（材料），之后走**完全相同**的一条�
 dsh plugin --profile desktop add /path/to/LifeCard/plugin
 ```
 
-装完重启 DSH，侧栏「+」菜单里会出现**人物档案**。
+装完重启 DSH，侧栏「+」菜单里会出现**Life Cards**。
 
 > 需要 `dsh-better-sidebar`（侧边栏底座）。本插件只往它上面注册一个 tab，不自造侧栏。
 
@@ -48,9 +48,10 @@ dsh plugin --profile desktop add /path/to/LifeCard/plugin
 ├── systems/         消费协议（扮演 / 访谈 / 写作素材）
 ├── materials/       原始材料，只追加、不可编辑
 ├── interviews/      访谈账本（问答过程）
-├── proposals/       AI 提案 + 你的勾选
+├── proposals/       建议清单 + 你勾的那几项（两份文件：.md 给人看，.json 给程序读）
 ├── story/           小说章节与状态账本
-└── .lifecard/       索引、导入原件、全文快照
+├── assets/          头像和插图（导出时打进卡里）
+└── .lifecard/       索引、导入的原件、全文快照
 ```
 
 **它就是一个普通文件夹。** 用 Obsidian 打开，全文搜、双链、标签、手机版全都有——不需要本插件也能读写。
@@ -156,7 +157,7 @@ dsh plugin --profile desktop add /path/to/LifeCard/plugin
 ## 开发
 
 ```bash
-node test/all.mjs        # 全部测试（96 项）
+node test/all.mjs        # 全部测试（322 项）
 node test/roundtrip.mjs  # YAML ↔ Markdown 往返
 node test/codec-test.mjs # 酒馆卡编解码 + 双 chunk 同源
 node test/store-test.mjs # 文件层：墓碑、提案、引文门、采纳

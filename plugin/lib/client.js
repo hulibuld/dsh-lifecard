@@ -26,16 +26,100 @@ const h = React.createElement
 const API = '/api/dsh-lifecard'
 
 async function call(method, body) {
-  const res = await fetch(`${API}/${method}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body ?? {}),
-  })
-  if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`操作没成功（网络返回 ${res.status}）${text.slice(0, 200)}`)
+  let res
+  try {
+    res = await fetch(`${API}/${method}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body ?? {}),
+    })
+  } catch {
+    // 网络层抛出来的东西（TypeError / Failed to fetch / ECONNREFUSED）对用户没有意义
+    throw new Error('连不上后台。可能是软件刚启动还没准备好，等几秒再试一次。')
   }
-  return await res.json()
+  if (!res.ok) {
+    // 状态码和响应体留给控制台排错，不摆到界面上：里面常带内部字段名与英文
+    if (typeof console !== 'undefined') console.warn(`[lifecard] ${method} HTTP ${res.status}`)
+    throw new Error(res.status === 401 || res.status === 403
+      ? '这一步没有权限，没做成。'
+      : '后台没能完成这一步。等一会儿再试一次；还不行就重启一下软件。')
+  }
+  try {
+    return await res.json()
+  } catch {
+    throw new Error('后台回的话没看懂，这一步可能没做成。再试一次看看。')
+  }
+}
+
+/**
+ * 把程序抛出来的错误翻译成人话。
+ *
+ * 界面原则：屏幕上不出现 TypeError / fetch failed / EACCES / JSON 片段这类东西。
+ * 已经是中文白话的错误原样放过；带技术标识的统一换成「怎么办」。
+ * 幂等：对已经翻译过的文案再调用一次不会变形（渲染层会再兜一层）。
+ */
+function humanizeError(input) {
+  const raw0 = String(input?.message ?? input ?? '').trim()
+  if (raw0 === '' || raw0 === '[object Object]') return '这一步没做成，再试一次看看。'
+  // 先剥掉 `Error:` / `TypeError:` / `Exception:` 这类壳
+  const raw = raw0.replace(/^[A-Za-z]*Error:\s*/i, '').replace(/^Exception:\s*/i, '').trim()
+  if (/fetch failed|failed to fetch|networkerror|econnrefused|enotfound|load failed|network request failed/i.test(raw)) {
+    return '连不上后台。可能是软件刚启动还没准备好，等几秒再试一次。'
+  }
+  if (/chara|ccv3|ccv2|chunk|charx|tEXt/i.test(raw)) {
+    return '这个文件里读不出角色信息。它可能不是角色卡，或者文件已经坏了。'
+  }
+  if (/enoent|no such file|不是文件夹|文件夹不存在/i.test(raw)) return '找不到那个位置了。它可能刚被移走或改名了，重新选一次。'
+  if (/eacces|eperm|permission|没有权限/i.test(raw)) return '没有权限动这个位置。换一个文件夹再试。'
+  if (/enospc|no space|磁盘满/i.test(raw)) return '磁盘满了，存不进去。清一点空间再试。'
+  // 残留异常类名、代码记号、英文标识 → 不摆给用户看
+  if (/error|exception|undefined|null|nan|\[object/i.test(raw)) return '这一步没做成。等一会儿再试一次；还不行就重启一下软件。'
+  if (/[{}\[\]<>]/.test(raw)) return '这一步没做成。等一会儿再试一次；还不行就重启一下软件。'
+  return raw
+}
+
+/**
+ * 把卡的检查结果翻译成人话。
+ *
+ * core 的校验消息是写给开发者看的（`competency[红烧肉].level "expert" 不在 入门 / 熟手 …`），
+ * 直接摆到界面上等于没翻译。这里按字段翻成「哪里不对」，翻不出来就退一句不带技术词的总说。
+ */
+function humanizeIssue(issue) {
+  const field = String(issue?.field ?? '')
+  const msg = String(issue?.message ?? '')
+  const quoted = []
+  const re = /"([^"]*)"/g
+  let m = re.exec(msg)
+  while (m !== null) { quoted.push(m[1]); m = re.exec(msg) }
+
+  if (/缺少 kind/.test(msg) || /kind 的值/.test(msg)) return '这张卡还没说清是哪一种，去「改这张卡」里选一下。'
+  if (/缺少必需的?字段/.test(msg)) return `缺了必填的「${fieldLabel(field)}」。`
+  if (/lifecard 版本/.test(msg) || /缺少 lifecard/.test(msg)) return '这张卡是别的版本做的，会按现在的规则读，不影响你用。'
+  if (/^lens 卡/.test(msg)) return '「我的偏好」这种卡按设计不会导出给别人。'
+  if (/^level /.test(msg)) return '能力程度只能选：入门、熟手、精通、专家。'
+  if (/\.level "/.test(msg)) return `「${quoted[0] ?? '有一项能力'}」的程度不对，只能选：入门、熟手、精通、专家。`
+  if (/evidence 应是数组/.test(msg)) return `「${quoted[0] ?? '有一项能力'}」的依据写法不对，要一条一条分开写。`
+  if (/evidence\.kind/.test(msg)) return '能力依据的来源只能选：自述、他述、文档、推测。'
+  if (/family-agreed/.test(msg) && /recorded_at/.test(msg)) return '选了「对方（或家人）知道并同意」，还要补上同意的日期。'
+  if (/consent\.basis/.test(msg)) return '「对方知不知道」这一项的选项不对，重新选一下。'
+  if (/^status /.test(msg)) return '「他现在」这一项的选项不对，重新选一下。'
+  if (/from 与 to 不能是同一个人/.test(msg)) return '一段关系的两头不能是同一个人。'
+  if (/关系边的 from/.test(msg)) return `这段关系的起点（${quoted[0] ?? '某个人'}）找不到对应的卡。`
+  if (/关系边的 to/.test(msg)) return `这段关系的终点（${quoted[0] ?? '某个人'}）找不到对应的卡。`
+  if (/world .* 不存在/.test(msg)) return `这张卡写的「属于哪个世界」（${quoted[0] ?? ''}）还没建出来，留空就行。`
+  if (/卡上不应有 system|系统在调用时/.test(msg)) return '「一套设定」不算卡的属性，去掉不影响使用。'
+  if (/affect 属于关系边/.test(msg)) return '「你们之间的亲疏」写在关系里，不写在个人卡上。'
+  if (/未满 18 岁/.test(msg)) return '这个人还没满 18 岁，按规则这张卡不能对外导出。'
+  // 已经全是中文、没有代码记号 → 原样用
+  if (!/[a-z_]+\.[a-z_]+|\[|\]|_|§|--/.test(msg)) return msg
+  return `「${fieldLabel(field)}」这一项写法不太对，点「改这张卡」能就地改。`
+}
+
+/** `people/妈妈.card.md` → `妈妈`。界面上不摆文件路径。 */
+function cardNameFromPath(rel) {
+  const base = String(rel ?? '').split('/').pop() ?? ''
+  const stripped = base.replace(/\.(card|world|system|relation)\.md$/i, '').replace(/\.md$/i, '')
+  return stripped === '' ? '一张卡' : stripped
 }
 
 // ── 图标（内联 SVG，颜色由 currentColor 决定）─────────────────────
@@ -379,6 +463,13 @@ function Note({ tone, icon, children }) {
   )
 }
 
+/** 一条错误提示。所有地方都走它，保证屏幕上不会出现异常原文。 */
+function Err({ text }) {
+  const clean = humanizeError(text)
+  if (clean === '') return null
+  return h(Note, { tone: 'err', icon: 'warning' }, h('div', { style: { whiteSpace: 'pre-wrap' } }, clean))
+}
+
 function Tag({ tone, children }) {
   return h('span', { className: `lc-tag ${tone ?? ''}` }, children)
 }
@@ -497,7 +588,7 @@ function LifeCardTab(props) {
         if (mounted.current) setListing(list)
       }
     } catch (e) {
-      if (mounted.current) setError(String(e?.message ?? e))
+      if (mounted.current) setError(humanizeError(e))
     }
   }, [])
 
@@ -527,7 +618,7 @@ function LifeCardTab(props) {
       }
       setView(VIEWS.home)
     } catch (e) {
-      setError(String(e?.message ?? e))
+      setError(humanizeError(e))
     } finally {
       setBusy('')
     }
@@ -540,7 +631,7 @@ function LifeCardTab(props) {
       setActiveCard(detail)
       setView(VIEWS.card)
     } catch (e) {
-      setError(String(e?.message ?? e))
+      setError(humanizeError(e))
     } finally {
       setBusy('')
     }
@@ -640,7 +731,8 @@ function LifeCardTab(props) {
         h(Note, { tone: toast.tone, icon: toast.tone === 'warn' ? 'warning' : 'check' }, toast.message)),
       error !== null && state !== null
         ? h('div', { style: { padding: '10px 12px 0' } },
-            h(Note, { tone: 'err', icon: 'warning' }, h('div', { style: { whiteSpace: 'pre-wrap' } }, error),
+            h(Note, { tone: 'err', icon: 'warning' },
+              h('div', { style: { whiteSpace: 'pre-wrap' } }, humanizeError(error)),
               h('div', { style: { marginTop: 6 } }, h(Btn, { size: 'sm', onClick: () => setError(null) }, '知道了'))))
         : null,
       body(),
@@ -661,12 +753,12 @@ function SetupView({ state, onDone }) {
     try {
       const r = await call('workspace.inspect', { path: target })
       setInspect(r)
-    } catch (e) { setErr(String(e?.message ?? e)) } finally { setBusy(false) }
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
   }
 
   const create = async () => {
     setBusy(true); setErr(null)
-    try { await onDone(target) } catch (e) { setErr(String(e?.message ?? e)) } finally { setBusy(false) }
+    try { await onDone(target) } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
   }
 
   return h('div', { className: 'lc-pad lc-stack' },
@@ -687,7 +779,7 @@ function SetupView({ state, onDone }) {
       : inspect.isLifeCard
         ? h(Note, { tone: 'ok', icon: 'check' }, `这里已经有你的东西了：${inspect.counts?.cards ?? 0} 张卡、${inspect.counts?.materials ?? 0} 份材料。`)
         : h(Note, { tone: 'warn', icon: 'warning' }, '这个文件夹里已经有别的东西。点下面的按钮只会在里面加几个新文件夹，不会动你原来的文件。'),
-    err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
+    err === null ? null : h(Err, { text: err }),
     h('div', { style: { marginTop: 4 } },
       h(Btn, { tone: 'primary', big: true, block: true, onClick: create, disabled: busy || target.trim() === '', icon: 'check' },
         busy ? '正在准备…' : inspect?.isLifeCard === true ? '就用这个文件夹' : '开始吧'),
@@ -866,7 +958,7 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
       if (r.ok !== true) { setErr(r.error ?? '导出没成功'); return }
       downloadBase64(r.base64, r.filename, 'image/png')
       flash(r.consistent === false ? '导出好了，但内容对不上，请把这个问题告诉我' : '导出好了，可以拿去用了', r.consistent === false ? 'warn' : 'ok')
-    } catch (e) { setErr(String(e?.message ?? e)) } finally { setBusy('') }
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
   }
 
   const exportJson = async () => {
@@ -876,7 +968,7 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
       if (r.ok !== true) { setErr(r.error ?? '导出没成功'); return }
       downloadText(JSON.stringify(r.json, null, 2), r.filename)
       flash('导出好了')
-    } catch (e) { setErr(String(e?.message ?? e)) } finally { setBusy('') }
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
   }
 
   const remove = async () => {
@@ -890,7 +982,7 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
       if (r.ok !== true) { setErr(r.error ?? '没删掉'); return }
       flash('删掉了')
       onDeleted()
-    } catch (e) { setErr(String(e?.message ?? e)) } finally { setBusy('') }
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
   }
 
   if (editing) {
@@ -905,7 +997,7 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
   const shownSections = sections.filter((s) => String(s.body ?? '').trim() !== '')
 
   return h('div', { className: 'lc-pad lc-stack' },
-    err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
+    err === null ? null : h(Err, { text: err }),
 
     proposal !== null
       ? h(ProposalPanel, { proposal, onClose: () => setProposal(null), onApplied: async () => { setProposal(null); await onRefresh(); flash('存进卡里了') } })
@@ -944,7 +1036,7 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
 
     issues.length > 0
       ? h('div', { className: 'lc-stack' }, issues.map((i, n) => h(Note, { key: n, tone: i.level === 'error' ? 'err' : 'warn', icon: 'warning' },
-          i.message)))
+          humanizeIssue(i))))
       : null,
 
     h('div', { className: 'lc-sep' }),
@@ -1064,14 +1156,14 @@ function CardForm({ card, onCancel, onSaved }) {
       const r = await call('card.save', { path: card.path, data: payload, sections: clean })
       if (r.ok !== true) { setErr(r.error ?? '没存上'); return }
       await onSaved()
-    } catch (e) { setErr(String(e?.message ?? e)) } finally { setBusy(false) }
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
   }
 
   const kind = String(data.kind ?? 'real')
   const isPerson = kind === 'real' || kind === 'hybrid' || kind === 'self' || kind === 'fictional'
 
   return h('div', { className: 'lc-pad lc-stack' },
-    err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
+    err === null ? null : h(Err, { text: err }),
     h('div', { className: 'lc-meta' }, '写多少算多少。空着的地方不会影响别的东西，以后想起来再补。'),
 
     h('div', { className: 'lc-fset' },
@@ -1218,17 +1310,25 @@ function ProposalPanel({ proposal, onClose, onApplied }) {
   const [err, setErr] = useState(null)
   const checked = items.filter((i) => i.checked).length
 
+  // 勾选立刻写到后台。界面上的「选了 N 条」和真正会写进卡的东西必须是同一份，
+  // 否则用户点了「就用这 N 条」却被告知一条都没勾。
   const toggle = (index) => {
-    setItems((prev) => prev.map((item, n) => (n === index ? { ...item, checked: !item.checked } : item)))
+    const next = items.map((item, n) => (n === index ? { ...item, checked: !item.checked } : item))
+    setItems(next)
+    const picked = next.map((item, n) => (item.checked ? n : -1)).filter((n) => n >= 0)
+    call('proposal.check', { json: proposal.json, checked: picked }).catch(() => {
+      // 记不下来也不拦着用户继续点；真正采纳时会以界面上这份为准再传一次
+    })
   }
 
   const apply = async () => {
     setBusy(true); setErr(null)
     try {
-      const r = await call('proposal.apply', { json: proposal.json })
+      const picked = items.map((item, n) => (item.checked ? n : -1)).filter((n) => n >= 0)
+      const r = await call('proposal.apply', { json: proposal.json, checked: picked })
       if (r.ok !== true) { setErr(r.error ?? '没存上'); return }
       await onApplied(r)
-    } catch (e) { setErr(String(e?.message ?? e)) } finally { setBusy(false) }
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
   }
 
   return h('div', { className: 'lc-stack', style: { border: '1px solid var(--lc-doctor)', borderRadius: 'var(--lc-radius)', padding: 10, background: 'var(--lc-panel)' } },
@@ -1239,7 +1339,7 @@ function ProposalPanel({ proposal, onClose, onApplied }) {
       h('span', { className: 'lc-meta' }, `选了 ${checked} 条`),
     ),
     h('div', { className: 'lc-meta' }, '每一条下面都引用了材料里的原话。它编不出来的——材料里找不到原文的，已经被丢掉了。'),
-    err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
+    err === null ? null : h(Err, { text: err }),
     h('div', { className: 'lc-stack' }, items.map((item, n) => h('div', {
       key: n, className: `lc-proposal-item ${item.checked ? 'on' : ''}`,
       onClick: () => toggle(n), role: 'button', tabIndex: 0,
@@ -1306,7 +1406,7 @@ function NewCardView({ state, onCreate }) {
         name: name.trim(),
         ...(relation.trim() === '' ? {} : { relation: relation.trim() }),
       })
-    } catch (e) { setErr(String(e?.message ?? e)) } finally { setBusy(false) }
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
   }
 
   return h('div', { className: 'lc-pad lc-stack' },
@@ -1325,7 +1425,7 @@ function NewCardView({ state, onCreate }) {
           )
         : null,
     ),
-    err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
+    err === null ? null : h(Err, { text: err }),
     h(Btn, { tone: 'primary', big: true, block: true, onClick: create, disabled: busy, icon: 'check' }, busy ? '正在建…' : '建这张卡'),
   )
 }
@@ -1377,7 +1477,7 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
       setPhase('talk')
       setLog([{ role: 'bot', text: `好，我们开始。\n一次问一件小事，想不起来就跳过。` }])
     } catch (e) {
-      setErr(String(e?.message ?? e))
+      setErr(humanizeError(e))
     } finally { setBusy(false) }
   }
 
@@ -1420,7 +1520,7 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
       }
       await onRecorded()
     } catch (e) {
-      setErr(String(e?.message ?? e))
+      setErr(humanizeError(e))
     } finally { setBusy(false) }
   }
 
@@ -1442,7 +1542,7 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
           relations.map((r) => h('option', { key: r.id, value: r.id }, r.label))),
       ),
       h('div', { className: 'lc-meta' }, relations.find((r) => r.id === relation)?.hint ?? ''),
-      err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
+      err === null ? null : h(Err, { text: err }),
       h(Btn, { tone: 'interview', big: true, block: true, onClick: start, disabled: busy, icon: 'send' }, busy ? '准备中…' : '开始聊'),
     )
   }
@@ -1487,7 +1587,7 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
       ),
     ),
     h('div', { style: { padding: 10, borderTop: '1px solid var(--lc-line)', background: 'var(--lc-panel)' } },
-      err === null ? null : h('div', { style: { marginBottom: 6 } }, h(Note, { tone: 'err', icon: 'warning' }, err)),
+      err === null ? null : h('div', { style: { marginBottom: 6 } }, h(Err, { text: err })),
       h('textarea', {
         className: 'lc-textarea', style: { minHeight: 62, marginBottom: 6 },
         value: answer, onChange: (e) => setAnswer(e.target.value),
@@ -1573,7 +1673,7 @@ function TextImport({ onAnalyze }) {
       if (r.ok !== true) { setMsg({ tone: 'err', text: r.error ?? '没存上' }); return }
       setMsg({ tone: 'ok', text: `存好了（${r.chars} 字）。` })
       setText('')
-    } catch (e) { setMsg({ tone: 'err', text: String(e?.message ?? e) }) } finally { setBusy(false) }
+    } catch (e) { setMsg({ tone: 'err', text: humanizeError(e) }) } finally { setBusy(false) }
   }
 
   const pickFile = async (file) => {
@@ -1584,7 +1684,7 @@ function TextImport({ onAnalyze }) {
       setText(content)
       if (about === '') setAbout(file.name.replace(/\.[^.]+$/, ''))
       setMsg({ tone: undefined, text: `读进来了（${content.length} 字）。确认「这是关于谁」之后点保存。` })
-    } catch (e) { setMsg({ tone: 'err', text: String(e?.message ?? e) }) } finally { setBusy(false) }
+    } catch (e) { setMsg({ tone: 'err', text: humanizeError(e) }) } finally { setBusy(false) }
   }
 
   return h('div', { className: 'lc-fset' },
@@ -1635,7 +1735,7 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, onBack, o
       setResult(r)
       flash(`读出了 ${r.accepted} 条${r.rejected > 0 ? `，${r.rejected} 条没能核实已丢掉` : ''}`)
     } catch (e) {
-      setErr(String(e?.message ?? e))
+      setErr(humanizeError(e))
     } finally { setBusy(false) }
   }
 
@@ -1685,7 +1785,7 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, onBack, o
       })),
     ),
 
-    err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
+    err === null ? null : h(Err, { text: err }),
 
     h('div', { className: 'lc-row' },
       h(Btn, { tone: 'analyze', big: true, onClick: run, disabled: busy || about === '' || materials.length === 0, icon: 'spark' }, busy ? '正在读…' : '开始读'),
@@ -1702,7 +1802,7 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, onBack, o
           try {
             const p = await call('proposal.get', { json: result.json })
             onProposal(p)
-          } catch (e) { setErr(String(e?.message ?? e)) }
+          } catch (e) { setErr(humanizeError(e)) }
         } }, '看看读出了什么'),
       ),
     ),
@@ -1746,7 +1846,9 @@ function DoctorView({ report, onRun }) {
         : h('div', null,
             h(GroupTitle, { tone: 'doctor', icon: 'warning' }, `发现 ${report.issues.length} 处`),
             h('div', { className: 'lc-stack' }, report.issues.slice(0, 40).map((i, n) => h(Note, { key: n, tone: i.level === 'error' ? 'err' : 'warn', icon: 'warning' },
-              h('div', null, i.message)))),
+              h('div', null,
+                i.path === undefined ? null : h('div', { style: { fontWeight: 600 } }, `「${cardNameFromPath(i.path)}」`),
+                humanizeIssue(i))))),
           ),
     ),
   )

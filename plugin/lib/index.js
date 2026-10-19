@@ -769,8 +769,21 @@ function buildApi(ctx, workspace, config) {
     'proposal.apply': async (body) => {
       const ws = await root(body)
       const rel = String(body?.json ?? '')
-      if (!rel.endsWith('.json')) return { ok: false, error: '路径不合法' }
-      return await store.applyProposal(ws, rel)
+      if (!rel.endsWith('.json') || rel.endsWith('.checked.json')) return { ok: false, error: '路径不合法' }
+      // 界面传 checked（下标数组）时以它为准，先落盘再采纳——
+      // 否则界面上勾的东西只活在内存里，读回 MD 会当成一条都没勾。
+      const checked = Array.isArray(body?.checked) ? body.checked : undefined
+      return await store.applyProposal(ws, rel, checked === undefined ? {} : { checked })
+    },
+
+    /** 只记勾选，不采纳。界面每点一下都能立刻落盘。 */
+    'proposal.check': async (body) => {
+      const ws = await root(body)
+      const rel = String(body?.json ?? '')
+      if (!rel.endsWith('.json') || rel.endsWith('.checked.json')) return { ok: false, error: '路径不合法' }
+      if (!Array.isArray(body?.checked)) return { ok: false, error: '缺少勾选内容' }
+      const written = await store.writeCheckedFile(ws, rel, body.checked)
+      return { ok: true, checked: written.checked }
     },
 
     /** doctor：数据体检 + 把宿主能力写进 diagnostics.json。 */
