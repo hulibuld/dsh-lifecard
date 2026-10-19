@@ -569,7 +569,14 @@ function buildApi(ctx, workspace, config) {
     /** 读一张卡（含正文小节）。 */
     'card.get': async (body) => {
       const ws = await root(body)
-      const rel = typeof body?.path === 'string' ? body.path : await store.findCardByRelOrId(ws, String(body?.id ?? ''))
+      let rel
+      if (typeof body?.path === 'string') {
+        const safe = insideWorkspace(ws, body.path)
+        if (safe.ok !== true) return { ok: false, error: safe.error }
+        rel = safe.rel
+      } else {
+        rel = await store.findCardByRelOrId(ws, String(body?.id ?? ''))
+      }
       if (rel === null || rel === undefined) return { ok: false, error: '找不到这张卡' }
       const card = await store.readCard(ws, rel)
       if (!card.ok) return card

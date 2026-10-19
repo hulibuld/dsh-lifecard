@@ -1505,9 +1505,36 @@ function CardForm({ card, onCancel, onSaved }) {
             h('select', {
               className: 'lc-select',
               value: String(typeof data.consent === 'object' && data.consent !== null ? data.consent.basis : data.consent ?? 'self'),
-              onChange: (e) => set('consent', { basis: e.target.value }),
+              onChange: (e) => {
+                // 只换 basis，其余（recorded_at / note）要保住。
+                // 以前这里写死 {basis: value}，用户改一次选项就把
+                // 「什么时候问的、怎么问的」冲掉了——而那两项恰恰是
+                // 证明「我真的问过」的东西，改选项不该把它们清空。
+                const prev = data?.consent !== null && typeof data?.consent === 'object' ? data.consent : {}
+                const next = { ...prev, basis: e.target.value }
+                // 选到「家里人都同意」时顺手补今天的日期，方便导出时过闸。
+                // 用户想改还是能改（下面有输入框）。
+                if (e.target.value === 'family-agreed' && String(prev.recorded_at ?? '').trim() === '') {
+                  next.recorded_at = new Date().toISOString().slice(0, 10)
+                }
+                set('consent', next)
+              },
             }, Object.keys(CONSENT_LABEL).map((k) => h('option', { key: k, value: k }, CONSENT_LABEL[k]))),
           )
+        : null,
+      // 选到「家里人都同意」后，把日期露出来。不然导出时会被拦，
+      // 而用户看不出该去哪填。
+      kind === 'real' || kind === 'hybrid' || kind === 'self'
+        ? (typeof data.consent === 'object' && data.consent !== null && String(data.consent.basis) === 'family-agreed'
+            ? h(Field, { label: '哪天说的', hint: '写 2026-03-15 这样。导出的时候要它。' },
+                h('input', {
+                  className: 'lc-input',
+                  value: String(data.consent?.recorded_at ?? ''),
+                  onChange: (e) => set('consent', { ...data.consent, recorded_at: e.target.value }),
+                  placeholder: '2026-03-15', spellCheck: false,
+                }),
+              )
+            : null)
         : null,
     ),
 
