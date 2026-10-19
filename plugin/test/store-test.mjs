@@ -223,5 +223,31 @@ console.log('=== 版本历史（快照列表 / 读回 / 恢复）===')
   t('没历史过的卡也返回空而不是报错', noHist.ok === true && noHist.versions.length === 0, noHist)
 }
 
+console.log('=== 世界书编辑能存能读（界面走的就是这条路）===')
+{
+  const ws2 = path.join(root, 'lorebook')
+  await fs.mkdir(ws2, { recursive: true })
+  const rel = 'worlds/eldoria/cards/sera.card.md'
+  const data = {
+    lifecard: '0.1', id: 'sera', kind: 'fictional', world: 'eldoria', name: '塞拉菲娜',
+    cc: { fields: { character_book: { entries: [
+      { keys: ['王城', '阿斯特兰'], content: '阿斯特兰位于河谷北岸。' },
+      { keys: [], content: '' },
+    ] } } },
+  }
+  const w = await store.writeCard(ws2, rel, data, [{ title: '自述', body: '〔自述〕她是个法师。' }])
+  t('带世界书的卡能存', w.ok, w)
+  const back = await store.readCard(ws2, rel)
+  const entries = back.data?.cc?.fields?.character_book?.entries
+  t('读回来世界书还在', Array.isArray(entries) && entries.length === 2, entries)
+  t('触发词原样保留', JSON.stringify(entries?.[0]?.keys) === JSON.stringify(['王城', '阿斯特兰']), entries?.[0])
+  t('内容原样保留', entries?.[0]?.content === '阿斯特兰位于河谷北岸。', entries?.[0])
+  t('空条目也没被吃掉', entries?.[1]?.content === '', entries?.[1])
+
+  // 校验不挡这种卡（世界书是带过来的字段，不该被判成非法）
+  const v = core.validateCard(back.data)
+  t('带世界书的卡校验通过', v.ok === true, v)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

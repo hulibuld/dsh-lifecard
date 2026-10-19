@@ -325,6 +325,15 @@ if (seen.has('CompetencyEditor')) {
   renderOne('能力编辑器（空）', seen.get('CompetencyEditor'), { items: undefined, onChange: () => {} })
 }
 
+if (seen.has('BookEditor')) {
+  renderOne('世界书编辑器（有条目）', seen.get('BookEditor'), {
+    entries: [{ keys: ['王城'], content: '阿斯特兰位于河谷北岸' }, { keys: [], content: '' }],
+    onChange: () => {},
+  })
+  renderOne('世界书编辑器（空的）', seen.get('BookEditor'), { entries: [], onChange: () => {} })
+  renderOne('世界书编辑器（没传值）', seen.get('BookEditor'), { onChange: () => {} })
+}
+
 if (seen.has('ListEditor')) {
   renderOne('列表编辑器（有数据）', seen.get('ListEditor'), { items: CARD_DATA.taboos, onChange: () => {} })
   renderOne('列表编辑器（空）', seen.get('ListEditor'), { items: undefined, onChange: () => {} })
@@ -338,7 +347,7 @@ if (seen.has('CardRow')) {
 
 // 遍历渲染完之后再核对：所有子组件都该被访问到过。
 const missing = []
-for (const want of ['CardForm', 'ProposalPanel', 'HistoryPanel', 'CompetencyEditor', 'ListEditor', 'CardRow',
+for (const want of ['CardForm', 'ProposalPanel', 'HistoryPanel', 'BookEditor', 'CompetencyEditor', 'ListEditor', 'CardRow',
   'HomeView', 'CardView', 'ImportView', 'AnalyzeView', 'InterviewView', 'DoctorView',
   'NewCardView', 'SetupView', 'Field', 'Action']) {
   if (!seen.has(want)) missing.push(want)

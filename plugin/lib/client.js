@@ -1107,6 +1107,20 @@ function buildPreset(data) {
   }
 }
 
+/**
+ * 从卡上找出自带的小设定（世界书条目）。
+ *
+ * 位置要从导入流程的写法来：CC 卡的 character_book 被 codec 原样放进
+ * data.cc.fields.character_book。早先只看 data.lorebook 的话永远读不到。
+ */
+function findBook(data) {
+  const entries = data?.cc?.fields?.character_book?.entries
+  if (Array.isArray(entries)) return entries
+  const direct = data?.lorebook?.entries
+  if (Array.isArray(direct)) return direct
+  return []
+}
+
 /** 把小字段（能力、禁忌、知道什么）用人话列出来。 */
 function renderFacts(data) {
   const rows = []
@@ -1139,6 +1153,17 @@ function renderFacts(data) {
     rows.push(h('div', { key: 'cons', className: 'lc-sec' },
       h('div', { className: 'st' }, '对方知道吗'),
       h('div', null, CONSENT_LABEL[basis] ?? String(basis ?? '')),
+    ))
+  }
+  const book = findBook(data)
+  if (book.length > 0) {
+    rows.push(h('div', { key: 'lore', className: 'lc-sec' },
+      h('div', { className: 'st' }, '这张卡自带的小设定'),
+      h('div', { className: 'lc-meta', style: { marginBottom: 4 } }, '聊到这些词的时候，AI 会想起后面那段话。'),
+      h('div', { className: 'lc-stack' }, book.map((e, n) => h('div', { key: n },
+        h('div', { className: 'lc-wrap' }, asArray(e?.keys).map((k, m) => h('span', { key: m, className: 'lc-tag' }, String(k)))),
+        String(e?.content ?? '').trim() === '' ? null : h('div', { className: 'sb', style: { marginTop: 2 } }, String(e.content)),
+      ))),
     ))
   }
   if (rows.length === 0) return null
@@ -1256,6 +1281,13 @@ function CardForm({ card, onCancel, onSaved }) {
         h('textarea', { className: 'lc-textarea', value: sec(s.title), onChange: (e) => setSec(s.title, e.target.value), spellCheck: false }),
       )),
 
+      h('div', { className: 'lc-fgroup' }, '这张卡自带的小设定'),
+      h('div', { className: 'lc-meta' }, '可选。写小说、跑团，或者有只有你们俩懂的称呼时才用。'),
+      h(BookEditor, {
+        entries: findBook(data),
+        onChange: (v) => set('cc', { ...(data.cc ?? {}), fields: { ...(data.cc?.fields ?? {}), character_book: { entries: v } } }),
+      }),
+
       h('div', { className: 'lc-fgroup' }, '顺带记一下'),
       h(Field, { label: '他会什么', hint: '一行一件事。程度选不准就选「熟手」。' },
         h(CompetencyEditor, { items: data.competency, onChange: (v) => set('competency', v) }),
@@ -1347,6 +1379,58 @@ function CompetencyEditor({ items, onChange }) {
 }
 
 // ── 建议面板 ──────────────────────────────────────────────────────
+
+/**
+ * 世界书条目编辑器。
+ *
+ * 原来这一块只能「整段 JSON 改」——对不懂技术的人来说等于没做。
+ * 现在一条一张小卡：触发词一行一个，内容一大段。加一条、删一条都在这。
+ */
+function BookEditor({ entries, onChange }) {
+  const list = Array.isArray(entries) ? entries : []
+  const patch = (index, key, value) => {
+    const next = list.map((e, n) => (n === index ? { ...e, [key]: value } : e))
+    onChange(next)
+  }
+  const keysToText = (keys) => asArray(keys).map((k) => String(k)).join('、')
+  const textToKeys = (text) => String(text).split(/[、,，\n]/).map((k) => k.trim()).filter((k) => k !== '')
+  return h('div', { className: 'lc-stack' },
+    list.length === 0
+      ? h('div', { className: 'lc-meta' }, '还没有。大多数现实里的卡一条都不需要；写小说或跑团才用得上。')
+      : null,
+    list.map((e, n) => h('div', { key: n, className: 'lc-sec', style: { position: 'relative' } },
+      h('div', { className: 'lc-row', style: { marginBottom: 4 } },
+        h('span', { className: 'lc-meta lc-grow', style: { fontWeight: 600 } }, `第 ${n + 1} 条`),
+        h(Btn, {
+          size: 'sm', tone: 'ghost',
+          onClick: () => onChange(list.filter((_, m) => m !== n)),
+        }, '删掉'),
+      ),
+      h(Field, { label: '聊到这些词就想起它', hint: '一行一个，或者用顿号隔开。' },
+        h('input', {
+          className: 'lc-input',
+          value: keysToText(e?.keys),
+          onChange: (ev) => patch(n, 'keys', textToKeys(ev.target.value)),
+          placeholder: '王城、阿斯特兰',
+          spellCheck: false,
+        }),
+      ),
+      h(Field, { label: '想起什么' },
+        h('textarea', {
+          className: 'lc-textarea',
+          value: String(e?.content ?? ''),
+          onChange: (ev) => patch(n, 'content', ev.target.value),
+          placeholder: '阿斯特兰是河谷北岸的老城，城墙是灰色的石头砌的。',
+          spellCheck: false,
+        }),
+      ),
+    )),
+    h(Btn, {
+      size: 'sm', icon: 'plus',
+      onClick: () => onChange([...list, { keys: [], content: '' }]),
+    }, '加一条'),
+  )
+}
 
 /** 把时间戳说成「刚才 / 3 分钟前 / 10 月 19 日 23:40」这种人话。 */
 function humanWhen(iso) {
