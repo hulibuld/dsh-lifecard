@@ -815,11 +815,14 @@ function buildApi(ctx, workspace, config) {
       // SPEC §6 的导出门禁：lens 永不可导出、consent 三条、未成年人禁 PNG。
       const blocked = exportBlockedBy(card.data, 'png')
       if (blocked !== null) return { ok: false, error: blocked }
-      // 底图：优先用导入时的原件，否则造一张 1x1 白图
+      // 底图：优先用导入时的原件，否则造一张 1x1 白图。
+      // 这个路径存在卡文件里，而卡文件是能手改、能导入的——一样要钉在工作区内，
+      // 否则卡里写一句 ../../别的图.png 就能把工作区外的图塞进导出结果里。
       let base = null
       const rawRel = card.data?.cc?.source_file
       if (typeof rawRel === 'string' && rawRel.endsWith('.png')) {
-        base = await fs.readFile(path.join(ws, rawRel)).catch(() => null)
+        const safeRaw = insideWorkspace(ws, rawRel)
+        if (safeRaw.ok === true) base = await fs.readFile(path.join(ws, safeRaw.rel)).catch(() => null)
       }
       if (base === null) base = blankPng()
       const out = codec.exportCardPng(new Uint8Array(base), { data: card.data, sections: card.sections })
@@ -1072,13 +1075,17 @@ function buildApi(ctx, workspace, config) {
         ...todo.filter((q) => !deferred.includes(q.id)),
         ...todo.filter((q) => deferred.includes(q.id)),
       ]
+      // limit 来自界面，可能是任何东西：NaN 会让 slice 返回空数组（界面上一题都不出），
+      // 负数会从尾部砍掉。这里只是个「一次问几题」的旋钮，夹到 1..20 就够。
+      const asked = Number(body?.limit ?? 3)
+      const limit = Number.isFinite(asked) && asked >= 1 ? Math.min(20, Math.floor(asked)) : 3
       return {
         ok: true,
         about: aboutId,
         relation: relationId,
         coverage: cov.percent,
         empty: cov.empty.map((e) => e.label),
-        next: ordered.slice(0, Number(body?.limit ?? 3)),
+        next: ordered.slice(0, limit),
         remaining: ordered.length,
         askedAlready: answeredIds.size,
         sealed: answered.filter((a) => a.reason === 'sealed').map((a) => a.q),

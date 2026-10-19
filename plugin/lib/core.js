@@ -56,6 +56,34 @@ export const SECTION_TO_CC = {
 /** 本地扩展小节：不进 CC 投影，但会被分析与渲染读取。 */
 export const LOCAL_SECTIONS = ['关系史', '不会说的话', '不会做的事', '外貌', '口癖', '备注']
 
+/**
+ * 提案里允许出现的 field。
+ *
+ * SPEC §8.1 第 2 条要求「field 必须在 schema 里存在」，但之前只判了非空，
+ * 于是 `field: "__proto__"` 或者编一个字段名都能过闸门、被勾选、写进卡。
+ *
+ * 来源对齐 prompts.js：SCHEMA_HINT 的 11 个字段 + 提示词允许的正文小节。
+ * 注意「除必需字段外任何字段都可以永远为空」（SPEC §2），所以这里是
+ * **进提案的**白名单，不是卡的字段白名单——卡上额外字段不报错、不拦。
+ */
+export const PROPOSAL_FIELDS = [
+  // 结构字段（data）
+  'name', 'nickname', 'relation', 'birth_year', 'tags', 'competency',
+  'knowledge', 'taboos', 'address', 'life', 'status',
+  // 正文小节
+  '自述', '性格', '场景', '开场白', '备选开场', '对话示例', '创作者备注',
+  '关系史', '不会说的话', '不会做的事', '外貌', '口癖', '备注',
+]
+
+/**
+ * 模型自报的 line_start 与实际匹配位置允许相差几行。
+ *
+ * 多行引文的首行（`quote.split('\n')[0]`）与 quote 的真实起点常常差一两行
+ * （前一行是说话人前缀、后一行是空行），所以留一点余量。
+ * 但差出几十行就不是排版问题，是行号编的。
+ */
+const LINE_TOLERANCE = 5
+
 // ── 极简 YAML（够用即可，零依赖）────────────────────────────────────
 //
 // 只支持 LifeCard 自己要用的子集：标量、带引号字符串、行内数组 `[a, b]`、
@@ -701,14 +729,18 @@ export function verifyQuote(item, materials) {
   const quote = typeof ev.quote === 'string' ? ev.quote.trim() : ''
   if (quote === '') return { ok: false, reason: 'evidence.quote 为空' }
   const materialName = typeof ev.material === 'string' ? ev.material : ''
-  const candidates = materialName === ''
-    ? Object.entries(materials ?? {})
-    : Object.entries(materials ?? {}).filter(([name]) => name === materialName || name.endsWith('/' + materialName) || materialName.endsWith('/' + name))
+  // 必须指名材料文件。不指就搜全部材料的话，引文可以在任意一份里命中，
+  // 既定位不到证据来源，也发现不了「引文是两处拼起来的」。
+  if (materialName.trim() === '') return { ok: false, reason: '没有指定材料文件（evidence.material 为空）' }
+  const candidates = Object.entries(materials ?? {}).filter(([name]) => name === materialName || name.endsWith('/' + materialName) || materialName.endsWith('/' + name))
   if (candidates.length === 0) {
     return { ok: false, reason: `找不到材料文件 "${materialName}"` }
   }
   const norm = (s) => s.replace(/\s+/g, '')
   const target = norm(quote)
+  // 一个字的引文（「花」「。」）在中文材料里几乎必然命中，过了闸门等于没闸门。
+  // prompts.js 说引文「可以短」，所以只卡到 2——不为难正常的短引文。
+  if (target.length < 2) return { ok: false, reason: '引文太短，不足两个字，不能作为证据' }
   for (const [, body] of candidates) {
     const hay = norm(body)
     if (hay.includes(target)) {
@@ -716,7 +748,17 @@ export function verifyQuote(item, materials) {
       const firstLine = quote.split('\n')[0].trim()
       const lines = String(body).split('\n')
       const at = lines.findIndex((l) => norm(l).includes(norm(firstLine)) && norm(firstLine) !== '')
-      return { ok: true, line: at >= 0 ? at + 1 : undefined }
+      const line = at >= 0 ? at + 1 : undefined
+      // 模型自报的 line_start 会被渲染进提案 Markdown（「证据：xxx L42」），
+      // 假的也行就骗到人眼了。有就给个范围校验，离得太远说明引文是凑的。
+      const claimed = typeof ev.line_start === 'number' ? ev.line_start : undefined
+      if (claimed !== undefined && (claimed < 1 || claimed > lines.length)) {
+        return { ok: false, reason: `evidence.line_start ${claimed} 超出了材料行数（共 ${lines.length} 行）` }
+      }
+      if (claimed !== undefined && line !== undefined && Math.abs(claimed - line) > LINE_TOLERANCE) {
+        return { ok: false, reason: `evidence.line_start ${claimed} 与实际匹配位置 L${line} 相差太远（可能是编的）` }
+      }
+      return { ok: true, line: line ?? claimed }
     }
   }
   return { ok: false, reason: '引文在材料里找不到逐字对应（可能是模型补的）' }
@@ -738,6 +780,12 @@ export function verifyProposal(proposal, materials) {
     }
     if (typeof item.field !== 'string' || item.field.trim() === '') {
       rejected.push({ item, reason: '缺少 field' })
+      continue
+    }
+    // SPEC §8.1 第 2 条：field 必须在 schema 里存在。不校验的话，模型编一个
+    // 字段名（或者 "__proto__"）也能进清单、被勾选、写进卡，闸门就形同虚设。
+    if (!PROPOSAL_FIELDS.includes(item.field.trim())) {
+      rejected.push({ item, reason: `field "${item.field}" 不在 schema 里` })
       continue
     }
     if (item.source_level !== undefined && !SOURCE_LEVELS.includes(String(item.source_level))) {

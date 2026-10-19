@@ -2,18 +2,22 @@
 
 本地优先的人物档案库。把现实里的人、虚构角色和他们之间的关系写成可读的 Markdown，放在你可以随时打开、随时带走的一个文件夹里。
 
-**三个入口，两条链路：**
+**四个入口，两条链路。** 首页那排按钮就是它们：
 
 ```
-入口 A｜完整角色卡   PNG / JSON / CHARX → 直接出卡           （纯格式搬运，不调模型）
+① 导入        角色卡 PNG / JSON / CHARX → 直接出卡        （纯格式搬运，不调模型）
 
-入口 B｜对话访谈      它问，你答 → materials/ ─┐
-入口 C｜文本导入      访谈稿 / 聊天记录 / 日记 → materials/ ─┤
-                                            ↓
-              AI 分析 → 引文校验 → proposals/ → 你勾选 → 写进卡
+② 聊着建      它问，你答 → materials/ ─┐
+③ 贴一段文字  访谈稿/聊天记录/日记 → materials/ ─┤
+                                  ↓
+        整理材料 → 引文校验 → 提案 → 你勾选 → 写进卡
+                                  ↑
+④ 新建        手写，不经过 AI           （这条路没有闸门，因为句句都是你说的）
 ```
 
-B 和 C 产出同一种东西（材料），之后走**完全相同**的一条链。这是它能成立的原因：一套闸门，两个进料口。
+② 和 ③ 产出同一种东西（材料），之后走**完全相同**的一条链。这是它能成立的原因：一套闸门，两个进料口。
+
+> **界面上的按钮名**：首页「新建」「聊着建」「导入」；有材料后右边会出现「整理 N 份材料」；右上角「检查一下」。本文档里说的「访谈」= 聊着建、「分析」= 整理材料、「体检」= 检查一下。
 
 ---
 
@@ -26,7 +30,7 @@ B 和 C 产出同一种东西（材料），之后走**完全相同**的一条�
 dsh plugin --profile desktop add /path/to/LifeCard/plugin
 ```
 
-装完重启 DSH，侧栏「+」菜单里会出现**Life Cards**。
+装完重启 DSH，侧栏会多一个 **Life Cards** 的标签页（就在侧栏的标签栏里，和别的标签并排）。
 
 > 需要 `dsh-better-sidebar`（侧边栏底座）。本插件只往它上面注册一个 tab，不自造侧栏。
 
@@ -40,19 +44,31 @@ dsh plugin --profile desktop add /path/to/LifeCard/plugin
 
 ```
 我的档案/
-├── lifecard.config.json
-├── people/          主世界的人        妈妈.card.md
-├── self/            我自己 + 偏好透镜
-├── relations/       有向关系边        mama--self.relation.md
-├── worlds/          世界观（含 world info）
-├── systems/         消费协议（扮演 / 访谈 / 写作素材）
-├── materials/       原始材料，只追加、不可编辑
-├── interviews/      访谈账本（问答过程）
-├── proposals/       建议清单 + 你勾的那几项（两份文件：.md 给人看，.json 给程序读）
-├── story/           小说章节与状态账本
-├── assets/          头像和插图（导出时打进卡里）
-└── .lifecard/       索引、导入的原件、全文快照
+├── lifecard.config.json     名字、语言、上次选的分析模型、你写的「想要什么样的人」
+├── people/                  主世界的人          妈妈.card.md
+├── self/                    我自己 + 偏好透镜
+├── relations/               有向关系边          mama--self.relation.md
+├── worlds/                  世界观（含 world info）
+├── systems/                 消费协议（扮演 / 访谈 / 写作素材）
+├── materials/               原始材料，只追加、不可编辑
+├── interviews/              访谈账本（问答过程，不是结果）
+├── proposals/               建议清单 + 你勾的那几项
+│                            两份文件：.md 给人看，.json 给程序读，
+│                            还有一个 .checked.json 记你在界面上勾了哪几条
+├── story/                   小说章节与状态账本
+│   ├── chapters/
+│   ├── state/ledger.jsonl
+│   ├── state/snapshots/
+│   └── threads.jsonl
+├── redactions.jsonl         删除墓碑，只追加
+├── assets/                  头像（<卡 id>.png）和插图，导出时打进卡里
+└── .lifecard/
+    ├── index.json           派生索引，删了能重建
+    ├── raw/                 导入的原件
+    └── snapshots/           每次保存前的全文快照
 ```
+
+排法在 `SPEC.md` §1 里定死了，不要自己加目录。
 
 **它就是一个普通文件夹。** 用 Obsidian 打开，全文搜、双链、标签、手机版全都有——不需要本插件也能读写。
 
@@ -62,7 +78,9 @@ dsh plugin --profile desktop add /path/to/LifeCard/plugin
 
 ### 从零建一张卡（最常用的路）
 
-点侧栏底部的 **访谈**，填名字、选关系类型，然后开始答。
+点 **聊着建**，填名字、选关系类型，然后开始答。
+
+> 也可以在自己对话里用 `lifecard-interview` 这个 skill 问同样的问题——它产出同样的材料，只是跑在对话框里而不是侧栏里。
 
 ```
 1 / 12  你妈最像哪一种？
@@ -97,7 +115,7 @@ dsh plugin --profile desktop add /path/to/LifeCard/plugin
 
 ### 把材料变成卡
 
-点 **分析**，选一张卡和要用哪些材料，然后：
+点 **整理材料**（首页右边那个按钮），选一张卡和要用哪些材料，然后：
 
 1. 模型读材料，产出每一条都带**原文引文**的建议
 2. **程序做机械校验**：引文必须在材料里逐字出现，对不上的整条丢弃
