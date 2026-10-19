@@ -1,0 +1,676 @@
+/**
+ * LifeCard codec —— 酒馆卡（SillyTavern / CCv2 / CCv3）的读写。
+ *
+ * 三条铁律，来自规范原文：
+ *   1. 不认识的键**绝不能销毁**（V2 spec: "they must never be destroyed"）。
+ *      所以任何本模块不理解的字段，原样收进 `preserved`，导出时原样写回。
+ *   2. 导出 PNG 时两个 chunk 必须**同源**：`ccv3` 是 `chara` 的严格超集。
+ *      ST 的 read() 以 ccv3 优先，两份独立投影会让同一张卡变成两个人。
+ *   3. 只做格式搬运，**不执行语义**：不算 {{random}}、不跑 decorator、不递归扫 lorebook。
+ *      那是前端的事，我们只保证不丢。
+ *
+ * 零依赖：PNG 的 tEXt 读写、zip 解包都自己实现（只用 node:zlib）。
+ */
+
+// ── 常量 ────────────────────────────────────────────────────────────
+
+/** V2 规范里 `data` 下的已知字段。其余一律进 preserved。 */
+const V2_KNOWN = [
+  'name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example',
+  'creator_notes', 'system_prompt', 'post_history_instructions',
+  'alternate_greetings', 'character_book', 'tags', 'creator', 'character_version', 'extensions',
+]
+
+/** V3 相对 V2 新增的已知字段。 */
+const V3_KNOWN = [
+  'nickname', 'creator_notes_multilingual', 'source', 'group_only_greetings',
+  'creation_date', 'modification_date', 'assets',
+]
+
+/** lorebook entry 的已知字段。 */
+const ENTRY_KNOWN = [
+  'keys', 'content', 'extensions', 'enabled', 'insertion_order', 'case_sensitive',
+  'use_regex', 'constant', 'name', 'priority', 'id', 'comment', 'selective',
+  'secondary_keys', 'position',
+]
+
+// ── PNG tEXt 读写 ──────────────────────────────────────────────────
+
+const PNG_SIG = [137, 80, 78, 71, 13, 10, 26, 10]
+
+/**
+ * 从 PNG 字节里读出所有 tEXt / iTXt 块。
+ * @param {Uint8Array} bytes
+ * @returns {{ texts: Record<string, string>, ihdr: Uint8Array|null, ok: boolean, error?: string }}
+ */
+export function readPngText(bytes) {
+  if (bytes === null || bytes === undefined || bytes.length < 8) {
+    return { texts: {}, ihdr: null, ok: false, error: '不是 PNG（太短）' }
+  }
+  for (let i = 0; i < 8; i += 1) {
+    if (bytes[i] !== PNG_SIG[i]) return { texts: {}, ihdr: null, ok: false, error: '不是 PNG（签名不符）' }
+  }
+  const texts = {}
+  let ihdr = null
+  let at = 8
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  while (at + 8 <= bytes.length) {
+    const length = view.getUint32(at)
+    const type = String.fromCharCode(bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7])
+    const dataStart = at + 8
+    const dataEnd = dataStart + length
+    if (dataEnd + 4 > bytes.length) break
+    if (type === 'IHDR') ihdr = bytes.subarray(dataStart, dataEnd)
+    else if (type === 'tEXt') {
+      const chunk = bytes.subarray(dataStart, dataEnd)
+      const nul = chunk.indexOf(0)
+      if (nul > 0) {
+        const keyword = latin1(chunk.subarray(0, nul))
+        const value = latin1(chunk.subarray(nul + 1))
+        texts[keyword] = value
+      }
+    } else if (type === 'iTXt') {
+      const chunk = bytes.subarray(dataStart, dataEnd)
+      const nul = chunk.indexOf(0)
+      if (nul > 0) {
+        const keyword = latin1(chunk.subarray(0, nul))
+        // iTXt: keyword\0 compressionFlag compressionMethod languageTag\0 translatedKeyword\0 text
+        let p = nul + 1
+        const compFlag = chunk[p]
+        p += 2
+        const langEnd = chunk.indexOf(0, p)
+        p = langEnd < 0 ? p : langEnd + 1
+        const transEnd = chunk.indexOf(0, p)
+        p = transEnd < 0 ? p : transEnd + 1
+        const payload = chunk.subarray(p)
+        texts[keyword] = compFlag === 1 ? '' : utf8(payload)
+      }
+    }
+    if (type === 'IEND') break
+    at = dataEnd + 4
+  }
+  return { texts, ihdr, ok: true }
+}
+
+/**
+ * 往 PNG 里写入（或替换）一条 tEXt 块，返回新的 PNG 字节。
+ * @param {Uint8Array} bytes - 原 PNG。
+ * @param {string} keyword - 块名（`chara` / `ccv3`）。
+ * @param {string} text - 要写入的文本（base64 之后）。
+ * @param {string[]} dropKeywords - 写入前要删掉的同名块。
+ */
+export function writePngText(bytes, keyword, text, dropKeywords = [keyword]) {
+  const drop = new Set(dropKeywords.map((k) => k.toLowerCase()))
+  const out = []
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  // 签名
+  out.push(bytes.subarray(0, 8))
+  let at = 8
+  let inserted = false
+  while (at + 8 <= bytes.length) {
+    const length = view.getUint32(at)
+    const type = String.fromCharCode(bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7])
+    const total = 12 + length
+    const chunk = bytes.subarray(at, at + total)
+    if (type === 'tEXt' || type === 'iTXt') {
+      const nul = bytes.subarray(at + 8, at + 8 + length).indexOf(0)
+      const kw = nul > 0 ? latin1(bytes.subarray(at + 8, at + 8 + nul)).toLowerCase() : ''
+      if (drop.has(kw)) {
+        at += total
+        continue
+      }
+    }
+    if (type === 'IEND' && !inserted) {
+      out.push(makeTextChunk(keyword, text))
+      inserted = true
+    }
+    out.push(chunk)
+    at += total
+  }
+  if (!inserted) out.push(makeTextChunk(keyword, text))
+  return concat(out)
+}
+
+function makeTextChunk(keyword, text) {
+  const kw = Buffer.from(keyword, 'latin1')
+  const body = Buffer.concat([kw, Buffer.from([0]), Buffer.from(text, 'latin1')])
+  const head = Buffer.alloc(8)
+  head.writeUInt32BE(body.length, 0)
+  head.write('tEXt', 4, 'latin1')
+  const crcBuf = Buffer.alloc(4)
+  crcBuf.writeUInt32BE(crc32(body), 0)
+  return Buffer.concat([head, body, crcBuf])
+}
+
+function concat(parts) {
+  let len = 0
+  for (const p of parts) len += p.length
+  const out = Buffer.alloc(len)
+  let at = 0
+  for (const p of parts) {
+    Buffer.from(p.buffer, p.byteOffset, p.length).copy(out, at)
+    at += p.length
+  }
+  return new Uint8Array(out)
+}
+
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256)
+  for (let n = 0; n < 256; n += 1) {
+    let c = n
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    table[n] = c >>> 0
+  }
+  return table
+})()
+
+function crc32(buf) {
+  let c = 0xffffffff
+  for (let i = 0; i < buf.length; i += 1) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8)
+  return (c ^ 0xffffffff) >>> 0
+}
+
+function latin1(buf) {
+  return Buffer.from(buf.buffer, buf.byteOffset, buf.length).toString('latin1')
+}
+
+function utf8(buf) {
+  return Buffer.from(buf.buffer, buf.byteOffset, buf.length).toString('utf8')
+}
+
+function base64DecodeUtf8(b64) {
+  return Buffer.from(String(b64).trim(), 'base64').toString('utf8')
+}
+
+function utf8ToBase64(s) {
+  return Buffer.from(s, 'utf8').toString('base64')
+}
+
+// ── zip（CHARX 用，最小实现）───────────────────────────────────────
+
+/**
+ * 解一个 zip，返回 文件名 → 字节。
+ * 只支持 store（0）与 deflate（8），不支持加密——CHARX 规范里也不需要。
+ */
+export async function unzip(bytes) {
+  const out = {}
+  const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length)
+  // 从尾部找 EOCD
+  let eocd = -1
+  for (let i = buf.length - 22; i >= 0 && i > buf.length - 66000; i -= 1) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break }
+  }
+  if (eocd < 0) throw new Error('不是有效的 zip（找不到目录）')
+  const count = buf.readUInt16LE(eocd + 10)
+  let cd = buf.readUInt32LE(eocd + 16)
+  for (let n = 0; n < count; n += 1) {
+    if (buf.readUInt32LE(cd) !== 0x02014b50) break
+    const method = buf.readUInt16LE(cd + 10)
+    const compSize = buf.readUInt32LE(cd + 20)
+    const nameLen = buf.readUInt16LE(cd + 28)
+    const extraLen = buf.readUInt16LE(cd + 30)
+    const commentLen = buf.readUInt16LE(cd + 32)
+    const localOffset = buf.readUInt32LE(cd + 42)
+    const name = buf.subarray(cd + 46, cd + 46 + nameLen).toString('utf8')
+    cd += 46 + nameLen + extraLen + commentLen
+    if (name.endsWith('/')) continue
+    // 本地头
+    if (buf.readUInt32LE(localOffset) !== 0x04034b50) continue
+    const lNameLen = buf.readUInt16LE(localOffset + 26)
+    const lExtraLen = buf.readUInt16LE(localOffset + 28)
+    const dataStart = localOffset + 30 + lNameLen + lExtraLen
+    const raw = buf.subarray(dataStart, dataStart + compSize)
+    out[name] = method === 0 ? new Uint8Array(raw) : new Uint8Array(await inflateRawAsync(raw))
+  }
+  return out
+}
+
+let inflateRawSyncRef = null
+
+/**
+ * 解 deflate（zip 的压缩方式 8）。
+ *
+ * 用动态 import 拿 node:zlib：宿主侧（Node）才有它。浏览器侧解 CHARX 走宿主
+ * 路由，不在本模块里解压，所以拿不到就明确报错，不静默返回坏数据。
+ */
+async function inflateRawAsync(buf) {
+  if (inflateRawSyncRef === null) {
+    const zlib = await import('node:zlib')
+    inflateRawSyncRef = zlib.inflateRawSync
+  }
+  return inflateRawSyncRef(buf)
+}
+
+// ── CC 卡：识别与解析 ──────────────────────────────────────────────
+
+/**
+ * 判断一份 JSON 是什么。
+ * @param {unknown} json
+ * @returns {'v1'|'v2'|'v3'|'worldinfo'|'unknown'}
+ */
+export function detectJsonKind(json) {
+  if (json === null || typeof json !== 'object') return 'unknown'
+  const spec = json.spec
+  if (spec === 'chara_card_v3') return 'v3'
+  if (spec === 'chara_card_v2') return 'v2'
+  if (spec === 'lorebook_v3') return 'worldinfo'
+  // V1：顶层直接是 name/description，没有 spec
+  if (typeof json.name === 'string' && typeof json.description === 'string' && spec === undefined) return 'v1'
+  if (json.data !== null && typeof json.data === 'object' && typeof json.data.name === 'string') {
+    const sv = String(json.spec_version ?? '')
+    return sv.startsWith('3') ? 'v3' : 'v2'
+  }
+  // ST 的独立世界书把 entries 存成以 uid 为键的对象，规范里也有写成数组的。
+  const looksLikeEntries = (v) => Array.isArray(v)
+    || (v !== null && typeof v === 'object' && Object.keys(v).length > 0
+        && Object.values(v).every((e) => e !== null && typeof e === 'object' && ('key' in e || 'keys' in e || 'content' in e)))
+  if (looksLikeEntries(json.entries)) return 'worldinfo'
+  if (json.data !== null && typeof json.data === 'object' && looksLikeEntries(json.data.entries)) return 'worldinfo'
+  return 'unknown'
+}
+
+/**
+ * 把一份 CC 卡 JSON 拆成「已知字段」与「保真字段」。
+ * @param {any} json
+ * @returns {{ spec: string, specVersion: string, fields: Record<string, unknown>, preserved: Record<string, unknown>, book: any }}
+ */
+export function decodeCardJson(json) {
+  const kind = detectJsonKind(json)
+  const isV3 = kind === 'v3'
+  const root = json?.data !== null && typeof json?.data === 'object' ? json.data : json
+  const fields = {}
+  const preserved = {}
+
+  for (const key of [...V2_KNOWN, ...V3_KNOWN]) {
+    if (root[key] !== undefined) fields[key] = root[key]
+  }
+  // V2 的已知字段之外、V3 新增字段之外的一切，全部保真
+  for (const key of Object.keys(root)) {
+    if (!V2_KNOWN.includes(key) && !V3_KNOWN.includes(key)) preserved[key] = root[key]
+  }
+  // 顶层（data 之外）的未知键也要保真，否则往返会丢
+  for (const key of Object.keys(json ?? {})) {
+    if (key === 'data' || key === 'spec' || key === 'spec_version') continue
+    preserved[`top.${key}`] = json[key]
+  }
+
+  const book = root.character_book ?? null
+  const bookPreserved = {}
+  if (book !== null && typeof book === 'object') {
+    for (const key of Object.keys(book)) {
+      if (key === 'entries') continue
+      if (!['name', 'description', 'scan_depth', 'token_budget', 'recursive_scanning', 'extensions'].includes(key)) {
+        bookPreserved[key] = book[key]
+      }
+    }
+    // entry 级的未知键
+    const entries = Array.isArray(book.entries) ? book.entries : []
+    const entryPreserved = {}
+    entries.forEach((entry, index) => {
+      const extra = {}
+      for (const key of Object.keys(entry ?? {})) {
+        if (!ENTRY_KNOWN.includes(key)) extra[key] = entry[key]
+      }
+      if (Object.keys(extra).length > 0) entryPreserved[String(index)] = extra
+    })
+    if (Object.keys(entryPreserved).length > 0) bookPreserved.__entries = entryPreserved
+  }
+  if (Object.keys(bookPreserved).length > 0) preserved.__character_book_extra = bookPreserved
+
+  return {
+    spec: isV3 ? 'chara_card_v3' : kind === 'v1' ? 'chara_card_v1' : 'chara_card_v2',
+    specVersion: String(json?.spec_version ?? (isV3 ? '3.0' : kind === 'v1' ? '1.0' : '2.0')),
+    fields,
+    preserved,
+    book,
+  }
+}
+
+/**
+ * 把内部结构拼回一份 CC 卡 JSON。
+ * @param {{ spec: string, specVersion: string, fields: Record<string, unknown>, preserved: Record<string, unknown> }} card
+ * @param {boolean} asV3 - true 时输出 V3（补 spec/spec_version，保留 V3 字段）。
+ */
+export function encodeCardJson(card, asV3 = false) {
+  const data = { ...(card.fields ?? {}) }
+  // preserved 里除 __ 前缀的内部键外，全部原样放回 data
+  for (const [key, value] of Object.entries(card.preserved ?? {})) {
+    if (key.startsWith('__') || key.startsWith('top.')) continue
+    if (data[key] === undefined) data[key] = value
+  }
+  // 补回 character_book 的 unknown 键
+  const extra = card.preserved?.__character_book_extra
+  if (extra !== undefined && data.character_book !== null && typeof data.character_book === 'object') {
+    for (const [key, value] of Object.entries(extra)) {
+      if (key === '__entries') continue
+      if (data.character_book[key] === undefined) data.character_book[key] = value
+    }
+    if (extra.__entries !== undefined) {
+      const entries = Array.isArray(data.character_book.entries) ? data.character_book.entries : []
+      entries.forEach((entry, index) => {
+        const e = extra.__entries[String(index)]
+        if (e === undefined) return
+        for (const [k, v] of Object.entries(e)) if (entry[k] === undefined) entry[k] = v
+      })
+    }
+  }
+  // 顶层未知键
+  for (const [key, value] of Object.entries(card.preserved ?? {})) {
+    if (!key.startsWith('top.')) continue
+    data[key.slice(4)] = value
+  }
+
+  // V2 投影最后剪一次：此时 data 已经合并完 preserved，删晚了才有效。
+  if (!asV3) {
+    for (const key of V3_KNOWN) delete data[key]
+  }
+  const out = {
+    spec: asV3 ? 'chara_card_v3' : 'chara_card_v2',
+    spec_version: asV3 ? '3.0' : '2.0',
+    data,
+  }
+  return out
+}
+
+/**
+ * 从任意输入（PNG / JSON 文本 / CHARX 字节 / zip）里取出卡 JSON。
+ * @param {Uint8Array} bytes
+ * @param {string} [fileName]
+ * @returns {{ json: any, kind: string, source: string, rawFiles?: Record<string, Uint8Array> }}
+ */
+export async function extractCard(bytes, fileName = '') {
+  const lower = fileName.toLowerCase()
+  // 1) PNG
+  if (bytes.length > 8 && bytes[0] === PNG_SIG[0] && bytes[1] === PNG_SIG[1]) {
+    const { texts, ok, error } = readPngText(bytes)
+    if (!ok) throw new Error(error ?? 'PNG 读取失败')
+    // ccv3 优先（与 ST 一致）
+    for (const key of ['ccv3', 'chara']) {
+      const found = Object.keys(texts).find((k) => k.toLowerCase() === key)
+      if (found !== undefined) {
+        const text = base64DecodeUtf8(texts[found])
+        return { json: JSON.parse(text), kind: detectJsonKind(JSON.parse(text)), source: `png:${key}` }
+      }
+    }
+    throw new Error('这张 PNG 里没有人物卡数据（既无 ccv3 也无 chara 块）')
+  }
+  // 2) zip / CHARX
+  if (lower.endsWith('.charx') || lower.endsWith('.zip') || (bytes.length > 4 && bytes[0] === 0x50 && bytes[1] === 0x4b)) {
+    const files = await unzip(bytes)
+    const cardName = Object.keys(files).find((n) => n === 'card.json') ?? Object.keys(files).find((n) => n.endsWith('/card.json'))
+    if (cardName === undefined) throw new Error('这个 zip 里没有 card.json，不是 CHARX 卡')
+    const json = JSON.parse(Buffer.from(files[cardName]).toString('utf8'))
+    return { json, kind: detectJsonKind(json), source: 'charx', rawFiles: files }
+  }
+  // 3) 纯 JSON
+  const text = Buffer.from(bytes).toString('utf8').replace(/^\uFEFF/, '').trim()
+  let json
+  try {
+    json = JSON.parse(text)
+  } catch {
+    throw new Error('文件既不是 PNG、不是 zip，也不是合法 JSON')
+  }
+  return { json, kind: detectJsonKind(json), source: 'json' }
+}
+
+/**
+ * 把 CC 卡投影成 LifeCard 的 `{ data, sections }`。
+ * 这是「导入」的核心：CC 的平字段 → 我们的 YAML 头 + 正文小节。
+ * @param {any} json
+ * @param {{ nameFallback?: string, importedFrom?: string }} [options]
+ */
+export function ccToLifeCard(json, options = {}) {
+  const decoded = decodeCardJson(json)
+  const f = decoded.fields
+  const now = new Date().toISOString().slice(0, 10)
+  const name = String(f.name ?? options.nameFallback ?? '未命名')
+
+  const data = {
+    lifecard: '0.1',
+    id: options.id ?? '',
+    kind: 'fictional',
+    world: 'reality',
+    name,
+    tags: Array.isArray(f.tags) ? f.tags : [],
+  }
+  // cc 段一定要存在：preserved 是保真的落脚点，缺了它就等于「不认识的键会丢」。
+  data.cc = {}
+  if (typeof f.nickname === 'string' && f.nickname !== '') data.nickname = f.nickname
+  if (typeof f.creator === 'string' && f.creator !== '') data.creator = f.creator
+  if (typeof f.character_version === 'string' && f.character_version !== '') data.character_version = f.character_version
+  data.cc.spec = decoded.spec
+  data.cc.spec_version = decoded.specVersion
+  data.cc.imported_at = now
+  if (options.importedFrom !== undefined) data.cc.source_file = options.importedFrom
+  if (Object.keys(decoded.preserved).length > 0) data.cc.preserved = decoded.preserved
+  // fields 里那些**没有被正文小节承载**的字段也必须保真，否则导出时会静默丢失：
+  //   extensions / character_book / system_prompt（单独处理）/ tags 之外的一切。
+  // 正文小节承载的是 description/personality/scenario/first_mes/mes_example/
+  // alternate_greetings/creator_notes 这七个；其余都在这里兜住。
+  const carriedBySection = new Set(['description', 'personality', 'scenario', 'first_mes', 'mes_example', 'alternate_greetings', 'creator_notes', 'name', 'tags', 'creator', 'character_version', 'nickname', 'system_prompt', 'post_history_instructions'])
+  const leftovers = {}
+  for (const [key, value] of Object.entries(decoded.fields)) {
+    if (carriedBySection.has(key)) continue
+    leftovers[key] = value
+  }
+  if (Object.keys(leftovers).length > 0) data.cc.fields = leftovers
+
+  const sections = []
+  const push = (title, body) => {
+    if (typeof body === 'string' && body.trim() !== '') sections.push({ title, body: body.trim() })
+  }
+  push('自述', f.description)
+  push('性格', f.personality)
+  push('场景', f.scenario)
+  push('开场白', f.first_mes)
+  if (Array.isArray(f.alternate_greetings) && f.alternate_greetings.length > 0) {
+    push('备选开场', f.alternate_greetings.map((g) => String(g).trim()).join('\n\n---\n\n'))
+  }
+  push('对话示例', f.mes_example)
+  push('创作者备注', f.creator_notes)
+  if (typeof f.system_prompt === 'string' && f.system_prompt.trim() !== '') {
+    // system_prompt 是 CC 的标准字段，且会跟着卡传播。放进 data.cc 而不是正文，
+    // 这样导出能原样写回，但不会被误当成我们自己的偏好透镜。
+    data.cc.system_prompt = f.system_prompt
+  }
+  if (typeof f.post_history_instructions === 'string' && f.post_history_instructions.trim() !== '') {
+    data.cc.post_history_instructions = f.post_history_instructions
+  }
+  const book = decoded.book
+  if (book !== null && typeof book === 'object' && Array.isArray(book.entries) && book.entries.length > 0) {
+    data.cc.book_entries = book.entries.length
+  }
+
+  return { data, sections, decoded }
+}
+
+/**
+ * 把 LifeCard 的 `{ data, sections }` 投影回 CC 卡 JSON。
+ * @param {{ data: Record<string, unknown>, sections: Array<{title: string, body: string}> }} card
+ * @param {{ asV3?: boolean, sectionToCc?: Record<string, string> }} [options]
+ */
+export function lifeCardToCc(card, options = {}) {
+  const { data, sections } = card
+  const sectionToCc = options.sectionToCc ?? {
+    自述: 'description',
+    性格: 'personality',
+    场景: 'scenario',
+    开场白: 'first_mes',
+    备选开场: 'alternate_greetings',
+    对话示例: 'mes_example',
+    创作者备注: 'creator_notes',
+  }
+  const cc = data?.cc ?? {}
+  // 先铺底：导入时留在 cc.fields 里的字段（extensions、character_book 等）
+  const fields = {
+    ...(cc.fields !== null && typeof cc.fields === 'object' ? cc.fields : {}),
+    name: String(data?.name ?? data?.nickname ?? 'Unnamed'),
+    description: '',
+    personality: '',
+    scenario: '',
+    first_mes: '',
+    mes_example: '',
+    creator_notes: '',
+    system_prompt: '',
+    post_history_instructions: '',
+    alternate_greetings: [],
+    tags: Array.isArray(data?.tags) ? data.tags : [],
+    creator: typeof data?.creator === 'string' ? data.creator : '',
+    character_version: typeof data?.character_version === 'string' ? data.character_version : '',
+    // extensions 必须保留 cc.fields 里的原值（第三方命名空间全在里面）；
+    // 只有本来就没有时才给 {}（V2 规范要求它必须存在且默认 {}）。
+    extensions: (cc.fields !== null && typeof cc.fields === 'object' && cc.fields.extensions !== undefined)
+      ? cc.fields.extensions
+      : {},
+  }
+  for (const section of sections ?? []) {
+    const target = sectionToCc[section.title]
+    if (target === undefined) continue
+    if (target === 'alternate_greetings') {
+      fields.alternate_greetings = String(section.body)
+        .split(/\n\s*---\s*\n/)
+        .map((s) => s.trim())
+        .filter((s) => s !== '')
+    } else {
+      fields[target] = String(section.body)
+    }
+  }
+  if (typeof cc.system_prompt === 'string') fields.system_prompt = cc.system_prompt
+  if (typeof cc.post_history_instructions === 'string') fields.post_history_instructions = cc.post_history_instructions
+  if (typeof data?.nickname === 'string') fields.nickname = data.nickname
+
+  // 内部记账字段不能写进 CC
+  for (const key of ['spec', 'spec_version', 'imported_at', 'source_file', 'book_entries']) delete fields[key]
+
+  // 调用方显式给 asV3 时以它为准（导出 V2 投影 / 导出 V3 投影都要能强制）；
+  // 没给才看这张卡的来历。
+  const asV3 = options.asV3 !== undefined ? options.asV3 === true : cc.spec === 'chara_card_v3'
+  // V2 投影必须真的剔除 V3 专属字段。它们可能从两处漏进来：
+  //   ① cc.fields 兜底（导入时 V3 卡里的 assets 等）
+  //   ② 卡头上的 nickname
+  // 只在 encodeCardJson 里删是不够的，那里删完 cc.fields 又会带回来。
+  if (!asV3) {
+    for (const key of V3_KNOWN) delete fields[key]
+  }
+  return encodeCardJson({ spec: cc.spec ?? 'chara_card_v2', specVersion: cc.spec_version ?? '2.0', fields, preserved: cc.preserved ?? {} }, asV3)
+}
+
+/**
+ * 生成一张「双 chunk 同源」的 PNG。
+ *
+ * 关键规则（见 SPEC §7.1 / 策划书 §5.3）：
+ *   `ccv3` 必须是 `chara` 的**严格超集**，不允许出现只在一边有的字段。
+ *   做法是先把同一份 fields 编码成 V2 与 V3，然后 V3 只允许「增加」，不允许改写。
+ *
+ * @param {Uint8Array} basePng - 底图（通常就是导入的那张）。
+ * @param {{ data: Record<string, unknown>, sections: Array<{title: string, body: string}> }} card
+ * @returns {{ png: Uint8Array, v2: any, v3: any, consistent: boolean }}
+ */
+export function exportCardPng(basePng, card) {
+  const v2 = lifeCardToCc(card, { asV3: false })
+  const v3 = lifeCardToCc(card, { asV3: true })
+  const same = sameSource(v3, v2)
+  const consistent = same.ok
+  // 一次删掉两个旧块，再按 ccv3 -> chara 的顺序写入。
+  let png = writePngText(basePng, 'ccv3', utf8ToBase64(JSON.stringify(v3)), ['chara', 'ccv3'])
+  png = writePngText(png, 'chara', utf8ToBase64(JSON.stringify(v2)), [])
+  return { png, v2, v3, consistent, missing: same.missing }
+}
+
+/**
+ * `sup` 是否包含 `sub` 的全部键值（递归）。
+ * 用来断言「V3 是 V2 的严格超集」。
+ */
+/**
+ * 比较两张 CC 卡的 data 部分是否 V3 ⊇ V2。
+ *
+ * 注意不能直接比整张卡：`spec` 与 `spec_version` 在两个投影里**本来就应该不同**
+ * （V2 是 'chara_card_v2'/'2.0'，V3 是 'chara_card_v3'/'3.0'）。把它们算进超集
+ * 判定，会让「同源」这条断言永远失败——而真正要保证的同源是 `data` 一致。
+ *
+ * @param {any} cardV3
+ * @param {any} cardV2
+ * @returns {{ ok: boolean, missing: string[] }}
+ */
+export function sameSource(cardV3, cardV2) {
+  const missing = []
+  const walk = (sup, sub, path) => {
+    if (sub === null || typeof sub !== 'object') {
+      if (sup !== sub) missing.push(path)
+      return
+    }
+    if (Array.isArray(sub)) {
+      if (!Array.isArray(sup)) { missing.push(path); return }
+      sub.forEach((v, i) => walk(sup[i], v, `${path}[${i}]`))
+      return
+    }
+    if (sup === null || typeof sup !== 'object') { missing.push(path); return }
+    for (const key of Object.keys(sub)) {
+      if (!(key in sup)) missing.push(`${path}.${key}`)
+      else walk(sup[key], sub[key], `${path}.${key}`)
+    }
+  }
+  walk(cardV3?.data, cardV2?.data, 'data')
+  return { ok: missing.length === 0, missing }
+}
+
+export function isSuperset(sup, sub) {
+  if (sub === null || typeof sub !== 'object') return sup === sub || (typeof sub === 'string' && sup === sub)
+  if (Array.isArray(sub)) {
+    if (!Array.isArray(sup) || sup.length < sub.length) return false
+    return sub.every((v, i) => isSuperset(sup[i], v))
+  }
+  if (sup === null || typeof sup !== 'object') return false
+  for (const key of Object.keys(sub)) {
+    if (!(key in sup)) return false
+    if (!isSuperset(sup[key], sub[key])) return false
+  }
+  return true
+}
+
+/**
+ * 读一张 PNG 里的两个 chunk 并比对，用于 doctor 的往返自检。
+ * @param {Uint8Array} png
+ */
+export function compareChunks(png) {
+  const { texts, ok, error } = readPngText(png)
+  if (!ok) return { ok: false, error }
+  const lower = {}
+  for (const [k, v] of Object.entries(texts)) lower[k.toLowerCase()] = v
+  const read = (key) => {
+    if (lower[key] === undefined) return null
+    try {
+      return JSON.parse(base64DecodeUtf8(lower[key]))
+    } catch {
+      return { __parseError: true }
+    }
+  }
+  const v2 = read('chara')
+  const v3 = read('ccv3')
+  if (v2 === null && v3 === null) return { ok: false, error: '没有 chara / ccv3 块' }
+  if (v2 === null) return { ok: false, error: '只有 ccv3，缺 chara（只认 V2 的前端读不到）' }
+  if (v3 === null) return { ok: true, onlyV2: true, v2, v3: null }
+  const same = sameSource(v3, v2)
+  return {
+    ok: same.ok,
+    v2,
+    v3,
+    mismatch: same.ok ? undefined : `ccv3 的 data 与 chara 不一致：缺 ${same.missing.slice(0, 5).join(', ')}`,
+  }
+}
+
+export default {
+  readPngText,
+  writePngText,
+  unzip,
+  detectJsonKind,
+  decodeCardJson,
+  encodeCardJson,
+  extractCard,
+  ccToLifeCard,
+  lifeCardToCc,
+  exportCardPng,
+  isSuperset,
+  sameSource,
+  compareChunks,
+}

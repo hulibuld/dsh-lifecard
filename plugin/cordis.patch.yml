@@ -1,0 +1,6 @@
+# dsh-lifecard 的 profile 补丁。
+# 安装（dsh plugin add）后由 dsh.bundle 自动激活：插入一行插件条目。
+# 宿主侧读 config（工作区路径等），客户端侧注册一个侧边栏 tab。
+- insert:
+    - id: lifecard
+      name: 'dsh-lifecard'
