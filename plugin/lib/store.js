@@ -41,7 +41,13 @@ const CONFIG_NAME = 'lifecard.config.json'
  * `lifecard`（恒为 "0.1"）一旦被提案改写，卡会从列表和路径上消失。
  * 这不是「对一个人的判断」，所以不该走提案这条路。
  */
-const RESERVED_FIELDS = new Set(['id', 'lifecard'])
+// 提案不许改的字段。前两个是结构约束（改了卡会从列表和路径上消失），
+// 后三个是**事实与法律状态**，只有人能填：
+//   kind    这张卡是真人还是虚构——猜错了，同一段材料会被当成可以随便写的角色
+//   world   世界观归属是结构决定，写一个不存在的 id 会让卡从任何视图里消失
+//   consent 对方是否知情、依据是什么。模型没问过任何人，不能替人声明「对方同意了」。
+// 用户想改这三项，去卡片的编辑器里改——那里有确认动作，也有上下文。
+const RESERVED_FIELDS = new Set(['id', 'lifecard', 'kind', 'world', 'consent'])
 
 /**
  * 本地时区的 YYYY-MM-DD。

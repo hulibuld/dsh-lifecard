@@ -1785,6 +1785,12 @@ function ProposalPanel({ proposal, onClose, onApplied }) {
       const picked = items.map((item, n) => (item.checked ? n : -1)).filter((n) => n >= 0)
       const r = await call('proposal.apply', { json: proposal.json, checked: picked })
       if (r.ok !== true) { setErr(r.error ?? '没存上'); return }
+      // 有落不进卡里的条目要说清楚，不能只说「存进卡里了」。
+      // 会走到这里的只有一类：提案里带了只有人能填的项（比如「对方知不知道」），
+      // 那是模型的推断，不该由它替你声明。
+      if ((r.skipped ?? 0) > 0) {
+        setErr(`有 ${r.skipped} 条写不进去——它们想改的是只有你自己能填的地方（比如这张卡属于真人还是虚构、对方知不知道）。这些请在卡片里自己改。`)
+      }
       await onApplied(r)
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
   }

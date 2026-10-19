@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import * as store from '../lib/store.js'
 import * as core from '../lib/core.js'
+import * as prompts from '../lib/prompts.js'
 
 let pass = 0, fail = 0
 const t = (name, cond, extra) => {
@@ -360,6 +361,38 @@ console.log('\n=== 12. 提案给数组时，卡里要是一条条，不是「0: 
   t('tags 里没有下标记号', !JSON.stringify(card.data.tags).includes('0:'), card.data.tags)
   const taboos = (card.data.taboos ?? []).map((x) => (typeof x === 'string' ? x : x?.label))
   t('taboos 摊平成两条', JSON.stringify(taboos) === JSON.stringify(['别提她', '别提那件事']), card.data.taboos)
+}
+
+console.log('\n=== 13. 提案不许替人声明「对方同意了」 ===')
+{
+  const mats = { 'm.md': '他妈妈说他小时候很爱笑。' }
+  const mk = (field, value) => ({ field, value, source_level: '自述', evidence: { material: 'm.md', quote: '小时候很爱笑' } })
+
+  // 引文门该放行的普通字段
+  const ok = core.verifyProposal({ items: [mk('性格', '爱笑')] }, mats)
+  t('普通小节能过', ok.accepted.length === 1, ok.rejected)
+
+  // 三个刻意挡住的字段：kind / world / consent
+  for (const [field, value, why] of [
+    ['kind', 'fictional', '模型不能替人决定这卡是真人还是虚构'],
+    ['world', 'eldoria', '模型写一个不存在的世界会让卡从视图里消失'],
+    ['consent', { basis: 'fictional' }, '模型没问过任何人，不能替人声明对方同意了'],
+  ]) {
+    const r = core.verifyProposal({ items: [mk(field, value)] }, mats)
+    t(`提案改 ${field} 被拒（${why}）`, r.accepted.length === 0 && r.rejected.length === 1, r)
+    t(`提案改 ${field} 时整体不 ok`, r.ok === false)
+  }
+
+  // 白名单不能把提示词承诺的字段挡在门外
+  const promised = ['name', 'nickname', 'relation', 'birth_year', 'tags', 'competency', 'knowledge', 'taboos', 'address', 'life', 'status',
+    '自述', '性格', '场景', '开场白', '备选开场', '对话示例', '关系史', '不会说的话', '不会做的事', '外貌', '口癖', '备注']
+  const wrong = promised.filter((f) => core.verifyProposal({ items: [mk(f, 'x')] }, mats).accepted.length !== 1)
+  t('提示词承诺的每个字段都能过闸门', wrong.length === 0, wrong)
+
+  // SCHEMA_HINT 里列出的字段一个都不能漏
+  const hinted = [...prompts.SCHEMA_HINT.matchAll(/^- (\w+)/gm)].map((m) => m[1])
+  const missing = hinted.filter((h) => !core.PROPOSAL_FIELDS.includes(h))
+  t('SCHEMA_HINT 的字段全在白名单里', missing.length === 0, missing)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)
