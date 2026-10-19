@@ -43,6 +43,20 @@ const CONFIG_NAME = 'lifecard.config.json'
  */
 const RESERVED_FIELDS = new Set(['id', 'lifecard'])
 
+/**
+ * 本地时区的 YYYY-MM-DD。
+ *
+ * 之前用 `new Date().toISOString().slice(0, 10)`，那是 UTC 日期：
+ * 北京时间 0 点到 8 点之间写进来的材料/提案会被记成前一天，
+ * 文件名和正文里的日期对不上。
+ * @param {Date} [now]
+ * @returns {string}
+ */
+function localDate(now = new Date()) {
+  const d = new Date(now.getTime() - now.getTimezoneOffset() * 60_000)
+  return d.toISOString().slice(0, 10)
+}
+
 /** 默认配置。 */
 export function defaultConfig() {
   return {
@@ -420,6 +434,9 @@ export async function listAll(root) {
           continue
         }
         const cov = core.coverage(r.data, r.sections)
+        // `updated` 以前写的是文件名（entry.name），名实不符，也没人读。
+        // 改成真实修改时间；读不到就留空，不要编一个。
+        const stat = await fs.stat(path.join(root, rel)).catch(() => null)
         cards.push({
           path: rel,
           id: String(r.data?.id ?? ''),
@@ -431,8 +448,9 @@ export async function listAll(root) {
           tags: Array.isArray(r.data?.tags) ? r.data.tags : [],
           coverage: cov.percent,
           empty: cov.empty.map((e) => e.label),
+          unmarkedRatio: cov.unmarkedRatio,
           issues: core.validateCard(r.data).issues,
-          updated: entry.name,
+          updated: stat === null ? undefined : stat.mtime.toISOString(),
         })
       } else if (lower.endsWith('.relation.md')) {
         const r = await readCard(root, rel)
@@ -488,7 +506,7 @@ function isUnder(relDir, top) {
  */
 export async function appendMaterial(root, name, content) {
   const safe = core.safeId(name).replace(/\.md$/i, '')
-  const date = new Date().toISOString().slice(0, 10)
+  const date = localDate()
   const fileName = safe.startsWith(date) ? `${safe}.md` : `${date}-${safe}.md`
   const rel = path.posix.join('materials', fileName)
   const at = resolveIn(root, rel)
@@ -609,7 +627,7 @@ export async function removeAvatar(root, cardId) {
  */
 export async function saveProposal(root, aboutId, proposal, materials) {
   const gate = core.verifyProposal(proposal, materials)
-  const date = new Date().toISOString().slice(0, 10)
+  const date = localDate()
   const safe = core.safeId(aboutId)
   const mdRel = path.posix.join('proposals', `${safe}-${date}.md`)
   const jsonRel = path.posix.join('proposals', `${safe}-${date}.json`)
@@ -880,11 +898,34 @@ function applyItem(data, sections, item) {
   if (['competency', 'taboos', 'tags'].includes(field)) {
     const list = Array.isArray(data[field]) ? [...data[field]] : []
     if (field === 'tags') {
-      const v = typeof value === 'string' ? value : describeValue(item)
-      if (!list.includes(v)) list.push(v)
-    } else {
-      list.push(typeof value === 'object' && value !== null ? value : { label: String(value ?? describeValue(item)) })
+      // 模型给 tags 有时是一个字符串、有时是字符串数组。数组要一条条摊平，
+      // 不能走 describeValue——那会拼成「0: 正常」这种带下标的串写进卡里。
+      const vals = Array.isArray(value)
+        ? value.map((v) => (typeof v === 'string' ? v : describeValue({ value: v })))
+        : [typeof value === 'string' ? value : describeValue(item)]
+      let added = false
+      for (const v of vals) {
+        const t = String(v).trim()
+        if (t === '' || list.includes(t)) continue
+        list.push(t)
+        added = true
+      }
+      data[field] = list
+      return added
     }
+    if (Array.isArray(value)) {
+      // 同理：competency/taboos 一次给一组也要能收
+      let added = false
+      for (const v of value) {
+        if (v === null || v === undefined) continue
+        const row = typeof v === 'object' && v !== null ? v : { label: String(v) }
+        list.push(row)
+        added = true
+      }
+      data[field] = list
+      return added
+    }
+    list.push(typeof value === 'object' && value !== null ? value : { label: String(value ?? describeValue(item)) })
     data[field] = list
     return true
   }
@@ -978,9 +1019,20 @@ export async function doctor(root) {
   return summary
 }
 
-function averageUnmarked() {
-  // 需要逐卡算，listAll 里已经算过 coverage；这里保守返回 null，细节在卡片上
-  return null
+/**
+ * 全库「未标记来源比例」的平均值（SPEC §10 数据段要求）。
+ *
+ * listAll 已经逐卡算过 coverage.unmarkedRatio，这里只做平均。
+ * 一张卡都没有时返回 null——「没数据」和「0%」不是一回事。
+ * @param {{ cards?: Array<{ unmarkedRatio?: number }> }} all
+ * @returns {number|null}
+ */
+function averageUnmarked(all) {
+  const ratios = (all?.cards ?? [])
+    .map((c) => c?.unmarkedRatio)
+    .filter((v) => typeof v === 'number' && Number.isFinite(v))
+  if (ratios.length === 0) return null
+  return ratios.reduce((sum, v) => sum + v, 0) / ratios.length
 }
 
 export default {

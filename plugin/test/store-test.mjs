@@ -252,7 +252,7 @@ console.log('=== 世界书编辑能存能读（界面走的就是这条路）===
 console.log('\n=== 10. 头像存在 assets/，不塞进卡文件 ===')
 {
   const ws = path.join(tmpdir(), 'lifecard-avatar-' + Date.now())
-  store.openWorkspace(ws, { create: true })
+  await store.openWorkspace(ws, { create: true })
   await fs.mkdir(ws, { recursive: true })
 
   // 一张真的 1x1 PNG：只有它才该被接受
@@ -295,7 +295,7 @@ console.log('\n=== 10. 头像存在 assets/，不塞进卡文件 ===')
 console.log('\n=== 11. 「想要什么样的人」只存在配置里，不进卡 ===')
 {
   const ws = path.join(tmpdir(), 'lifecard-concept-' + Date.now())
-  store.openWorkspace(ws, { create: true })
+  await store.openWorkspace(ws, { create: true })
   await fs.mkdir(ws, { recursive: true })
 
   t('一开始是空的', (await store.readConcept(ws)) === null)
@@ -333,6 +333,33 @@ console.log('\n=== 11. 「想要什么样的人」只存在配置里，不进卡
   await store.writeConcept(ws, { idea: 'temp' })
   const cleared2 = await store.writeConcept(ws, null)
   t('传 null 也能清', cleared2.ok === true && (await store.readConcept(ws)) === null)
+}
+
+console.log('\n=== 12. 提案给数组时，卡里要是一条条，不是「0: 正常」 ===')
+{
+  const ws = path.join(tmpdir(), 'lifecard-array-' + Date.now())
+  await store.openWorkspace(ws, { create: true })
+  await store.writeCard(ws, 'people/arr.card.md', { lifecard: '0.1', id: 'arr', kind: 'real', name: '丁', world: 'reality' }, [{ title: '自述', body: '正文' }])
+
+  const p = {
+    about: { id: 'arr', name: '丁' },
+    items: [
+      { field: 'tags', value: ['家人', '爱做饭'], source_level: '自述', evidence: { material: 'm.md', quote: '丁说家人' } },
+      { field: 'tags', value: '单独一个', source_level: '自述', evidence: { material: 'm.md', quote: '丁也说家人' } },
+      { field: 'taboos', value: ['别提她', '别提那件事'], source_level: '自述', evidence: { material: 'm.md', quote: '丁说别提' } },
+    ],
+  }
+  const saved = await store.saveProposal(ws, 'arr', p, { 'm.md': '丁说家人\n丁也说家人\n丁说别提' })
+  t('提案保存成功', saved.ok === true, saved)
+  await store.writeCheckedFile(ws, saved.json, [0, 1, 2])
+  const r = await store.applyProposal(ws, saved.json)
+  t('三条都采纳了', r.applied === 3, r)
+
+  const card = await store.readCard(ws, 'people/arr.card.md')
+  t('tags 是一条条字符串', JSON.stringify(card.data.tags) === JSON.stringify(['家人', '爱做饭', '单独一个']), card.data.tags)
+  t('tags 里没有下标记号', !JSON.stringify(card.data.tags).includes('0:'), card.data.tags)
+  const taboos = (card.data.taboos ?? []).map((x) => (typeof x === 'string' ? x : x?.label))
+  t('taboos 摊平成两条', JSON.stringify(taboos) === JSON.stringify(['别提她', '别提那件事']), card.data.taboos)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

@@ -102,10 +102,11 @@ function guard(handler) {
  * `card.save` 甚至能凭空在工作区外落一个文件——工作区是用户挑的一个文件夹，
  * 卡的路径本来就该在它里面。越界一律当成路径错误，不做「修正」。
  *
- * @param {string} ws - 工作区绝对路径。
- * @param {unknown} rel - 请求里给的相对路径。
  * 返回的 error 是**已经能直接塞进响应**的对象（code + message），每条路由都不用
  * 自己拼文案。文案里不出现 workspace 这类内部词——它会原样显示在界面上。
+ *
+ * @param {string} ws - 工作区绝对路径。
+ * @param {unknown} rel - 请求里给的相对路径。
  * @returns {{ ok: true, rel: string } | { ok: false, error: { code: string, message: string } }}
  */
 function insideWorkspace(ws, rel) {
@@ -138,8 +139,6 @@ function insideWorkspace(ws, rel) {
  * 一张还没填同意状态的卡连本地备份都导不出来，而它恰恰是最需要先备份的时候。
  * `format` 用来区分：只有 `png` 受未成年人那条约束（PNG 最容易被二次转发）。
  *
- * @param {any} data - 卡数据。
- * @param {'png'|'json'} format
  * lens 与 consent 那三条 PNG / JSON 都要过；只有未成年人那条按 format 区分——
  * PNG 是随手就能转发出去的格式，JSON 是留给自己的档。
  *

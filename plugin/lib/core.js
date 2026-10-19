@@ -213,7 +213,7 @@ export function parseYaml(text) {
       }
       const at = findMapColon(rest)
       if (at > 0) {
-        const key = rest.slice(0, at).trim()
+        const key = parseKey(rest.slice(0, at))
         const valueText = rest.slice(at + 1).trim()
         const item = {}
         // 值的下一层容器（嵌套 map / 嵌套数组）。列表项自己的帧仍要压栈，
@@ -252,7 +252,7 @@ export function parseYaml(text) {
     // 普通键
     const at = findMapColon(content)
     if (at <= 0) continue
-    const key = content.slice(0, at).trim()
+    const key = parseKey(content.slice(0, at))
     const valueText = content.slice(at + 1).trim()
 
     if (valueText === '' ) {
@@ -280,6 +280,18 @@ export function parseYaml(text) {
   }
 
   return normalizeArrays(root)
+}
+
+/** 键名两侧若有引号（含冒号的键必须加），解析时要去掉。 */
+function parseKey(raw) {
+  const text = String(raw).trim()
+  if (text.length < 2) return text
+  const q = text[0]
+  if ((q === '"' || q === "'") && text[text.length - 1] === q) {
+    const val = parseScalar(text)
+    return typeof val === 'string' ? val : text
+  }
+  return text
 }
 
 /** 找到 `key:` 的冒号位置（忽略引号里的冒号与 `http://` 之类）。 */
@@ -395,7 +407,8 @@ export function stringifyYaml(value, indent = 0) {
           lines.push(`${pad}- {}`)
           continue
         }
-        const emit = (prefix, key, value) => {
+        const emit = (prefix, rawKey, value) => {
+          const key = keyText(rawKey)
           const childIndent = indent + 2
           const innerPad = '  '.repeat(childIndent)
           if (typeof value === 'string' && value.includes('\n')) {
@@ -420,17 +433,24 @@ export function stringifyYaml(value, indent = 0) {
   }
   for (const [k, v] of Object.entries(value)) {
     if (v === undefined) continue
+    const key = keyText(k)
     if (typeof v === 'string' && v.includes('\n')) {
-      lines.push(`${pad}${k}: |`)
+      lines.push(`${pad}${key}: |`)
       for (const line of v.split('\n')) lines.push(line === '' ? '' : `${pad}  ${line}`)
     } else if (isInlineValue(v)) {
-      lines.push(`${pad}${k}: ${stringifyYaml(v, indent + 1)}`)
+      lines.push(`${pad}${key}: ${stringifyYaml(v, indent + 1)}`)
     } else {
-      lines.push(`${pad}${k}:`)
+      lines.push(`${pad}${key}:`)
       for (const line of stringifyYaml(v, indent + 1).split('\n')) lines.push(line)
     }
   }
   return lines.join('\n')
+}
+
+/** 键名和值一样会被 YAML 误读：`a: b:` 是非法的。键名也走同一套判断。 */
+function keyText(k) {
+  const name = String(k)
+  return needsQuote(name) ? JSON.stringify(name) : name
 }
 
 function needsQuote(s) {
