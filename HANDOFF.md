@@ -7,7 +7,7 @@
 
 ## 一句话现状
 
-**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 405 项通过，对一个真实运行的 DSH 实例做的端到端验收 14/14 通过。**P0（上传 GitHub 前的准备）和 P1（陈旧文档）已经做完，P2 的功能扩展做了 4 项（共 6 项）。**
+**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 **598 项**通过，对一个真实运行的 DSH 实例做的端到端验收 **14/14** 通过。**P0（上传 GitHub 前的准备）、P1（陈旧文档）、P2（六项功能扩展）全部做完。** 之后又做了三轮加固：数据层 20 处隐患、编码/路由层 20 处隐患、测试补到 598 项。
 
 ---
 
@@ -37,7 +37,7 @@ B 和 C 产出同一种东西（材料），之后走完全相同的一条链。
 <仓库根>/
 ```
 
-**注意：这不是 git 仓库。** 没有 `.git`，没有任何版本控制。要上传 GitHub 之前第一件事就是 `git init`，否则一次误删就没救了。
+**这已经是 git 仓库了**（`git init -b main` 已做，`main` 分支，首次提交 `4fa96c7`）。要上传 GitHub 只差 `git remote add` + `push`。
 
 ```
 LifeCard/
@@ -57,14 +57,15 @@ LifeCard/
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `lib/client.js` | 1855 | **整个侧边栏界面**。纯手写，没有 React 依赖注入以外的框架 |
-| `lib/index.js` | 1101 | 宿主侧：23 条 HTTP 路由、调用模型、**注册访谈 skill**（:994 起） |
-| `lib/core.js` | 833 | 零依赖：YAML 子集解析/序列化、卡片校验、覆盖率、**引文校验门** |
-| `lib/store.js` | 685 | 工作区、快照、墓碑 `redactions.jsonl`、提案、`applyProposal`、doctor |
-| `lib/codec.js` | 676 | PNG tEXt 读写、CCv2/CCv3/CHARX、双 chunk 导出、保真字段 |
-| `lib/prompts.js` | 430 | 11 类关系 × 问题库、`buildAnalyzePrompt` |
+| `lib/client.js` | 2548 | **整个侧边栏界面**。纯手写，没有 React 依赖注入以外的框架 |
+| `lib/index.js` | 1346 | 宿主侧：32 条 HTTP 路由、调用模型、**注册访谈 skill**、路径越界闸、导出 consent 闸 |
+| `lib/store.js` | 1074 | 工作区、快照、墓碑 `redactions.jsonl`、提案与勾选旁路、头像、概念、doctor |
+| `lib/core.js` | 946 | 零依赖：YAML 子集解析/序列化、卡片校验、覆盖率、**引文校验门** |
+| `lib/codec.js` | 761 | PNG tEXt/iTXt 读写、CCv2/CCv3/CHARX、双 chunk 导出、保真字段 |
+| `lib/prompts.js` | 454 | 11 类关系 × 问题库、`buildAnalyzePrompt` |
+| `lib/score.js` | 329 | **纯本地**体检打分 0–100、字数估算、占位符与世界书健康度 |
 | `skills/lifecard-interview/SKILL.md` | 192 | **会随包安装的那份**访谈 skill |
-| `test/` | 12 个 .mjs | 约 1500 行，405 项断言 |
+| `test/` | 14 个测试 .mjs（+2 工具） | 598 项断言 |
 | `locale/{zh,en}.json` | — | 侧栏 tab 的标题与描述 |
 | `cordis.patch.yml` | — | 装进 profile 时插入的插件条目 |
 | `node_modules/@deepseek-ai/schemastery` | — | 软链，见下面坑 #2 |
@@ -78,19 +79,20 @@ LifeCard/
 ```bash
 cd .../LifeCard/plugin
 
-# 1. 全量单元测试：405 项
+# 1. 全量单元测试：598 项
 node test/all.mjs
-# → roundtrip 9 / codec 37 / store 38 / json-extract 10 / prompt 140
-#   client-smoke 15 / skill-register 18 / render-all 56
+# → roundtrip 9 / codec 37 / store 109 / score 51 / json-extract 10 / prompt 154
+#   client-smoke 15 / skill-register 18 / routes 36 / hardening-routes 46
+#   hardening-data 54 / render-all 59
 
 # 2. 对真实运行的 DSH 做端到端验收：14/14
 node test/live.mjs http://127.0.0.1:49192
 
-# 3. 界面文案自检（含"黑话零命中"）：44 项，已含在 all.mjs 里
+# 3. 界面文案自检（含"黑话零命中"）：59 项，已含在 all.mjs 里
 node test/render-all.mjs
 ```
 
-**2026-10-20 03:40 的实测结果**：`all.mjs` 405 项全过；`live.mjs` 14/14 全过。
+**2026-10-20 07:30 的实测结果**：`all.mjs` 598 项全过；`live.mjs` 14/14 全过。
 
 live 那 14 项验的是：插件已激活 / 宿主有 llm / 建工作区 / 卡被列出 / 材料被列出 / 分析跑通 / 有可采纳条目 / 默认不勾选 / 每条都有引文 / 采纳成功 / 导出 PNG / 双 chunk 同源 / doctor 跑通 / 宿主段已写。
 
@@ -114,18 +116,21 @@ live 那 14 项验的是：插件已激活 / 宿主有 llm / 建工作区 / 卡�
 - 当前桌面实例端口 **49192**（早先是 49204，会变，以运行时上下文给的 GUI URL 为准）。
 - `POST /api/dsh-lifecard/state.get` **不需要 token 就能打**（其它 `/api/*` 路由要 401），所以外部脚本能验插件。
 
-完整的 23 条路由：
+完整的 32 条路由：
 
 ```
 state.get  workspace.init  workspace.inspect  workspace.list
 card.get  card.save  card.delete
+card.history  card.version  card.restore
+avatar.set  avatar.remove  avatar.list
 import.cards  import.text  import.textFile
 export.card  export.json
 material.add  material.list
 analyze.run
-proposal.list  proposal.get  proposal.apply
+proposal.list  proposal.get  proposal.check  proposal.apply
 doctor.run
 interview.questions  interview.plan  interview.record  interview.history
+concept.get  concept.set
 ```
 
 ---
@@ -170,28 +175,40 @@ interview.questions  interview.plan  interview.record  interview.history
 4. **加 `.gitignore`**：至少忽略 `plugin/node_modules/`（里面是软链）。
 
 ### P1 — 文档陈旧（✅ 已完成）
-| 位置 | 现在写的 | 应该是 |
+| 位置 | 原来写的 | 现在是 |
 |---|---|---|
-| `README.md:27` | 「96 项测试全部通过」 | 405 项 |
-| `plugin/README.md:159` | `# 全部测试（96 项）` | 405 项 |
+| `README.md:27` | 「96 项测试全部通过」 | 598 项 |
+| `plugin/README.md:178` | `# 全部测试（96 项）` | 598 项 |
 | `plugin/README.md:29` | 侧栏会出现**人物档案** | **Life Cards** |
 
-另外 `plugin/README.md` 里的目录树和"三个入口"图还是旧说法，需要对着现在的界面重写一遍。
+`plugin/README.md` 的目录树与"三个入口"图已对着现在的界面重写（commit `43266e6`）。
 
-### P2 — 功能扩展（用户明确说要"借鉴成熟产品的功能设计"）
+### P2 — 功能扩展（✅ 六项全部完成并提交）
 
-**进度：六项全部完成并提交**（1 打分、2 字数估算、3 头像裁剪、4 世界书编辑、5 概念→生成、6 版本历史）。
+已经调研过两个 MIT 项目（Cardwright、airole），**功能设计可以自由学，但代码按功能重写不要搬**（无 LICENSE 的仓库按著作权法默认保留一切权利，小改不改变；GPL/AGPL 有传染性，都不能并进来）。实际没搬任何外部代码。
 
-已经调研过两个 MIT 项目，**功能设计可以自由学，但代码按功能重写不要搬**（无 LICENSE 的仓库按著作权法默认保留一切权利，小改不改变；GPL/AGPL 有传染性，都不能并进来）。
+| # | 功能 | 落在哪 | 界面上叫什么 |
+|---|---|---|---|
+| 1 | 离线体检打分 0–100 | `lib/score.js`（纯本地，只 import core.js） | 体检页的总分 + 「还能补的卡」 |
+| 2 | 每字段字数估算 | `lib/client.js` 的 `roughSize` / `sizeTag` | 表单顶部「正文现在大约 N 字」 |
+| 3 | 头像与 2:3 裁剪 | `store.writeAvatar/readAvatar/removeAvatar` + `AvatarPicker` | 卡表单顶部的「头像」 |
+| 4 | 世界书可视化编辑 | `BookEditor`；落点是 `data.cc.fields.character_book` | 「这张卡自带的小设定」 |
+| 5 | 概念 → 生成 | `store.readConcept/writeConcept` + `concept.get/set` | 首页的「想要什么样的人」 |
+| 6 | 版本历史 | `store.listSnapshots/readSnapshot/restoreSnapshot` + `HistoryPanel` | 卡详情底部「以前的样子」 |
 
-值得抄的，按性价比排：
+### P2.5 — 三轮加固（不在原计划里，已做完）
 
-1. **离线体检打分 0–100**（来自 Cardwright）。现在 `doctor.run` 只做数据检查，不打分。加点：必填字段完整度、token 预算、占位符残留、`{{user}}` 冒名、世界书健康度，给出 0–100 分 + 每个问题可一键跳到对应字段。**不打模型，纯本地算，很便宜，用户感知强。**
-2. **每字段实时 token 估算**（~4 字符/token，离线无 tokenizer 就够用）。酒馆用户非常在意 token 预算。
-3. **头像与 2:3 裁剪**。现在导入的卡带图，但没有"换个头像"。
-4. **世界书（Lorebook）可视化编辑**。现在只能整段 JSON 改，对小白不友好。
-5. **概念 → 生成**（来自 Cardwright/airole）：先把"想要什么样的人"存成一个 concept，后续所有 AI 编辑都带上它。
-6. **版本历史**。`store.js` 已经有快照机制（存全文，不存 diff），但界面上没有"看看以前的样子 / 回到某一版"。
+1. **数据层 20 处隐患**（commit `610dd73`）：引文门短引文/假行号/不指名材料被拒、墓碑残缺记录、路径越界读写、保留字段 id/lifecard 改不动、数组元素被摊平成一串、doctor 的 `unmarked` 恒为 null、`readBlock` 吞同级兄弟键、`latestAffect` 排序错。
+2. **编码/路由层 20 处隐患**（commit `8fb9072` 之后）：PNG tEXt 的 CRC 少算 chunk type、顶层未知键被挪进 `data`、裸 UTF-8 载荷读不出、压缩 iTXt 静默变空、latin1 解码静默坏中文、导出没有 SPEC §6 的 consent/lens/未成年闸、13 条吃路径的路由可越界、`export.card` 的底图路径来自卡内容（第二处越界）、`interview.plan` 的 limit 没夹紧。
+3. **测试补齐**：`test/hardening-routes.mjs`（46 项）+ `test/hardening-data.mjs`（54 项）。这两个文件的用例**都用「修复前的代码」验过会红**，不是补个绿了事。
+
+### P3 — 还没做的（都需要人决定）
+
+1. **`defaultWorkspace()` 返回 `homedir()/LifeCard`**（`lib/index.js` 顶部）。是否改成 `homedir()/Documents/Life Cards`？改的话用户已经 seed 过 `~/LifeCard`，要处理迁移。
+2. **顶层 `skills/lifecard-interview/SKILL.md` 与 `plugin/skills/` 里那份内容相同**（md5 `02e0a2a6daf930b669ed4d9c594d793e`）。只有 plugin 里那份会随包安装。建议删掉顶层那份，或标明"改内容必须同步两份"。
+3. **四份原始文档**（使用指南/策划书/策划书-第二部分）已被 SPEC.md 取代。保留作背景还是归档到 `docs/archive/`？
+4. **同一天对同一个人跑两次分析，第二次会覆盖第一次的提案与遗留记录**（`saveProposal` 的路径是 `proposals/<id>-<date>.md`，不带时间也不带序号）。修它要动 store 的路径契约，会牵动提案列表——**这是已知未修的一条**。
+5. **本地 HTTP 端点没有 Origin/CSRF 校验**，且任何请求都能用 `body.workspace` 改当前库。这是宿主 `/api` 的暴露面，不是本插件能单独修的，建议在宿主侧做 Origin 白名单。
 
 ### P3 — 待定的产品决定
 - **`defaultWorkspace()` 返回 `homedir()/LifeCard`**（`lib/index.js:42-44`）。是否改成 `homedir()/Documents/Life Cards`？改的话，注意用户已经 seed 过 `~/LifeCard`，要处理迁移或兼容。
@@ -217,7 +234,7 @@ interview.questions  interview.plan  interview.record  interview.history
 
 ```bash
 cd <仓库根>/plugin
-node test/all.mjs                                      # 期望 311 通过
+node test/all.mjs                                      # 期望 598 通过
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \
   http://127.0.0.1:49192/api/dsh-lifecard/state.get \
   -H 'content-type: application/json' -d '{}'          # 期望 200
