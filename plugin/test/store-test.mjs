@@ -249,5 +249,48 @@ console.log('=== 世界书编辑能存能读（界面走的就是这条路）===
   t('带世界书的卡校验通过', v.ok === true, v)
 }
 
+console.log('\n=== 10. 头像存在 assets/，不塞进卡文件 ===')
+{
+  const ws = path.join(tmpdir(), 'lifecard-avatar-' + Date.now())
+  store.openWorkspace(ws, { create: true })
+  await fs.mkdir(ws, { recursive: true })
+
+  // 一张真的 1x1 PNG：只有它才该被接受
+  const png1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+  const set = await store.writeAvatar(ws, 'mom', png1)
+  t('存头像成功', set.ok === true, set)
+  t('落在 assets/ 下', set.path === 'assets/mom.png', set.path)
+  t('文件真的在盘上', await fs.stat(path.join(ws, 'assets/mom.png')).then(() => true).catch(() => false))
+
+  const back = await store.readAvatar(ws, 'mom')
+  t('读回来是同一张图', back === png1)
+
+  // 校验门
+  const notPng = await store.writeAvatar(ws, 'x', Buffer.from('hello world').toString('base64'))
+  t('不是 PNG 的拒绝', notPng.ok === false, notPng)
+  t('拒绝时说人话', typeof notPng.error === 'string' && notPng.error.includes('PNG'), notPng.error)
+
+  const empty = await store.writeAvatar(ws, 'x', '')
+  t('空图拒绝', empty.ok === false, empty)
+
+  const noId = await store.writeAvatar(ws, '', png1)
+  t('没编号拒绝', noId.ok === false, noId)
+
+  // 删除是幂等的：点两次不该报错
+  await store.removeAvatar(ws, 'mom')
+  t('删掉后读到 null', (await store.readAvatar(ws, 'mom')) === null)
+  const again = await store.removeAvatar(ws, 'mom')
+  t('再删一次也不报错', again.ok === true, again)
+  t('读一张没有头像的卡返回 null', (await store.readAvatar(ws, 'nobody')) === null)
+
+  // 关键：头像不能混进卡文件。卡文件要能当纯文本进 git diff。
+  const rel = 'people/mom.card.md'
+  await store.writeCard(ws, rel, { lifecard: '0.1', id: 'mom', kind: 'real', name: '妈妈', world: 'reality' }, [{ title: '自述', body: '〔自述〕她做饭。' }])
+  await store.writeAvatar(ws, 'mom', png1)
+  const card = await store.readCard(ws, rel)
+  t('卡文件里没有头像数据', !JSON.stringify(card.data ?? {}).includes('iVBORw0KGgo'), 'base64 漏进卡文件了')
+  t('卡文件本身很短', String(card.text ?? '').length < 1000, String(card.text ?? '').length)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

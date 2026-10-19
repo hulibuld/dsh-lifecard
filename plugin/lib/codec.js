@@ -9,8 +9,10 @@
  *   3. 只做格式搬运，**不执行语义**：不算 {{random}}、不跑 decorator、不递归扫 lorebook。
  *      那是前端的事，我们只保证不丢。
  *
- * 零依赖：PNG 的 tEXt 读写、zip 解包都自己实现（只用 node:zlib）。
+ * 零依赖：PNG 的 tEXt / iTXt 读写、zip 解包都自己实现（只用 node:zlib）。
  */
+
+import { inflateSync } from 'node:zlib'
 
 // ── 常量 ────────────────────────────────────────────────────────────
 
@@ -66,7 +68,10 @@ export function readPngText(bytes) {
       const nul = chunk.indexOf(0)
       if (nul > 0) {
         const keyword = latin1(chunk.subarray(0, nul))
-        const value = latin1(chunk.subarray(nul + 1))
+        // tEXt 的规范编码是 latin1，但野外工具普遍直接塞 UTF-8。纯 base64 载荷是
+        // ASCII，两种解出来一样；带中文的裸 UTF-8 载荷必须按 UTF-8 解，
+        // 否则读出来是 "ä¸­æ–‡" 这种乱码——JSON 还能 parse，中文却已经坏了。
+        const value = textOf(chunk.subarray(nul + 1))
         texts[keyword] = value
       }
     } else if (type === 'iTXt') {
@@ -83,7 +88,18 @@ export function readPngText(bytes) {
         const transEnd = chunk.indexOf(0, p)
         p = transEnd < 0 ? p : transEnd + 1
         const payload = chunk.subarray(p)
-        texts[keyword] = compFlag === 1 ? '' : utf8(payload)
+        // iTXt 的压缩体是 zlib 包装的 deflate（不是 raw deflate）。以前这里把压缩体
+        // 直接当成空串，于是用压缩 iTXt 存卡的 PNG 在导入时会报
+        // 「Unexpected end of JSON input」——解不开应当如实报错，不能伪装成空。
+        if (compFlag === 1) {
+          try {
+            texts[keyword] = Buffer.from(inflateSync(payload)).toString('utf8')
+          } catch {
+            texts[keyword] = ''
+          }
+        } else {
+          texts[keyword] = utf8(payload)
+        }
       }
     }
     if (type === 'IEND') break
@@ -134,11 +150,15 @@ export function writePngText(bytes, keyword, text, dropKeywords = [keyword]) {
 function makeTextChunk(keyword, text) {
   const kw = Buffer.from(keyword, 'latin1')
   const body = Buffer.concat([kw, Buffer.from([0]), Buffer.from(text, 'latin1')])
+  const typeBuf = Buffer.from('tEXt', 'latin1')
   const head = Buffer.alloc(8)
   head.writeUInt32BE(body.length, 0)
   head.write('tEXt', 4, 'latin1')
   const crcBuf = Buffer.alloc(4)
-  crcBuf.writeUInt32BE(crc32(body), 0)
+  // PNG 规范：CRC 覆盖「chunk type + chunk data」，不含长度字段。
+  // 只算 body 会让产出的 PNG 过不了任何严格校验器（pngcheck、ST 的部分导入路径、
+  // 浏览器完整性检查都会报 BAD CRC），虽然宽松解析器仍能读出来。
+  crcBuf.writeUInt32BE(crc32(Buffer.concat([typeBuf, body])), 0)
   return Buffer.concat([head, body, crcBuf])
 }
 
@@ -178,8 +198,57 @@ function utf8(buf) {
   return Buffer.from(buf.buffer, buf.byteOffset, buf.length).toString('utf8')
 }
 
+/**
+ * 解一段 tEXt 载荷。
+ *
+ * tEXt 的规范编码是 latin1（1 字节 = 1 字符），但野外工具普遍直接塞 UTF-8：
+ * ST 自己写的是 base64（纯 ASCII，两种解一样），另一些导出器写裸 JSON，中文就在里面。
+ * 一律按 latin1 解会得到 "ä¸­æ–‡"——JSON 还能 parse，中文已经坏了，属于**静默损坏**，
+ * 比读取失败更糟。所以先按 UTF-8 试：UTF-8 是自校验编码，非法字节序列会解出 U+FFFD，
+ * 一旦出现替换字符就说明这不是 UTF-8，再回落 latin1。
+ * @param {Uint8Array} buf
+ */
+function textOf(buf) {
+  const b = Buffer.from(buf.buffer, buf.byteOffset, buf.length)
+  const asUtf8 = b.toString('utf8')
+  if (!asUtf8.includes('\uFFFD')) return asUtf8
+  return b.toString('latin1')
+}
+
 function base64DecodeUtf8(b64) {
   return Buffer.from(String(b64).trim(), 'base64').toString('utf8')
+}
+
+/**
+ * 解 PNG 文本块里的卡 JSON。
+ *
+ * 规范（与 ST 的写法）是「JSON → UTF-8 → base64」，但**野外大量工具直接把 JSON 裸写进
+ * tEXt**（tEXt 本来是 latin1 才合法，它们照样塞 UTF-8）。以前这里无条件当 base64 解，
+ * 裸写的那种会被解成一串替换字符，然后报
+ * `Unexpected token '�', "���r�k�"..." is not valid JSON`——真正的卡就在眼前却读不出来。
+ *
+ * 所以两种都试：谁先能 JSON.parse 出对象就用谁。顺序按「规范优先」，不按「猜出来的成功率」。
+ * @param {string} raw - 从 chunk 里读出来的字符串。
+ * @returns {any} 解析好的 JSON。
+ */
+function parseTextPayload(raw) {
+  const text = String(raw ?? '')
+  const trimmed = text.trim()
+  // 明显是 JSON 的，直接按原文解（省掉一次无意义的 base64 尝试，也避免误判）。
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    const json = JSON.parse(trimmed.startsWith('\uFEFF') ? trimmed.slice(1) : trimmed)
+    if (json === null || typeof json !== 'object') throw new Error('PNG 里的卡数据不是 JSON 对象')
+    return json
+  }
+  const decoded = base64DecodeUtf8(text)
+  const candidate = decoded.trim()
+  if (candidate.startsWith('{') || candidate.startsWith('[')) {
+    const json = JSON.parse(candidate.startsWith('\uFEFF') ? candidate.slice(1) : candidate)
+    if (json === null || typeof json !== 'object') throw new Error('PNG 里的卡数据不是 JSON 对象')
+    return json
+  }
+  // 两条路都不像 JSON：按规范那条报错，错误信息指向真正的毛病。
+  throw new Error('PNG 的文本块里不是卡 JSON（既不是 base64 编码的 JSON，也不是裸 JSON）')
 }
 
 function utf8ToBase64(s) {
@@ -354,12 +423,6 @@ export function encodeCardJson(card, asV3 = false) {
       })
     }
   }
-  // 顶层未知键
-  for (const [key, value] of Object.entries(card.preserved ?? {})) {
-    if (!key.startsWith('top.')) continue
-    data[key.slice(4)] = value
-  }
-
   // V2 投影最后剪一次：此时 data 已经合并完 preserved，删晚了才有效。
   if (!asV3) {
     for (const key of V3_KNOWN) delete data[key]
@@ -368,6 +431,17 @@ export function encodeCardJson(card, asV3 = false) {
     spec: asV3 ? 'chara_card_v3' : 'chara_card_v2',
     spec_version: asV3 ? '3.0' : '2.0',
     data,
+  }
+  // 顶层未知键：decodeCardJson 记成 `top.<key>`，必须写回**顶层**。
+  // 原先这里写的是 `data[key.slice(4)] = value`，等于把顶层字段降级塞进 data——
+  // 导出后顶层那些 ST/第三方工具认识的扩展键消失，data 里反倒多出几个来历不明的键。
+  // spec / spec_version / data 由本函数自己决定，不允许被 preserved 覆盖。
+  for (const [key, value] of Object.entries(card.preserved ?? {})) {
+    if (!key.startsWith('top.')) continue
+    const name = key.slice(4)
+    if (name === '' || name === 'data' || name === 'spec' || name === 'spec_version') continue
+    if (name in out) continue
+    out[name] = value
   }
   return out
 }
@@ -385,13 +459,19 @@ export async function extractCard(bytes, fileName = '') {
     const { texts, ok, error } = readPngText(bytes)
     if (!ok) throw new Error(error ?? 'PNG 读取失败')
     // ccv3 优先（与 ST 一致）
+    let firstError = null
     for (const key of ['ccv3', 'chara']) {
       const found = Object.keys(texts).find((k) => k.toLowerCase() === key)
-      if (found !== undefined) {
-        const text = base64DecodeUtf8(texts[found])
-        return { json: JSON.parse(text), kind: detectJsonKind(JSON.parse(text)), source: `png:${key}` }
+      if (found === undefined) continue
+      try {
+        const json = parseTextPayload(texts[found])
+        return { json, kind: detectJsonKind(json), source: `png:${key}` }
+      } catch (error) {
+        // ccv3 坏了还有 chara 可退——两份本来就该同源，这里正好是一次自救机会。
+        firstError = firstError ?? error
       }
     }
+    if (firstError !== null) throw firstError
     throw new Error('这张 PNG 里没有人物卡数据（既无 ccv3 也无 chara 块）')
   }
   // 2) zip / CHARX
@@ -640,7 +720,7 @@ export function compareChunks(png) {
   const read = (key) => {
     if (lower[key] === undefined) return null
     try {
-      return JSON.parse(base64DecodeUtf8(lower[key]))
+      return parseTextPayload(lower[key])
     } catch {
       return { __parseError: true }
     }

@@ -94,6 +94,77 @@ function guard(handler) {
   }
 }
 
+/**
+ * 把界面传来的相对路径钉在工作区内。
+ *
+ * 以前 card.get / card.save / card.delete / export.* 直接拿 `body.path` 去
+ * `path.join(root, rel)`，于是 `../别的目录/x.card.md` 能读到工作区外的文件，
+ * `card.save` 甚至能凭空在工作区外落一个文件——工作区是用户挑的一个文件夹，
+ * 卡的路径本来就该在它里面。越界一律当成路径错误，不做「修正」。
+ *
+ * @param {string} ws - 工作区绝对路径。
+ * @param {unknown} rel - 请求里给的相对路径。
+ * @returns {{ ok: true, rel: string } | { ok: false, error: string }}
+ */
+function insideWorkspace(ws, rel) {
+  const raw = String(rel ?? '')
+  if (raw.trim() === '') return { ok: false, error: '路径不合法' }
+  // 绝对路径直接拒绝（Windows 的 X:\ 也算，path.isAbsolute 认它）。
+  if (path.isAbsolute(raw)) return { ok: false, error: '路径不合法（不能用绝对路径）' }
+  const base = path.resolve(ws)
+  const abs = path.resolve(base, raw)
+  // 判「相等或以 base + 分隔符开头」，不能用裸 startsWith(base)：
+  // /tmp/ws-evil 会被 /tmp/ws 的前缀匹配放过（HANDOFF 坑 #6 的同一个形状）。
+  if (abs !== base && !abs.startsWith(base + path.sep)) {
+    return { ok: false, error: '路径不合法（跑出了工作区）' }
+  }
+  return { ok: true, rel: path.relative(base, abs).split(path.sep).join('/') }
+}
+
+/**
+ * 导出前的硬门禁（SPEC §6）。返回 null 表示放行，否则返回错误文案。
+ *
+ * 只拦确定无疑的四条：
+ *   1. `lens` 永不可导出；
+ *   2. `consent.basis: fictional` 不能用在 `kind: real / self` 上；
+ *   3. `basis: family-agreed` 必须有 `recorded_at`，否则导出器拒绝；
+ *   4. `kind: real` 且 `birth_year` 未满 18 岁 → 禁止导出 PNG。
+ *
+ * 刻意**不拦**「real 完全没填 consent」：SPEC §6 的表格里 real 的「本地保存」一栏是
+ * 「不需要」，而本插件的导出产物只落回用户自己的磁盘。把这条做成硬门禁会让
+ * 一张还没填同意状态的卡连本地备份都导不出来，而它恰恰是最需要先备份的时候。
+ * `format` 用来区分：只有 `png` 受未成年人那条约束（PNG 最容易被二次转发）。
+ *
+ * @param {any} data - 卡数据。
+ * @param {'png'|'json'} format
+ * @returns {string|null}
+ */
+function exportBlockedBy(data, format) {
+  const kind = String(data?.kind ?? '')
+  if (kind === 'lens') {
+    return 'lens 卡是永不可导出的偏好透镜（SPEC §6）——它描述的是「你怎么看」，不是一个人。'
+  }
+  const consent = data?.consent
+  if (consent !== null && typeof consent === 'object') {
+    if (String(consent.basis) === 'fictional' && (kind === 'real' || kind === 'self')) {
+      return `kind 是 ${kind} 的卡不能用 consent.basis: fictional 来绕过同意（SPEC §6）——要么去拿到同意，要么把 kind 改成 fictional。`
+    }
+    if (String(consent.basis) === 'family-agreed' && (consent.recorded_at === undefined || String(consent.recorded_at).trim() === '')) {
+      return 'consent.basis 是 family-agreed 时必须填 recorded_at，否则导出器拒绝（SPEC §6）。'
+    }
+  }
+  if (format === 'png' && kind === 'real') {
+    const by = data?.birth_year
+    if (typeof by === 'number' && by > 1900) {
+      const age = new Date().getFullYear() - by
+      if (age < 18) {
+        return `这张卡的对象未满 18 岁（birth_year: ${by}），按 SPEC §6 禁止导出 PNG——它是最容易被随手转发的格式。要留档请用「导出 JSON」。`
+      }
+    }
+  }
+  return null
+}
+
 // ── 模型调用 ──────────────────────────────────────────────────────
 
 /**
@@ -504,7 +575,9 @@ function buildApi(ctx, workspace, config) {
       if (!card.ok) return card
       const validation = core.validateCard(card.data)
       const cov = core.coverage(card.data, card.sections)
-      return { ok: true, path: rel, data: card.data, sections: card.sections, text: card.text, validation, coverage: cov }
+      // 头像单独取：存在 assets/ 里，不进卡文件（卡文件要能当纯文本 git diff）
+      const avatar = await store.readAvatar(ws, card.data?.id)
+      return { ok: true, path: rel, data: card.data, sections: card.sections, text: card.text, validation, coverage: cov, avatar }
     },
 
     /** 存一张卡（新建或编辑）。 */
@@ -652,6 +725,42 @@ function buildApi(ctx, workspace, config) {
     },
 
     /** 导出成 PNG（双 chunk 同源）。 */
+    /** 设头像。body.base64 应当是已经裁成 2:3 的 PNG。 */
+    'avatar.set': async (body) => {
+      const ws = await root(body)
+      const rel = String(body?.path ?? '')
+      const card = await store.readCard(ws, rel)
+      if (!card.ok) return card
+      const saved = await store.writeAvatar(ws, card.data?.id, body?.base64)
+      if (saved.ok !== true) return saved
+      return { ok: true, path: rel, avatar: saved.path, bytes: saved.bytes }
+    },
+
+    /** 去头像，回到首字方块。 */
+    'avatar.remove': async (body) => {
+      const ws = await root(body)
+      const rel = String(body?.path ?? '')
+      const card = await store.readCard(ws, rel)
+      if (!card.ok) return card
+      return store.removeAvatar(ws, card.data?.id)
+    },
+
+    /** 一次取回所有头像，供列表页用（一张卡一次请求的话列表会很慢）。 */
+    'avatar.list': async (body) => {
+      const ws = await root(body)
+      const all = await store.listAll(ws)
+      const out = {}
+      for (const c of all.cards) {
+        const b64 = await store.readAvatar(ws, c.id)
+        if (b64 !== null) out[c.id] = b64
+      }
+      for (const w of all.worlds) {
+        const b64 = await store.readAvatar(ws, w.id)
+        if (b64 !== null) out[w.id] = b64
+      }
+      return { ok: true, avatars: out }
+    },
+
     'export.card': async (body) => {
       const ws = await root(body)
       const rel = String(body?.path ?? '')

@@ -424,6 +424,64 @@ export async function readMaterials(root) {
   return out
 }
 
+// ── 头像 ──────────────────────────────────────────────────────────
+
+/** 头像存哪儿：`assets/<卡 id>.png`。用 id 不用名字，改名不会丢图。 */
+export function avatarRelPath(cardId) {
+  return path.posix.join('assets', `${core.safeId(cardId)}.png`)
+}
+
+const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+
+/**
+ * 存一张头像。传进来的应当是已经裁好的 PNG base64。
+ *
+ * 校验三层，任何一层不过都不写盘：
+ *   ① base64 解不开 → 传的东西本身不完整
+ *   ② 不是 PNG 头  → 前端裁剪本该输出 PNG，不是的话说明链路错了
+ *   ③ 超过 8MB     → 头像不该这么大，大概率是没裁的原图
+ *
+ * @returns {Promise<{ok: boolean, path?: string, bytes?: number, error?: string}>}
+ */
+export async function writeAvatar(root, cardId, base64) {
+  const id = String(cardId ?? '').trim()
+  if (id === '') return { ok: false, error: '这张卡还没有编号，先存一次再来设头像' }
+  let buf
+  try {
+    buf = Buffer.from(String(base64 ?? ''), 'base64')
+  } catch {
+    return { ok: false, error: '图片数据读不出来，请重新选一次' }
+  }
+  if (buf.length === 0) return { ok: false, error: '图片是空的，请重新选一次' }
+  if (!buf.subarray(0, 8).equals(PNG_SIG)) return { ok: false, error: '只认 PNG 图片，请换一张或重新截一次' }
+  if (buf.length > 8 * 1024 * 1024) return { ok: false, error: `图片有 ${(buf.length / 1048576).toFixed(1)}MB，太大了。头像不需要这么大，请重新截一次` }
+  const rel = avatarRelPath(id)
+  const abs = path.join(root, rel)
+  await fs.mkdir(path.dirname(abs), { recursive: true })
+  await fs.writeFile(abs, buf)
+  return { ok: true, path: rel, bytes: buf.length }
+}
+
+/** 读一张头像，返回 base64；没有就返回 null（界面回落成首字方块）。 */
+export async function readAvatar(root, cardId) {
+  const id = String(cardId ?? '').trim()
+  if (id === '') return null
+  try {
+    const buf = await fs.readFile(path.join(root, avatarRelPath(id)))
+    return buf.toString('base64')
+  } catch {
+    return null
+  }
+}
+
+/** 删头像。删不存在的文件不算错——用户点了两次不该看到红字。 */
+export async function removeAvatar(root, cardId) {
+  const id = String(cardId ?? '').trim()
+  if (id === '') return { ok: true }
+  await fs.rm(path.join(root, avatarRelPath(id)), { force: true })
+  return { ok: true }
+}
+
 // ── 提案 ──────────────────────────────────────────────────────────
 
 /**
@@ -812,6 +870,10 @@ export default {
   listAll,
   appendMaterial,
   readMaterials,
+  avatarRelPath,
+  writeAvatar,
+  readAvatar,
+  removeAvatar,
   saveProposal,
   renderProposalMarkdown,
   readProposal,

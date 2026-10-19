@@ -358,6 +358,26 @@ const CSS = `
   background: var(--lc-accent-soft); color: var(--lc-accent);
 }
 .lc-avatar.big { width: 46px; height: 46px; border-radius: 12px; font-size: 19px; }
+.lc-avatar.has-photo { padding: 0; overflow: hidden; background: var(--lc-line); }
+.lc-avatar.has-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* 2:3 裁剪 */
+.lc-crop-wrap { position: relative; width: 180px; margin: 0 auto; }
+.lc-crop-frame {
+  position: relative; width: 180px; height: 270px; overflow: hidden;
+  border-radius: 10px; background: #222; cursor: grab; touch-action: none;
+  border: 1px solid var(--lc-line-strong);
+}
+.lc-crop-frame:active { cursor: grabbing; }
+.lc-crop-frame img { position: absolute; user-select: none; pointer-events: none; }
+.lc-crop-frame .grid { position: absolute; inset: 0; pointer-events: none;
+  background:
+    linear-gradient(to right, transparent 33.2%, rgba(255,255,255,.28) 33.3%, rgba(255,255,255,.28) 33.6%, transparent 33.7%),
+    linear-gradient(to right, transparent 66.2%, rgba(255,255,255,.28) 66.3%, rgba(255,255,255,.28) 66.6%, transparent 66.7%),
+    linear-gradient(to bottom, transparent 33.2%, rgba(255,255,255,.28) 33.3%, rgba(255,255,255,.28) 33.6%, transparent 33.7%),
+    linear-gradient(to bottom, transparent 66.2%, rgba(255,255,255,.28) 66.3%, rgba(255,255,255,.28) 66.6%, transparent 66.7%);
+}
+.lc-crop-hint { text-align: center; color: var(--lc-muted); font-size: 11.5px; margin-top: 6px; }
 .lc-avatar.real { background: var(--lc-doctor-soft); color: var(--lc-doctor); }
 .lc-avatar.fictional { background: var(--lc-interview-soft); color: var(--lc-interview); }
 .lc-avatar.world { background: var(--lc-analyze-soft); color: var(--lc-analyze); }
@@ -507,9 +527,14 @@ function Spinner() {
   return h('span', { className: 'lc-spin', 'aria-label': '处理中' })
 }
 
-function Avatar({ name, kind, big }) {
+function Avatar({ name, kind, big, photo }) {
   const initial = String(name ?? '?').trim().slice(0, 1) || '?'
-  const cls = ['lc-avatar', big ? 'big' : '', kind === 'real' ? 'real' : kind === 'fictional' || kind === 'hybrid' ? 'fictional' : kind === 'world' ? 'world' : ''].filter(Boolean).join(' ')
+  const tone = kind === 'real' ? 'real' : kind === 'fictional' || kind === 'hybrid' ? 'fictional' : kind === 'world' ? 'world' : ''
+  // 有照片就显示照片。没照片时回落到首字方块——空着比一个灰色小人更像坏了。
+  const cls = ['lc-avatar', big ? 'big' : '', tone, typeof photo === 'string' && photo !== '' ? 'has-photo' : ''].filter(Boolean).join(' ')
+  if (typeof photo === 'string' && photo !== '') {
+    return h('div', { className: cls }, h('img', { src: `data:image/png;base64,${photo}`, alt: String(name ?? '') }))
+  }
   return h('div', { className: cls }, initial)
 }
 
@@ -1009,7 +1034,7 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
 
   if (editing) {
     return h(CardForm, {
-      card,
+      card: { ...card, avatar: card?.avatar ?? null },
       onCancel: () => setEditing(false),
       onSaved: async () => { setEditing(false); await onRefresh(); flash('存好了') },
     })
@@ -1026,7 +1051,7 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
       : null,
 
     h('div', { className: 'lc-row' },
-      h(Avatar, { name: data.name, kind: data.kind, big: true }),
+      h(Avatar, { name: data.name, kind: data.kind, big: true, photo: card?.avatar ?? null }),
       h('div', { className: 'lc-grow' },
         h('div', { style: { fontWeight: 650, fontSize: 15 } }, data.name ?? '(还没起名字)'),
         h('div', { className: 'lc-meta' }, [KIND_LABEL[data.kind] ?? data.kind, data.relation, data.address].filter(Boolean).join(' · ')),
@@ -1177,9 +1202,175 @@ function renderFacts(data) {
  * 旧版这里是一个 JSON 文本框——对不懂技术的人来说等于「没做」。
  * 现在每一个字段都有自己的输入控件，标签用中文，解释一句话讲清该写什么。
  */
+// ── 头像：选图 + 拖拽居中 + 裁成竖图 ──────────────────────────────
+
+/** 读文件成 data URL（可以直接塞进 <img src>，也能拿去画布）。 */
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result ?? ''))
+    reader.onerror = () => reject(reader.error ?? new Error('读文件失败'))
+    reader.readAsDataURL(file)
+  })
+}
+
+/** 等图片解码完。浏览器不会给出同步的宽高，只能等。 */
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = () => reject(new Error('这张图片打不开，可能不是图片文件'))
+    img.src = src
+  })
+}
+
+const CROP_W = 180
+const CROP_H = 270
+const OUT_W = 300
+const OUT_H = 450
+
+/**
+ * 头像选择器。
+ *
+ * 分两步，是因为窗口里的图必须裁成 2:3 才好看；不裁的话头像框里
+ * 要么被拉扁要么只露出一只眼睛。
+ *   ① 选图 → 在框里拖动、缩放，框里看到什么就是最后要什么
+ *   ② 按「用这张」→ 按框里的取景画成 300×450 的图，交给上层
+ *
+ * 没选图时显示当前头像和一个「换一张」，不显示空画布。
+ */
+function AvatarPicker({ photo, name, onChange }) {
+  const [src, setSrc] = useState(null)
+  const [natural, setNatural] = useState({ w: 0, h: 0 })
+  const [zoom, setZoom] = useState(1)
+  const [off, setOff] = useState({ x: 0, y: 0 })
+  const [err, setErr] = useState(null)
+  const dragRef = useRef(null)
+  const fileRef = useRef(null)
+
+  const pick = async (file) => {
+    if (file === undefined || file === null) return
+    setErr(null)
+    try {
+      const dataUrl = await readFileAsDataUrl(file)
+      const img = await loadImage(dataUrl)
+      setSrc(dataUrl)
+      setNatural({ w: img.naturalWidth || img.width, h: img.naturalHeight || img.height })
+      setZoom(1)
+      setOff({ x: 0, y: 0 })
+    } catch (e) { setErr(humanizeError(e)) }
+  }
+
+  // 显示用的几何：先把图放大到刚好盖住框，再乘用户给的倍数
+  const cover = natural.w > 0 && natural.h > 0
+    ? Math.max(CROP_W / natural.w, CROP_H / natural.h)
+    : 1
+  const scale = cover * zoom
+  const dw = natural.w * scale
+  const dh = natural.h * scale
+  const limitX = Math.max(0, dw / 2 - CROP_W / 2)
+  const limitY = Math.max(0, dh / 2 - CROP_H / 2)
+  const ox = Math.max(-limitX, Math.min(limitX, off.x))
+  const oy = Math.max(-limitY, Math.min(limitY, off.y))
+  const left = CROP_W / 2 - dw / 2 + ox
+  const top = CROP_H / 2 - dh / 2 + oy
+
+  const onDown = (e) => {
+    if (src === null) return
+    dragRef.current = { x: e.clientX, y: e.clientY, ox, oy }
+  }
+  const onMove = (e) => {
+    const d = dragRef.current
+    if (d === null || d === undefined) return
+    setOff({
+      x: Math.max(-limitX, Math.min(limitX, d.ox + (e.clientX - d.x))),
+      y: Math.max(-limitY, Math.min(limitY, d.oy + (e.clientY - d.y))),
+    })
+  }
+  const onUp = () => { dragRef.current = null }
+
+  const commit = async () => {
+    if (src === null) return
+    setErr(null)
+    try {
+      const img = await loadImage(src)
+      const canvas = document.createElement('canvas')
+      canvas.width = OUT_W
+      canvas.height = OUT_H
+      const ctx = canvas.getContext('2d')
+      if (ctx === null) { setErr('这个浏览器不支持裁剪，请换一个浏览器试试'); return }
+      // 框里的取景换算回原图的像素坐标，避免先缩再放导致糊
+      const sx = -left / scale
+      const sy = -top / scale
+      const sw = CROP_W / scale
+      const sh = CROP_H / scale
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, OUT_W, OUT_H)
+      const png = canvas.toDataURL('image/png')
+      const comma = png.indexOf(',')
+      onChange(comma < 0 ? png : png.slice(comma + 1))
+      setSrc(null)
+    } catch (e) { setErr(humanizeError(e)) }
+  }
+
+  return h('div', { className: 'lc-stack' },
+    err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
+
+    src === null
+      ? h('div', { className: 'lc-row' },
+          h(Avatar, { name, kind: undefined, big: true, photo }),
+          h('div', { className: 'lc-grow' },
+            h('div', { className: 'lc-meta' }, photo === null || photo === undefined
+              ? '还没有头像。设一张，列表里一眼就能认出来。'
+              : '已经有头像了。换一张或者去掉都行。'),
+            h('div', { className: 'lc-row', style: { marginTop: 6 } },
+              h(Btn, { size: 'sm', icon: 'pencil', onClick: () => { if (fileRef.current !== null && fileRef.current !== undefined) fileRef.current.click() } }, photo === null || photo === undefined ? '选一张图' : '换一张'),
+              photo === null || photo === undefined ? null : h(Btn, { size: 'sm', icon: 'warning', onClick: () => onChange(null) }, '去掉'),
+            ),
+          ),
+        )
+      : h('div', null,
+          h('div', { className: 'lc-crop-wrap' },
+            h('div', {
+              className: 'lc-crop-frame',
+              onPointerDown: onDown,
+              onPointerMove: onMove,
+              onPointerUp: onUp,
+              onPointerLeave: onUp,
+            },
+              h('img', {
+                src,
+                style: { left: `${left}px`, top: `${top}px`, width: `${dw}px`, height: `${dh}px` },
+                draggable: false,
+              }),
+              h('div', { className: 'grid' }),
+            ),
+            h('div', { className: 'lc-crop-hint' }, '拖动图片调整位置，下面滑块缩放'),
+          ),
+          h('input', {
+            type: 'range', min: 1, max: 3, step: 0.02, value: zoom,
+            className: 'lc-input', style: { padding: 0 },
+            onChange: (e) => setZoom(Number(e.target.value)),
+          }),
+          h('div', { className: 'lc-row' },
+            h(Btn, { tone: 'primary', icon: 'check', onClick: commit }, '用这张'),
+            h(Btn, { size: 'sm', onClick: () => { setSrc(null); setErr(null) } }, '取消'),
+          ),
+        ),
+
+    h('input', {
+      ref: fileRef, type: 'file', accept: 'image/*', style: { display: 'none' },
+      onChange: (e) => { pick(e.target.files?.[0]); e.target.value = '' },
+    }),
+  )
+}
+
 function CardForm({ card, onCancel, onSaved }) {
   const original = card?.data ?? {}
   const [data, setData] = useState(() => cloneData(original))
+  // 头像跟卡分开存（assets/），但编辑时要一起看，所以这里挂一份临时副本。
+  // 用 undefined 表示「没动过」，null 表示「用户要去掉」。
+  const [avatar, setAvatar] = useState(card?.avatar ?? null)
+  const [avatarTouched, setAvatarTouched] = useState(false)
   const [sections, setSections] = useState(() => (card?.sections ?? []).map((s) => ({ ...s })))
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
@@ -1220,6 +1411,13 @@ function CardForm({ card, onCancel, onSaved }) {
       }
       const r = await call('card.save', { path: card.path, data: payload, sections: clean })
       if (r.ok !== true) { setErr(r.error ?? '没存上'); return }
+      // 头像要在卡存好之后再写：新卡这时才拿到稳定 id
+      if (avatarTouched === true) {
+        const a = avatar === null || avatar === undefined
+          ? await call('avatar.remove', { path: card.path })
+          : await call('avatar.set', { path: card.path, base64: avatar })
+        if (a.ok !== true) { setErr(a.error ?? '卡存好了，但头像没存上'); return }
+      }
       await onSaved()
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
   }
@@ -1237,6 +1435,13 @@ function CardForm({ card, onCancel, onSaved }) {
 
     h('div', { className: 'lc-fset' },
       h('div', { className: 'lc-fgroup' }, '这个人'),
+      h('div', { className: 'lc-fgroup' }, '头像'),
+      h(AvatarPicker, {
+        photo: avatar,
+        name: data.name,
+        onChange: (v) => { setAvatar(v); setAvatarTouched(true) },
+      }),
+
       h(Field, { label: '叫什么' },
         h('input', { className: 'lc-input', value: String(data.name ?? ''), onChange: (e) => set('name', e.target.value), placeholder: '妈妈 / 老张 / 塞拉菲娜', spellCheck: false }),
       ),
