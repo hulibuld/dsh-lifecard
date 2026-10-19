@@ -34,6 +34,15 @@ const SKELETON = [
 
 const CONFIG_NAME = 'lifecard.config.json'
 
+/**
+ * 提案不许改的结构字段。
+ *
+ * `id`（SPEC §2 全局唯一短标识，卡文件路径/关系端点/头像都靠它）和
+ * `lifecard`（恒为 "0.1"）一旦被提案改写，卡会从列表和路径上消失。
+ * 这不是「对一个人的判断」，所以不该走提案这条路。
+ */
+const RESERVED_FIELDS = new Set(['id', 'lifecard'])
+
 /** 默认配置。 */
 export function defaultConfig() {
   return {
@@ -96,6 +105,52 @@ export async function writeConfig(root, patch) {
   return next
 }
 
+/**
+ * 读「想要什么样的人」。
+ *
+ * 为什么存在 config 里而不是卡里：它是**你**的意图，不是那个人的事实。
+ * 写进卡文件会被当成字段导出给别的工具，而别的工具分不清哪些是材料里
+ * 写着的、哪些只是你希望它是这样。
+ *
+ * @returns {Promise<{idea: string, avoid: string[], want: string[], updated_at?: string}|null>}
+ */
+export async function readConcept(root) {
+  const config = await readConfig(root)
+  const raw = config?.concept
+  if (raw === null || typeof raw !== 'object') return null
+  const idea = typeof raw.idea === 'string' ? raw.idea.trim() : ''
+  const want = Array.isArray(raw.want) ? raw.want.map((s) => String(s).trim()).filter((s) => s !== '') : []
+  const avoid = Array.isArray(raw.avoid) ? raw.avoid.map((s) => String(s).trim()).filter((s) => s !== '') : []
+  if (idea === '' && want.length === 0 && avoid.length === 0) return null
+  return {
+    idea,
+    want,
+    avoid,
+    ...(typeof raw.updated_at === 'string' ? { updated_at: raw.updated_at } : {}),
+  }
+}
+
+/**
+ * 写「想要什么样的人」。全空等于清除。
+ * @param {{idea?: string, want?: string[], avoid?: string[]}|null} concept
+ */
+export async function writeConcept(root, concept) {
+  const clean = (list) => (Array.isArray(list) ? list.map((s) => String(s).trim()).filter((s) => s !== '') : [])
+  const idea = typeof concept?.idea === 'string' ? concept.idea.trim() : ''
+  const want = clean(concept?.want)
+  const avoid = clean(concept?.avoid)
+  if (idea === '' && want.length === 0 && avoid.length === 0) {
+    const current = await readConfig(root)
+    const next = { ...current }
+    delete next.concept
+    await fs.writeFile(path.join(root, CONFIG_NAME), JSON.stringify(next, null, 2) + '\n', 'utf8')
+    return { ok: true, concept: null }
+  }
+  const value = { idea, want, avoid, updated_at: new Date().toISOString() }
+  await writeConfig(root, { concept: value })
+  return { ok: true, concept: value }
+}
+
 // ── 墓碑 ──────────────────────────────────────────────────────────
 
 /**
@@ -130,16 +185,44 @@ export async function appendRedaction(root, entry) {
   return line
 }
 
-/** 某个文件路径 + 内容是否命中墓碑。 */
+/**
+ * 某个文件路径 + 内容是否命中墓碑。
+ *
+ * 一条墓碑至少要有一个**可比较的键**（path 或 sha256）才算数。
+ * 之前没有这个下限：只写了 anchor 的残条会让三个 continue 全不触发，
+ * 于是对任何文件都返回命中——`redactions.jsonl` 里手抖写进一条
+ * `{anchor:"…", reason:"…"}`，全库的卡都会变成「已被撤回」。
+ * anchor 只能当附加条件，不能单独承担撤回。
+ */
 function hitsRedaction(redactions, relPath, content) {
   const hash = content === undefined ? undefined : sha256(content)
   for (const r of redactions) {
-    if (r.path !== undefined && relPath !== undefined && r.path !== relPath) continue
-    if (r.sha256 !== undefined && hash !== undefined && r.sha256 !== hash) continue
-    if (r.sha256 !== undefined && hash === undefined) continue
+    const hasPath = typeof r.path === 'string' && r.path !== ''
+    const hasHash = typeof r.sha256 === 'string' && r.sha256 !== ''
+    // 两个键都没有：这条墓碑说不出撤回的是什么，不能命中任何东西。
+    if (!hasPath && !hasHash) continue
+    if (hasPath && relPath !== undefined && r.path !== relPath) continue
+    if (hasHash && hash !== undefined && r.sha256 !== hash) continue
+    if (hasHash && hash === undefined) continue
     return r
   }
   return undefined
+}
+
+/**
+ * 把工作区相对路径解析成绝对路径，并保证它没跑到工作区外面。
+ *
+ * 卡 id、文件名都可能来自外部（模型、导入的 JSON），
+ * `path.join(root, '../x')` 会安静地写到工作区外。
+ * 越界返回 `{ok:false}` 而不抛异常——上层路由是按返回值处理的。
+ */
+function resolveIn(root, rel) {
+  const base = path.resolve(root)
+  const abs = path.resolve(base, String(rel ?? ''))
+  if (abs !== base && !abs.startsWith(base + path.sep)) {
+    return { ok: false, error: '路径在工作区外面，拒绝访问' }
+  }
+  return { ok: true, abs }
 }
 
 export function sha256(text) {
@@ -163,7 +246,9 @@ export function cardRelPath(id, world) {
  * @returns {Promise<{ok: boolean, path?: string, text?: string, data?: object, sections?: object[], error?: string}>}
  */
 export async function readCard(root, relPath) {
-  const abs = path.join(root, relPath)
+  const at = resolveIn(root, relPath)
+  if (!at.ok) return { ok: false, path: relPath, error: at.error }
+  const abs = at.abs
   let text
   try {
     text = await fs.readFile(abs, 'utf8')
@@ -204,7 +289,9 @@ export async function writeCard(root, relPath, data, sections, options = {}) {
   if (!validation.ok && options.force !== true) {
     return { ok: false, error: '校验未通过', validation }
   }
-  const abs = path.join(root, relPath)
+  const at = resolveIn(root, relPath)
+  if (!at.ok) return { ok: false, path: relPath, error: at.error }
+  const abs = at.abs
   await fs.mkdir(path.dirname(abs), { recursive: true })
   // 快照：旧内容存全文（快照是审计依据，不能只存 diff）
   try {
@@ -388,6 +475,13 @@ function isUnder(relDir, top) {
 
 /**
  * 追加一条材料。材料只追加、不改写：它是原话的存档，所有断言都要能追回这里。
+ *
+ * 返回的 `sha256` 是**追加后的全文** hash，不是本次片段。墓碑按全文比对，
+ * 拿片段 hash 去写墓碑永远匹配不上，撤回会静默失效。
+ * 注意：早期版本返回的是片段 hash，已经写进 `redactions.jsonl` 的旧记录
+ * 与现在的全文 hash 对不上，那部分撤回不会命中。不做自动迁移——迁移要
+ * 重算全部历史材料的 hash，是另一个决定。
+ *
  * @param {string} root
  * @param {string} name - 文件名（不含扩展名时会补 .md）
  * @param {string} content
@@ -397,30 +491,53 @@ export async function appendMaterial(root, name, content) {
   const date = new Date().toISOString().slice(0, 10)
   const fileName = safe.startsWith(date) ? `${safe}.md` : `${date}-${safe}.md`
   const rel = path.posix.join('materials', fileName)
-  const abs = path.join(root, rel)
+  const at = resolveIn(root, rel)
+  if (!at.ok) return { ok: false, error: at.error }
+  const abs = at.abs
   await fs.mkdir(path.dirname(abs), { recursive: true })
   await fs.appendFile(abs, (content.endsWith('\n') ? content : content + '\n'), 'utf8')
-  return { ok: true, path: rel, sha256: sha256(content) }
+  const full = await fs.readFile(abs, 'utf8')
+  return { ok: true, path: rel, sha256: sha256(full) }
 }
 
-/** 读所有材料（给提案的引文校验用）。key 是相对路径。 */
+/**
+ * 读所有材料（给提案的引文校验、分析输入用）。key 是相对路径。
+ *
+ * 先过墓碑。SPEC §9.1 要求所有读取路径都过滤，分析输入也算一条——
+ * 材料被撤回后如果还能进提示词，「撤回」就只是界面上的障眼法。
+ * 子目录也要读：listAll 会递归列出子目录里的材料，这里不递归的话
+ * 「列表里看得到、分析时用不到」，两边对不上。
+ */
 export async function readMaterials(root) {
   const out = {}
-  const dir = path.join(root, 'materials')
-  let entries
-  try {
-    entries = await fs.readdir(dir, { withFileTypes: true })
-  } catch {
-    return out
-  }
-  for (const entry of entries) {
-    if (!entry.isFile() || entry.name.startsWith('.')) continue
+  const redactions = await readRedactions(root)
+  const walk = async (relDir) => {
+    let entries
     try {
-      out[`materials/${entry.name}`] = await fs.readFile(path.join(dir, entry.name), 'utf8')
+      entries = await fs.readdir(path.join(root, relDir), { withFileTypes: true })
     } catch {
-      // 读不了就跳过，不阻断其他材料
+      return
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue
+      const rel = path.posix.join(relDir.replace(/\\/g, '/'), entry.name)
+      if (entry.isDirectory()) {
+        await walk(rel)
+        continue
+      }
+      if (!entry.isFile()) continue
+      let text
+      try {
+        text = await fs.readFile(path.join(root, rel), 'utf8')
+      } catch {
+        // 读不了就跳过，不阻断其他材料
+        continue
+      }
+      if (hitsRedaction(redactions, rel, text) !== undefined) continue
+      out[rel] = text
     }
   }
+  await walk('materials')
   return out
 }
 
@@ -665,9 +782,10 @@ export async function readProposal(root, jsonRel) {
   const items = Array.isArray(record.accepted) ? record.accepted : []
   const withChecked = items.map((item, index) => {
     const key = describeValue(item) + '\u0000' + `证据：${item.evidence?.material ?? ''}${item.evidence?.line_start !== undefined ? ' L' + item.evidence.line_start : item.verified_line !== undefined ? ' L' + item.verified_line : ''}「${truncate(item.evidence?.quote, 80)}」`
-    // 指纹不完全一致时退回「按描述前缀匹配」，避免一个空格差异就让勾选失效
-    const loose = [...checked].some((c) => c.startsWith(describeValue(item)))
-    const picked = sidecar === null ? (checked.has(key) || loose) : sidecar.includes(index)
+    // 只认精确指纹。曾经这里有一层「按描述前缀匹配」的宽松回退，
+    // 结果只要有一条勾选行的描述是另一条的前缀，两条都会被判为已勾——
+    // 没勾的条目被写进卡，等于绕过了「只读 [x]」这道闸门。
+    const picked = sidecar === null ? checked.has(key) : sidecar.includes(index)
     return { ...item, index, checked: picked }
   })
   return { ok: true, mdRel, record, items: withChecked, checkedCount: withChecked.filter((i) => i.checked).length }
@@ -735,14 +853,21 @@ export async function applyProposal(root, jsonRel, options = {}) {
   return { ok: true, path: target, applied: applied.length, appliedLabels: applied, skipped: chosen.length - applied.length }
 }
 
-/** 把一条提案落到 data 或 sections 上。 */
+/**
+ * 把一条提案落到 data 或 sections 上。
+ *
+ * 保留字段不许提案改。`id` 是 SPEC §2 的全局唯一短标识，卡文件路径、
+ * 关系端点、头像都靠它；`lifecard` 恒为 "0.1"。让提案写这两个字段，
+ * 等于让一次勾选把卡从列表和路径上抹掉。
+ */
 function applyItem(data, sections, item) {
   const field = String(item?.field ?? '')
   const value = item?.value
   if (field === '') return false
+  if (RESERVED_FIELDS.has(field)) return false
 
   // 正文小节
-  const sectionNames = ['自述', '性格', '场景', '开场白', '备选开场', '对话示例', '创作者笔记', '创作者备注', '关系史', '不会说的话', '不会做的事', '外貌', '口癖', '备注']
+  const sectionNames = ['自述', '性格', '场景', '开场白', '备选开场', '对话示例', '创作者备注', '关系史', '不会说的话', '不会做的事', '外貌', '口癖', '备注']
   if (sectionNames.includes(field)) {
     const text = typeof value === 'string' ? value : describeValue(item)
     const found = sections.find((s) => s.title === field)
@@ -772,8 +897,11 @@ function applyItem(data, sections, item) {
 /** 按 id 或相对路径找卡。 */
 export async function findCardByRelOrId(root, relOrId) {
   if (relOrId.endsWith('.card.md')) {
+    // 路径来自外部时可能带 ../ 或绝对路径，先确认它没跑出工作区
+    const at = resolveIn(root, relOrId)
+    if (!at.ok) return null
     try {
-      await fs.access(path.join(root, relOrId))
+      await fs.access(at.abs)
       return relOrId
     } catch {
       return null
@@ -861,6 +989,8 @@ export default {
   openWorkspace,
   readConfig,
   writeConfig,
+  readConcept,
+  writeConcept,
   readRedactions,
   appendRedaction,
   sha256,

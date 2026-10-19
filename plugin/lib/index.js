@@ -104,19 +104,22 @@ function guard(handler) {
  *
  * @param {string} ws - 工作区绝对路径。
  * @param {unknown} rel - 请求里给的相对路径。
- * @returns {{ ok: true, rel: string } | { ok: false, error: string }}
+ * 返回的 error 是**已经能直接塞进响应**的对象（code + message），每条路由都不用
+ * 自己拼文案。文案里不出现 workspace 这类内部词——它会原样显示在界面上。
+ * @returns {{ ok: true, rel: string } | { ok: false, error: { code: string, message: string } }}
  */
 function insideWorkspace(ws, rel) {
   const raw = String(rel ?? '')
-  if (raw.trim() === '') return { ok: false, error: '路径不合法' }
+  const bad = (message) => ({ ok: false, error: { code: 'bad-path', message } })
+  if (raw.trim() === '') return bad('路径不合法：没有给出文件。')
   // 绝对路径直接拒绝（Windows 的 X:\ 也算，path.isAbsolute 认它）。
-  if (path.isAbsolute(raw)) return { ok: false, error: '路径不合法（不能用绝对路径）' }
+  if (path.isAbsolute(raw)) return bad('路径不合法：只能是这个文件夹里的相对路径。')
   const base = path.resolve(ws)
   const abs = path.resolve(base, raw)
   // 判「相等或以 base + 分隔符开头」，不能用裸 startsWith(base)：
   // /tmp/ws-evil 会被 /tmp/ws 的前缀匹配放过（HANDOFF 坑 #6 的同一个形状）。
   if (abs !== base && !abs.startsWith(base + path.sep)) {
-    return { ok: false, error: '路径不合法（跑出了工作区）' }
+    return bad('路径不合法：这个文件不在当前文件夹里。')
   }
   return { ok: true, rel: path.relative(base, abs).split(path.sep).join('/') }
 }
@@ -137,20 +140,34 @@ function insideWorkspace(ws, rel) {
  *
  * @param {any} data - 卡数据。
  * @param {'png'|'json'} format
- * @returns {string|null}
+ * lens 与 consent 那三条 PNG / JSON 都要过；只有未成年人那条按 format 区分——
+ * PNG 是随手就能转发出去的格式，JSON 是留给自己的档。
+ *
+ * @param {any} data - 卡数据。
+ * @param {'png'|'json'} format
+ * @returns {{ code: string, message: string } | null}
  */
 function exportBlockedBy(data, format) {
   const kind = String(data?.kind ?? '')
   if (kind === 'lens') {
-    return 'lens 卡是永不可导出的偏好透镜（SPEC §6）——它描述的是「你怎么看」，不是一个人。'
+    return {
+      code: 'not-exportable',
+      message: 'lens 卡是永不可导出的偏好透镜——它描述的是「你怎么看」，不是一个人。',
+    }
   }
   const consent = data?.consent
   if (consent !== null && typeof consent === 'object') {
     if (String(consent.basis) === 'fictional' && (kind === 'real' || kind === 'self')) {
-      return `kind 是 ${kind} 的卡不能用 consent.basis: fictional 来绕过同意（SPEC §6）——要么去拿到同意，要么把 kind 改成 fictional。`
+      return {
+        code: 'consent-required',
+        message: 'kind 是 ' + String(kind) + ' 的卡不能用 consent.basis: fictional 来绕过同意——要么去拿到同意，要么把 kind 改成 fictional。',
+      }
     }
     if (String(consent.basis) === 'family-agreed' && (consent.recorded_at === undefined || String(consent.recorded_at).trim() === '')) {
-      return 'consent.basis 是 family-agreed 时必须填 recorded_at，否则导出器拒绝（SPEC §6）。'
+      return {
+        code: 'consent-incomplete',
+        message: 'consent.basis 是 family-agreed 时必须填 recorded_at（家属同意的日期），否则不能导出。',
+      }
     }
   }
   if (format === 'png' && kind === 'real') {
@@ -158,7 +175,10 @@ function exportBlockedBy(data, format) {
     if (typeof by === 'number' && by > 1900) {
       const age = new Date().getFullYear() - by
       if (age < 18) {
-        return `这张卡的对象未满 18 岁（birth_year: ${by}），按 SPEC §6 禁止导出 PNG——它是最容易被随手转发的格式。要留档请用「导出 JSON」。`
+        return {
+          code: 'minor-no-png',
+          message: '这张卡的对象未满 18 岁（birth_year: ' + String(by) + '），不能导出 PNG——它是最容易被随手转发的格式。要留档请用「导出 JSON」。',
+        }
       }
     }
   }
@@ -596,9 +616,14 @@ function buildApi(ctx, workspace, config) {
       if (id === '') return { ok: false, error: '缺少 id 或 name' }
       data.id = id
       data.lifecard = core.DATA_VERSION
-      const rel = typeof body?.path === 'string' && body.path.endsWith('.card.md')
-        ? body.path
-        : store.cardRelPath(id, data.world)
+      let rel
+      if (typeof body?.path === 'string' && body.path.endsWith('.card.md')) {
+        const safe = insideWorkspace(ws, body.path)
+        if (safe.ok !== true) return { ok: false, error: safe.error }
+        rel = safe.rel
+      } else {
+        rel = store.cardRelPath(id, data.world)
+      }
       const written = await store.writeCard(ws, rel, data, Array.isArray(body?.sections) ? body.sections : [], { force: body?.force === true })
       return written
     },
@@ -606,7 +631,9 @@ function buildApi(ctx, workspace, config) {
     /** 看某张卡以前的样子（快照在每次保存时自动留，只是以前没露出来）。 */
     'card.history': async (body) => {
       const ws = await root(body)
-      const rel = String(body?.path ?? '')
+      const safe = insideWorkspace(ws, body?.path)
+      if (safe.ok !== true) return { ok: false, error: safe.error }
+      const rel = safe.rel
       if (!rel.endsWith('.card.md')) return { ok: false, error: '路径不合法' }
       return store.listSnapshots(ws, rel)
     },
@@ -614,7 +641,9 @@ function buildApi(ctx, workspace, config) {
     /** 读某一版历史原文（只用来看看和找回，不会被当成当前卡）。 */
     'card.version': async (body) => {
       const ws = await root(body)
-      const rel = String(body?.path ?? '')
+      const safe = insideWorkspace(ws, body?.path)
+      if (safe.ok !== true) return { ok: false, error: safe.error }
+      const rel = safe.rel
       if (!rel.endsWith('.card.md')) return { ok: false, error: '路径不合法' }
       return store.readSnapshot(ws, rel, body?.stamp)
     },
@@ -622,7 +651,9 @@ function buildApi(ctx, workspace, config) {
     /** 把某个历史版本恢复成当前内容。恢复前会再留一份新快照，所以这一步本身也能撤销。 */
     'card.restore': async (body) => {
       const ws = await root(body)
-      const rel = String(body?.path ?? '')
+      const safe = insideWorkspace(ws, body?.path)
+      if (safe.ok !== true) return { ok: false, error: safe.error }
+      const rel = safe.rel
       if (!rel.endsWith('.card.md')) return { ok: false, error: '路径不合法' }
       const old = await store.readSnapshot(ws, rel, body?.stamp)
       if (old.ok !== true) return old
@@ -634,7 +665,9 @@ function buildApi(ctx, workspace, config) {
     /** 删除一张卡（写墓碑，不真删文件——真删就不可审计了）。 */
     'card.delete': async (body) => {
       const ws = await root(body)
-      const rel = String(body?.path ?? '')
+      const safe = insideWorkspace(ws, body?.path)
+      if (safe.ok !== true) return { ok: false, error: safe.error }
+      const rel = safe.rel
       if (!rel.endsWith('.card.md')) return { ok: false, error: '路径不合法' }
       const card = await store.readCard(ws, rel)
       if (!card.ok) return card
@@ -735,7 +768,9 @@ function buildApi(ctx, workspace, config) {
     /** 设头像。body.base64 应当是已经裁成 2:3 的 PNG。 */
     'avatar.set': async (body) => {
       const ws = await root(body)
-      const rel = String(body?.path ?? '')
+      const safe = insideWorkspace(ws, body?.path)
+      if (safe.ok !== true) return { ok: false, error: safe.error }
+      const rel = safe.rel
       const card = await store.readCard(ws, rel)
       if (!card.ok) return card
       const saved = await store.writeAvatar(ws, card.data?.id, body?.base64)
@@ -746,7 +781,9 @@ function buildApi(ctx, workspace, config) {
     /** 去头像，回到首字方块。 */
     'avatar.remove': async (body) => {
       const ws = await root(body)
-      const rel = String(body?.path ?? '')
+      const safe = insideWorkspace(ws, body?.path)
+      if (safe.ok !== true) return { ok: false, error: safe.error }
+      const rel = safe.rel
       const card = await store.readCard(ws, rel)
       if (!card.ok) return card
       return store.removeAvatar(ws, card.data?.id)
@@ -770,9 +807,14 @@ function buildApi(ctx, workspace, config) {
 
     'export.card': async (body) => {
       const ws = await root(body)
-      const rel = String(body?.path ?? '')
+      const safe = insideWorkspace(ws, body?.path)
+      if (safe.ok !== true) return { ok: false, error: safe.error }
+      const rel = safe.rel
       const card = await store.readCard(ws, rel)
       if (!card.ok) return card
+      // SPEC §6 的导出门禁：lens 永不可导出、consent 三条、未成年人禁 PNG。
+      const blocked = exportBlockedBy(card.data, 'png')
+      if (blocked !== null) return { ok: false, error: blocked }
       // 底图：优先用导入时的原件，否则造一张 1x1 白图
       let base = null
       const rawRel = card.data?.cc?.source_file
@@ -794,9 +836,14 @@ function buildApi(ctx, workspace, config) {
     /** 导出成 JSON（CCv3）。 */
     'export.json': async (body) => {
       const ws = await root(body)
-      const rel = String(body?.path ?? '')
+      const safe = insideWorkspace(ws, body?.path)
+      if (safe.ok !== true) return { ok: false, error: safe.error }
+      const rel = safe.rel
       const card = await store.readCard(ws, rel)
       if (!card.ok) return card
+      // 与 PNG 同一道闸门，只放宽未成年人那条（JSON 是留给自己的档，不是转发格式）。
+      const blocked = exportBlockedBy(card.data, 'json')
+      if (blocked !== null) return { ok: false, error: blocked }
       const json = codec.lifeCardToCc({ data: card.data, sections: card.sections }, { asV3: true })
       return { ok: true, path: rel, json, filename: `${core.safeId(card.data?.name ?? 'card')}.json` }
     },
@@ -832,6 +879,21 @@ function buildApi(ctx, workspace, config) {
      * 流程：读材料 → 拼提示词 → 调模型 → 解析 JSON → 过引文门 → 写 proposals/。
      * 引文门不通过的条目直接丢弃，并在提案里列出来。
      */
+    /** 读「想要什么样的人」。 */
+    'concept.get': async (body) => {
+      const ws = await root(body)
+      const concept = await store.readConcept(ws)
+      return { ok: true, concept }
+    },
+
+    /** 存「想要什么样的人」。传空等于清除。 */
+    'concept.set': async (body) => {
+      const ws = await root(body)
+      const saved = await store.writeConcept(ws, body?.concept ?? null)
+      if (saved.ok !== true) return saved
+      return { ok: true, concept: saved.concept }
+    },
+
     'analyze.run': async (body) => {
       const ws = await root(body)
       const aboutId = String(body?.about ?? '')
@@ -844,11 +906,16 @@ function buildApi(ctx, workspace, config) {
         : materials
       if (Object.keys(chosen).length === 0) return { ok: false, error: '选中的材料都不存在' }
       const aboutName = String(body?.name ?? aboutId)
+      // 「想要什么样的人」可以临时覆盖工作区里存的那份（比如试一下别的口味）。
+      // 传 null 表示这次不带。不传就用存着的那份。
+      const stored = await store.readConcept(ws)
+      const concept = body?.concept === null ? null : (body?.concept !== undefined ? body.concept : stored)
       const prompt = prompts.buildAnalyzePrompt({
         aboutId,
         aboutName,
         materials: chosen,
         schemaHint: prompts.SCHEMA_HINT,
+        concept,
       })
       const model = typeof body?.model === 'string' && body.model !== '' ? body.model : (config?.defaultAnalysisModel ?? undefined)
       const system = '你是一个只做抽取、不做推断的资料整理器。你的输出会被程序做逐字引文校验，编造的内容会被丢弃。'
@@ -903,7 +970,9 @@ function buildApi(ctx, workspace, config) {
     /** 读一份提案（含勾选状态）。 */
     'proposal.get': async (body) => {
       const ws = await root(body)
-      const rel = String(body?.json ?? '')
+      const safe = insideWorkspace(ws, body?.json)
+      if (safe.ok !== true) return { ok: false, error: safe.error }
+      const rel = safe.rel
       if (!rel.endsWith('.json')) return { ok: false, error: '路径不合法' }
       const read = await store.readProposal(ws, rel)
       if (!read.ok) return read
@@ -913,7 +982,9 @@ function buildApi(ctx, workspace, config) {
     /** 采纳勾选。 */
     'proposal.apply': async (body) => {
       const ws = await root(body)
-      const rel = String(body?.json ?? '')
+      const safe = insideWorkspace(ws, body?.json)
+      if (safe.ok !== true) return { ok: false, error: safe.error }
+      const rel = safe.rel
       if (!rel.endsWith('.json') || rel.endsWith('.checked.json')) return { ok: false, error: '路径不合法' }
       // 界面传 checked（下标数组）时以它为准，先落盘再采纳——
       // 否则界面上勾的东西只活在内存里，读回 MD 会当成一条都没勾。
@@ -924,7 +995,9 @@ function buildApi(ctx, workspace, config) {
     /** 只记勾选，不采纳。界面每点一下都能立刻落盘。 */
     'proposal.check': async (body) => {
       const ws = await root(body)
-      const rel = String(body?.json ?? '')
+      const safe = insideWorkspace(ws, body?.json)
+      if (safe.ok !== true) return { ok: false, error: safe.error }
+      const rel = safe.rel
       if (!rel.endsWith('.json') || rel.endsWith('.checked.json')) return { ok: false, error: '路径不合法' }
       if (!Array.isArray(body?.checked)) return { ok: false, error: '缺少勾选内容' }
       const written = await store.writeCheckedFile(ws, rel, body.checked)
