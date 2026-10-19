@@ -19,6 +19,7 @@ import * as codec from './codec.js'
 import * as store from './store.js'
 import * as prompts from './prompts.js'
 
+import * as score from './score.js'
 export const name = 'dsh-lifecard'
 
 /** 需要宿主提供的服务。缺 webServer 就什么都不做（明确失败胜过静默半死）。 */
@@ -522,6 +523,34 @@ function buildApi(ctx, workspace, config) {
       return written
     },
 
+    /** 看某张卡以前的样子（快照在每次保存时自动留，只是以前没露出来）。 */
+    'card.history': async (body) => {
+      const ws = await root(body)
+      const rel = String(body?.path ?? '')
+      if (!rel.endsWith('.card.md')) return { ok: false, error: '路径不合法' }
+      return store.listSnapshots(ws, rel)
+    },
+
+    /** 读某一版历史原文（只用来看看和找回，不会被当成当前卡）。 */
+    'card.version': async (body) => {
+      const ws = await root(body)
+      const rel = String(body?.path ?? '')
+      if (!rel.endsWith('.card.md')) return { ok: false, error: '路径不合法' }
+      return store.readSnapshot(ws, rel, body?.stamp)
+    },
+
+    /** 把某个历史版本恢复成当前内容。恢复前会再留一份新快照，所以这一步本身也能撤销。 */
+    'card.restore': async (body) => {
+      const ws = await root(body)
+      const rel = String(body?.path ?? '')
+      if (!rel.endsWith('.card.md')) return { ok: false, error: '路径不合法' }
+      const old = await store.readSnapshot(ws, rel, body?.stamp)
+      if (old.ok !== true) return old
+      const written = await store.writeCard(ws, rel, old.data, old.sections, { force: true })
+      if (written.ok !== true) return written
+      return { ok: true, path: rel, validation: written.validation, note: '已经退回这一版。刚才那一版也还在历史里。' }
+    },
+
     /** 删除一张卡（写墓碑，不真删文件——真删就不可审计了）。 */
     'card.delete': async (body) => {
       const ws = await root(body)
@@ -803,7 +832,15 @@ function buildApi(ctx, workspace, config) {
       }
       await fs.mkdir(path.join(ws, '.lifecard'), { recursive: true }).catch(() => {})
       await fs.writeFile(path.join(ws, '.lifecard/diagnostics.json'), JSON.stringify(host, null, 2) + '\n', 'utf8').catch(() => {})
-      return { ok: true, ...summary, host }
+      // 离线打分：纯本地算，不调模型。算不出来不能把整个体检搞挂。
+      let scored = null
+      try {
+        const all = await store.listAll(ws)
+        scored = { cards: all.cards.map((c) => ({ id: c.id, name: c.name, path: c.path, score: score.scoreCard(c) })) }
+      } catch {
+        scored = null
+      }
+      return { ok: true, ...summary, host, score: scored }
     },
 
     /** 问题库（访谈用）。 */

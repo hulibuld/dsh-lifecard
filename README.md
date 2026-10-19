@@ -24,7 +24,7 @@ LifeCard 是一个本地优先的人物档案工具。它把现实里的人（�
 > **数据契约见 [`SPEC.md`](./SPEC.md)。** 那是唯一契约；本文件与策划书讲「为什么」。四份文档说法不一致时，以 SPEC 为准。
 >
 > **v0.1 已经做完并且测过**：代码在 [`plugin/`](./plugin/)，是一个 DSH 侧边栏插件。
-> 安装与使用见 [`plugin/README.md`](./plugin/README.md)。322 项测试全部通过。
+> 安装与使用见 [`plugin/README.md`](./plugin/README.md)。396 项测试全部通过。
 
 ---
 

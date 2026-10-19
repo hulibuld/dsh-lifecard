@@ -175,5 +175,53 @@ console.log('=== 9. 界面勾选：只存在界面里也必须能采纳（回归
 }
 
 await fs.rm(root, { recursive: true, force: true })
+console.log('=== 版本历史（快照列表 / 读回 / 恢复）===')
+{
+  const ws = path.join(root, 'history')
+  await fs.mkdir(ws, { recursive: true })
+  const rel = 'people/ver.card.md'
+
+  // 还没有历史时不该报错，要返回空
+  const none = await store.listSnapshots(ws, rel)
+  t('没存过时返回空数组', none.ok === true && Array.isArray(none.versions) && none.versions.length === 0, none)
+
+  // 第一版
+  await store.writeCard(ws, rel, { lifecard: '0.1', id: 'ver', kind: 'real', world: 'reality', name: '甲' }, [{ title: '自述', body: '第一版。' }])
+  // 第二版（写之前会自动给第一版留快照）
+  await store.writeCard(ws, rel, { lifecard: '0.1', id: 'ver', kind: 'real', world: 'reality', name: '甲' }, [{ title: '自述', body: '第二版。' }])
+  // 第三版
+  await store.writeCard(ws, rel, { lifecard: '0.1', id: 'ver', kind: 'real', world: 'reality', name: '甲' }, [{ title: '自述', body: '第三版。' }])
+
+  const list = await store.listSnapshots(ws, rel)
+  t('存了三次之后有两份历史', list.versions.length === 2, list.versions.map((v) => v.stamp))
+  t('历史带时间', list.versions.every((v) => typeof v.when === 'string' && !Number.isNaN(new Date(v.when).getTime())), list.versions)
+  t('历史带大小', list.versions.every((v) => v.bytes > 0), list.versions)
+  t('新的排在前面', list.versions[0].stamp > list.versions[1].stamp, list.versions.map((v) => v.stamp))
+
+  // 最新那份历史应该是「第二版」的内容（快照存的是写之前的样子）
+  const newest = await store.readSnapshot(ws, rel, list.versions[0].stamp)
+  t('读得回历史原文', newest.ok === true, newest)
+  t('最新历史是上一版内容', (newest.sections[0]?.body ?? '').includes('第二版'), newest.sections)
+  t('历史能解析成结构化数据', newest.data?.name === '甲', newest.data)
+
+  // 恢复
+  const back = await store.restoreSnapshot(ws, rel, list.versions[0].stamp)
+  t('能退回某一版', back.ok === true, back)
+  const now = await store.readCard(ws, rel)
+  t('退回后当前内容变了', (now.sections[0]?.body ?? '').includes('第二版'), now.sections)
+
+  // 恢复本身也要留下痕迹（否则「退回」这一步不可撤销）
+  const after = await store.listSnapshots(ws, rel)
+  t('恢复也留了快照', after.versions.length === 3, after.versions.length)
+
+  // 非法版本号 / 不存在
+  const badStamp = await store.readSnapshot(ws, rel, '../../etc/passwd')
+  t('版本号做了消毒（不会越权读文件）', badStamp.ok === false, badStamp)
+  const missing = await store.readSnapshot(ws, rel, 'not-exist')
+  t('不存在的版本给清楚的错', missing.ok === false && missing.error !== '', missing)
+  const noHist = await store.listSnapshots(ws, 'people/never.card.md')
+  t('没历史过的卡也返回空而不是报错', noHist.ok === true && noHist.versions.length === 0, noHist)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

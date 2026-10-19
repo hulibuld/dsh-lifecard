@@ -20,6 +20,7 @@
     "lib/codec.js",
     "lib/store.js",
     "lib/prompts.js",
+    "lib/score.js",
     "skills/**/SKILL.md",
     "cordis.patch.yml",
     "locale/*.json",

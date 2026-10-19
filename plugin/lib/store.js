@@ -179,6 +179,25 @@ export async function readCard(root, relPath) {
   return { ok: true, path: relPath, text, data: parsed.data, sections: parsed.sections, parse: parsed }
 }
 
+/**
+ * 造一个在本目录里没被占用的快照时间戳。
+ *
+ * 时间戳只精确到毫秒。程序化连续保存（AI 批量采纳、脚本、测试）
+ * 很容易在同一毫秒里写完两次，直接写文件就会把上一份快照覆盖掉——
+ * 那不是「历史」，那是悄悄丢数据。撞了就在后面加 -2、-3。
+ */
+async function freeStamp(dir, when) {
+  const base = when.toISOString().replace(/[:.]/g, '-')
+  let stamp = base
+  for (let n = 2; n < 1000; n++) {
+    const exists = await fs.access(path.join(dir, `${stamp}.md`)).then(() => true).catch(() => false)
+    if (!exists) return stamp
+    stamp = `${base}-${n}`
+  }
+  // 极端情况：同一毫秒里存了一千次。加随机尾巴，保证不覆盖。
+  return `${base}-${Math.random().toString(36).slice(2, 8)}`
+}
+
 /** 写一张卡，并在写前留一份全文快照。 */
 export async function writeCard(root, relPath, data, sections, options = {}) {
   const validation = core.validateCard(data)
@@ -190,16 +209,92 @@ export async function writeCard(root, relPath, data, sections, options = {}) {
   // 快照：旧内容存全文（快照是审计依据，不能只存 diff）
   try {
     const old = await fs.readFile(abs, 'utf8')
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
     const snapDir = path.join(root, '.lifecard/snapshots', relPath.replace(/[\\/]/g, '__'))
     await fs.mkdir(snapDir, { recursive: true })
-    await fs.writeFile(path.join(snapDir, `${stamp}.md`), old, 'utf8')
+    await fs.writeFile(path.join(snapDir, `${await freeStamp(snapDir, new Date())}.md`), old, 'utf8')
   } catch {
     // 首次写入，没有旧内容
   }
   const text = core.stringifyCard(data, sections)
   await fs.writeFile(abs, text, 'utf8')
   return { ok: true, path: relPath, text, validation }
+}
+
+/**
+ * 列出某张卡保存过的历史版本。
+ *
+ * 快照在 `writeCard` 里已经默默存了很久（存的是**写之前**的全文），
+ * 但界面上从来没露出来过——等于用户有一份撤销药却没告诉他能吃。
+ * 这里只负责「列出来」，读某一版走 readSnapshot。
+ *
+ * @returns {Promise<{ok: boolean, versions: {stamp: string, when: string, bytes: number}[]}>}
+ */
+export async function listSnapshots(root, relPath) {
+  const snapDir = path.join(root, '.lifecard/snapshots', String(relPath).replace(/[\\/]/g, '__'))
+  let entries
+  try {
+    entries = await fs.readdir(snapDir)
+  } catch {
+    return { ok: true, versions: [] }
+  }
+  const versions = []
+  for (const name of entries) {
+    if (!name.endsWith('.md')) continue
+    const stamp = name.slice(0, -3)
+    let bytes = 0
+    try {
+      bytes = (await fs.stat(path.join(snapDir, name))).size
+    } catch {
+      continue
+    }
+    // 文件名里的时间戳是 ISO 把 : 和 . 换成 - 得到的，换回来才能当日期读。
+    // 同一毫秒撞车时会带 -2、-3 后缀，解析前要切掉。
+    const bare = stamp.replace(/-(\d+)$/, '')
+    const iso = bare.replace(/-(\d{2})-(\d{2})-(\d{3})Z$/, ':$1:$2.$3Z')
+    const d = new Date(iso)
+    versions.push({
+      stamp,
+      when: Number.isNaN(d.getTime()) ? stamp : d.toISOString(),
+      bytes,
+    })
+  }
+  // 新的在前
+  versions.sort((a, b) => (a.stamp < b.stamp ? 1 : a.stamp > b.stamp ? -1 : 0))
+  return { ok: true, versions }
+}
+
+/**
+ * 读某一版历史内容（原文）。
+ *
+ * 注意不做墓碑过滤：墓碑管的是「当前这张卡还算不算数」，
+ * 历史版本是用来看/找回内容的，不是拿去用的。所以这里如实返回原文。
+ */
+export async function readSnapshot(root, relPath, stamp) {
+  const safeStamp = String(stamp ?? '').replace(/[^0-9A-Za-z._-]/g, '')
+  if (safeStamp === '') return { ok: false, error: '版本号不合法' }
+  const abs = path.join(root, '.lifecard/snapshots', String(relPath).replace(/[\\/]/g, '__'), `${safeStamp}.md`)
+  let text
+  try {
+    text = await fs.readFile(abs, 'utf8')
+  } catch {
+    return { ok: false, error: '这个版本已经不在了' }
+  }
+  const parsed = core.parseCard(text)
+  return { ok: true, stamp: safeStamp, text, data: parsed.data, sections: parsed.sections }
+}
+
+/**
+ * 把某一版历史退回成当前内容。
+ *
+ * 走的是 writeCard，所以「恢复」这个动作本身也会先给当前内容留一份快照——
+ * 用户按错了还能再退回来。这一点比「恢复」本身重要。
+ */
+export async function restoreSnapshot(root, relPath, stamp) {
+  const old = await readSnapshot(root, relPath, stamp)
+  if (old.ok !== true) return old
+  const written = await writeCard(root, relPath, old.data, old.sections, { force: true })
+  if (written.ok !== true) return written
+  return { ok: true, path: relPath, validation: written.validation, note: '已经退回这一版。刚才那一版也还在历史里。' }
 }
 
 /**

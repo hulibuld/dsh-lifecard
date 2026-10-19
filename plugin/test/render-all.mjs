@@ -163,6 +163,13 @@ const DOCTOR = {
   counts: { cards: 4, worlds: 1, relations: 2, materials: 2, redactions: 0 },
   host: { services: { llm: true } },
   issues: [{ level: 'error', path: 'cards/x.card.md', field: 'kind', message: 'kind 值不合法' }],
+  score: {
+    cards: [
+      { id: 'mama', name: '妈妈', path: 'cards/mama.card.md', score: { score: 82, grade: '可用', tokens: 620 } },
+      { id: 'lao-zhang', name: '老张', path: 'cards/lao-zhang.card.md', score: { score: 41, grade: '需要补', tokens: 90 } },
+      { id: 'sera', name: '塞拉菲娜', path: 'cards/sera.card.md', score: { score: 96, grade: '很好', tokens: 1400 } },
+    ],
+  },
 }
 
 // ── 迷你渲染器 ────────────────────────────────────────────────────
@@ -276,6 +283,15 @@ if (seen.has('CardView')) {
   }, { 0: true })
 }
 
+// CardView 的 hook 槽：0 editing / 1 busy / 2 err / 3 showExport / 4 showHistory
+if (seen.has('CardView')) {
+  renderOne('卡片详情（历史展开）', seen.get('CardView'), {
+    card: CARD_DETAIL, proposal: null, setProposal: () => {}, flash: () => {},
+    onRefresh: async () => {}, onDeleted: async () => {},
+    onInterview: () => {}, onAnalyze: () => {},
+  }, { 4: true })
+}
+
 if (seen.has('CardForm')) {
   renderOne('编辑表单（真实卡）', seen.get('CardForm'), { card: CARD_DETAIL, onCancel: () => {}, onSaved: async () => {} })
   renderOne('编辑表单（刚建的空卡）', seen.get('CardForm'), {
@@ -287,6 +303,21 @@ if (seen.has('CardForm')) {
 
 if (seen.has('ProposalPanel')) {
   renderOne('建议面板', seen.get('ProposalPanel'), { proposal: PROPOSAL, onClose: () => {}, onApplied: async () => {} })
+}
+
+if (seen.has('HistoryPanel')) {
+  const HV = [
+    { stamp: '2026-10-19T15-40-01-123Z', when: '2026-10-19T15:40:01.123Z', bytes: 820 },
+    { stamp: '2026-10-18T09-02-11-004Z', when: '2026-10-18T09:02:11.004Z', bytes: 640 },
+  ]
+  renderOne('历史（正在找）', seen.get('HistoryPanel'), { card: CARD_DETAIL, onClose: () => {}, onRestored: async () => {} })
+  renderOne('历史（有两个旧版本）', seen.get('HistoryPanel'), { card: CARD_DETAIL, onClose: () => {}, onRestored: async () => {} }, { 0: HV })
+  renderOne('历史（一条都没有）', seen.get('HistoryPanel'), { card: CARD_DETAIL, onClose: () => {}, onRestored: async () => {} }, { 0: [] })
+  renderOne('历史（正在看某一版）', seen.get('HistoryPanel'), { card: CARD_DETAIL, onClose: () => {}, onRestored: async () => {} }, {
+    0: HV,
+    3: { stamp: HV[0].stamp, data: CARD_DATA, sections: [{ title: '自述', body: '她那时候还没写这些。' }] },
+  })
+  renderOne('历史（读不出来的错误）', seen.get('HistoryPanel'), { card: CARD_DETAIL, onClose: () => {}, onRestored: async () => {} }, { 0: HV, 1: '找不到那个位置了。' })
 }
 
 if (seen.has('CompetencyEditor')) {
@@ -307,7 +338,7 @@ if (seen.has('CardRow')) {
 
 // 遍历渲染完之后再核对：所有子组件都该被访问到过。
 const missing = []
-for (const want of ['CardForm', 'ProposalPanel', 'CompetencyEditor', 'ListEditor', 'CardRow',
+for (const want of ['CardForm', 'ProposalPanel', 'HistoryPanel', 'CompetencyEditor', 'ListEditor', 'CardRow',
   'HomeView', 'CardView', 'ImportView', 'AnalyzeView', 'InterviewView', 'DoctorView',
   'NewCardView', 'SetupView', 'Field', 'Action']) {
   if (!seen.has(want)) missing.push(want)
@@ -343,6 +374,9 @@ for (const [label, word] of [
   ['人话的能力等级', '精通'],
   ['人话的状态', '还在'],
   ['覆盖度说法', '写完了多少'],
+  ['体检分数', '分 · '],
+  ['补卡提示', '还能补的卡'],
+  ['历史入口', '以前的样子'],
 ]) {
   t(`出现了 ${label}`, all.includes(word), word)
 }

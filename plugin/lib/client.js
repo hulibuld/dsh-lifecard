@@ -84,6 +84,26 @@ function humanizeError(input) {
  * core 的校验消息是写给开发者看的（`competency[红烧肉].level "expert" 不在 入门 / 熟手 …`），
  * 直接摆到界面上等于没翻译。这里按字段翻成「哪里不对」，翻不出来就退一句不带技术词的总说。
  */
+/**
+ * 粗估「这张卡读进去会占多少字」。
+ *
+ * 为什么要给用户看这个：很多人写卡时不知道自己在写什么量级，写到三千字
+ * 才发现 AI 一次读不完。给个粗估比讲「token」有用得多。
+ * 只算中文按字、英文按 4 字符 1 个单位——跟 lib/score.js 的算法保持一致。
+ */
+function roughSize(text) {
+  const s = String(text ?? '')
+  let cjk = 0, other = 0
+  for (const ch of s) {
+    const code = ch.codePointAt(0)
+    if (code >= 0x2e80 && code <= 0x9fff) cjk++
+    else if (code >= 0xf900 && code <= 0xfaff) cjk++
+    else if (code >= 0xff00 && code <= 0xffef) cjk++
+    else other++
+  }
+  return cjk + Math.ceil(other / 4)
+}
+
 function humanizeIssue(issue) {
   const field = String(issue?.field ?? '')
   const msg = String(issue?.message ?? '')
@@ -155,6 +175,7 @@ function Icon({ name, size = 16 }) {
     case 'chevron': return h('svg', common, h('path', { d: 'M9 6l6 6-6 6' }))
     case 'trash': return h('svg', common, h('path', { d: 'M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13' }))
     case 'list': return h('svg', common, h('path', { d: 'M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01' }))
+    case 'history': return h('svg', common, h('path', { d: 'M4 12a8 8 0 1 0 2.5-5.8' }), h('path', { d: 'M4 4.5V10h5.5' }), h('path', { d: 'M12 8v4.5l3 2' }))
     default: return h('svg', common, h('circle', { cx: 12, cy: 12, r: 8 }))
   }
 }
@@ -943,6 +964,7 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
   const [busy, setBusy] = useState('')
   const [err, setErr] = useState(null)
   const [showExport, setShowExport] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
 
   const data = card?.data ?? {}
   const sections = card?.sections ?? []
@@ -1056,6 +1078,7 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
     h('div', { className: 'lc-row' },
       h(Btn, { size: 'sm', icon: 'download', onClick: exportPng, disabled: busy !== '', title: '存成一个图片文件，可以直接放进酒馆' }, '导出角色卡'),
       h(Btn, { size: 'sm', tone: 'ghost', icon: 'list', onClick: () => setShowExport(!showExport) }, '其他格式'),
+      h(Btn, { size: 'sm', tone: 'ghost', icon: 'history', onClick: () => setShowHistory(!showHistory) }, '以前的样子'),
       h('div', { className: 'lc-grow' }),
       h(Btn, { size: 'sm', tone: 'danger', icon: 'trash', onClick: remove, disabled: busy !== '' }, '删掉'),
     ),
@@ -1064,6 +1087,13 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
           h(Btn, { size: 'sm', onClick: exportJson, disabled: busy !== '' }, '存成数据文件（.json）'),
           h('div', { className: 'lc-meta' }, '一般来说用不上。别人要原始数据的时候才需要。'),
         )
+      : null,
+    showHistory === true
+      ? h(HistoryPanel, {
+          card,
+          onClose: () => setShowHistory(false),
+          onRestored: async () => { setShowHistory(false); await onRefresh(); flash('退回上一版了') },
+        })
       : null,
   )
 }
@@ -1131,6 +1161,16 @@ function CardForm({ card, onCancel, onSaved }) {
   const [more, setMore] = useState(false)
 
   const set = (key, value) => setData((prev) => ({ ...prev, [key]: value }))
+
+  // 篇幅提示：不是限制，只是让人知道自己写到哪个量级了
+  const sizeTag = () => {
+    const n = roughSize(sections.map((x) => x.body).join(''))
+    if (n === 0) return { tone: 'ok', label: '还没写' }
+    if (n < 200) return { tone: 'ok', label: '简短' }
+    if (n < 800) return { tone: 'ok', label: '合适' }
+    if (n < 2000) return { tone: 'warn', label: '偏长' }
+    return { tone: 'warn', label: '很长' }
+  }
   const sec = (title) => sections.find((s) => s.title === title)?.body ?? ''
   const setSec = (title, body) => setSections((prev) => {
     const i = prev.findIndex((s) => s.title === title)
@@ -1164,7 +1204,11 @@ function CardForm({ card, onCancel, onSaved }) {
 
   return h('div', { className: 'lc-pad lc-stack' },
     err === null ? null : h(Err, { text: err }),
-    h('div', { className: 'lc-meta' }, '写多少算多少。空着的地方不会影响别的东西，以后想起来再补。'),
+    h('div', { className: 'lc-row' },
+      h('div', { className: 'lc-meta lc-grow' }, '写多少算多少。空着的地方不会影响别的东西，以后想起来再补。'),
+      h(Tag, { tone: sizeTag().tone }, sizeTag().label),
+    ),
+    h('div', { className: 'lc-meta' }, '正文现在大约 ' + roughSize(sections.map((x) => x.body).join('')) + ' 字。写得越多，AI 越像他；超过两千字之后，多出来的部分不一定读得进去。'),
 
     h('div', { className: 'lc-fset' },
       h('div', { className: 'lc-fgroup' }, '这个人'),
@@ -1303,6 +1347,104 @@ function CompetencyEditor({ items, onChange }) {
 }
 
 // ── 建议面板 ──────────────────────────────────────────────────────
+
+/** 把时间戳说成「刚才 / 3 分钟前 / 10 月 19 日 23:40」这种人话。 */
+function humanWhen(iso) {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '时间不详'
+  const diff = Date.now() - d.getTime()
+  if (diff < 0) return d.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3600_000) return Math.floor(diff / 60_000) + ' 分钟前'
+  if (diff < 86_400_000) return Math.floor(diff / 3600_000) + ' 小时前'
+  if (diff < 7 * 86_400_000) return Math.floor(diff / 86_400_000) + ' 天前'
+  return d.toLocaleString('zh-CN', { year: d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+/**
+ * 以前的样子。
+ *
+ * 每次保存都会在后台悄悄留一份全文，这里只是把它露出来。
+ * 设计上只做两件有用的事：「看一眼当时写了什么」和「退回那一版」。
+ * 不做 diff、不做分支——这个插件的用户不是程序员。
+ */
+function HistoryPanel({ card, onClose, onRestored }) {
+  const [versions, setVersions] = useState(null)
+  const [err, setErr] = useState(null)
+  const [busy, setBusy] = useState('')
+  const [preview, setPreview] = useState(null)
+  const [confirmStamp, setConfirmStamp] = useState('')
+
+  useEffect(() => {
+    let alive = true
+    call('card.history', { path: card.path })
+      .then((r) => { if (alive) { if (r.ok === true) setVersions(r.versions ?? []); else setErr(r.error ?? '读不到历史') } })
+      .catch((e) => { if (alive) setErr(humanizeError(e)) })
+    return () => { alive = false }
+  }, [card.path])
+
+  const look = async (v) => {
+    setBusy(v.stamp); setErr(null)
+    try {
+      const r = await call('card.version', { path: card.path, stamp: v.stamp })
+      if (r.ok !== true) { setErr(r.error ?? '这一版读不出来'); return }
+      setPreview({ stamp: v.stamp, data: r.data, sections: r.sections })
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  const restore = async (v) => {
+    if (confirmStamp !== v.stamp) { setConfirmStamp(v.stamp); return }
+    setBusy(v.stamp); setErr(null)
+    try {
+      const r = await call('card.restore', { path: card.path, stamp: v.stamp })
+      if (r.ok !== true) { setErr(r.error ?? '没退回去'); return }
+      await onRestored()
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  const shown = preview === null
+    ? []
+    : (preview.sections ?? []).filter((x) => String(x.body ?? '').trim() !== '')
+
+  return h('div', { className: 'lc-stack', style: { border: '1px solid var(--lc-line-strong)', borderRadius: 'var(--lc-radius)', padding: 10, background: 'var(--lc-panel)' } },
+    h('div', { className: 'lc-row' },
+      h(Icon, { name: 'history', size: 15 }),
+      h('span', { style: { fontWeight: 650 } }, '以前的样子'),
+      h('span', { className: 'lc-grow' }),
+      h('span', { className: 'lc-meta' }, versions === null ? '正在找…' : `${versions.length} 个旧版本`),
+      h(Btn, { size: 'sm', tone: 'ghost', onClick: onClose }, '收起'),
+    ),
+    err === null ? null : h(Err, { text: err }),
+    h('div', { className: 'lc-meta' }, '每次保存都会自动留一份。这里的东西只是让你看看，不会自己变回卡里。'),
+
+    versions !== null && versions.length === 0
+      ? h('div', { className: 'lc-meta' }, '还没有旧版本。改过一次并保存之后，上一次的内容就会出现在这里。')
+      : null,
+
+    versions === null
+      ? null
+      : h('div', { className: 'lc-stack' }, versions.map((v) => h('div', { key: v.stamp, className: 'lc-row', style: { padding: '4px 0', borderTop: '1px solid var(--lc-line)' } },
+          h('span', { className: 'lc-grow' }, humanWhen(v.when)),
+          h(Btn, { size: 'sm', tone: 'ghost', disabled: busy !== '', onClick: () => look(v) }, '看看'),
+          h(Btn, {
+            size: 'sm',
+            tone: confirmStamp === v.stamp ? 'danger' : 'ghost',
+            disabled: busy !== '',
+            onClick: () => restore(v),
+          }, confirmStamp === v.stamp ? '确定退回？' : '退回这一版'),
+        ))),
+
+    preview === null ? null : h('div', { className: 'lc-sec', style: { marginTop: 6 } },
+      h('div', { className: 'st' }, '那一版写的是：' + (preview.data?.name ?? '(还没名字)')),
+      shown.length === 0
+        ? h('div', { className: 'lc-meta' }, '那一版还没有写正文。')
+        : h('div', { className: 'lc-stack' }, shown.map((x, n) => h('div', { key: n },
+            h('div', { className: 'lc-meta', style: { fontWeight: 600 } }, x.title),
+            h('div', { className: 'sb' }, x.body),
+          ))),
+    ),
+  )
+}
 
 function ProposalPanel({ proposal, onClose, onApplied }) {
   const [items, setItems] = useState(() => (proposal?.items ?? []).map((i) => ({ ...i })))
@@ -1822,6 +1964,8 @@ function DoctorView({ report, onRun }) {
     report === null ? null : h('div', { className: 'lc-stack' },
       report.ok === false ? h(Note, { tone: 'warn', icon: 'warning' }, '有几个地方写法不对。不影响你继续用，但会让导出和 AI 读不准。') : null,
 
+      scoreSection(report),
+
       h('div', { className: 'lc-sec' },
         h('div', { className: 'st' }, '这里有多少东西'),
         h('div', { className: 'lc-stack' },
@@ -1851,6 +1995,41 @@ function DoctorView({ report, onRun }) {
                 humanizeIssue(i))))),
           ),
     ),
+  )
+}
+
+/**
+ * 一份档案的整体分数。
+ *
+ * 用的是「分数 + 几句话」的形式，不是仪表盘：这个数字唯一的作用是
+ * 让人知道「现在大概几成」，真正有用的是下面那几条「去改这里」。
+ */
+function scoreSection(report) {
+  const cards = Array.isArray(report.score?.cards) ? report.score.cards : []
+  if (cards.length === 0) return null
+  const avg = Math.round(cards.reduce((acc, c) => acc + c.score.score, 0) / cards.length)
+  const worse = cards.filter((c) => c.score.score < 90).sort((a, b) => a.score.score - b.score.score).slice(0, 5)
+  const gradeWord = avg >= 90 ? '很好' : avg >= 75 ? '能用' : avg >= 55 ? '还差一点' : '需要补'
+  return h('div', { className: 'lc-sec' },
+    h('div', { className: 'st' }, '这份档案写得怎么样'),
+    h('div', { className: 'lc-row', style: { alignItems: 'baseline' } },
+      h('span', { style: { fontSize: '26px', fontWeight: 700 } }, String(avg)),
+      h('span', { className: 'lc-meta', style: { marginLeft: 4 } }, '分 · ' + gradeWord),
+      h('div', { className: 'lc-grow' }),
+      h(Tag, { tone: avg >= 75 ? 'ok' : 'warn' }, `${cards.length} 张卡`),
+    ),
+    h('div', { className: 'lc-meta', style: { marginTop: 2 } }, '满分 100。低于 75 一般是内容还没填够，不是写错了。'),
+    worse.length === 0
+      ? h('div', { className: 'lc-meta', style: { marginTop: 6 } }, '每张卡都在 90 分以上。')
+      : h('div', { className: 'lc-stack', style: { marginTop: 8 } },
+          h(GroupTitle, { tone: 'doctor', icon: 'doctor' }, '还能补的卡'),
+          worse.map((c) => h('div', { key: c.path, className: 'lc-row' },
+            h('span', { className: 'lc-grow lc-ellipsis' }, c.name),
+            h('div', { className: 'lc-bar', style: { maxWidth: 70 } }, h('i', { style: { width: `${c.score.score}%` } })),
+            h('span', { className: 'lc-meta', style: { minWidth: 30, textAlign: 'right' } }, `${c.score.score}`),
+          )),
+          h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '点开卡片就能补。补一条也算。'),
+        ),
   )
 }
 
