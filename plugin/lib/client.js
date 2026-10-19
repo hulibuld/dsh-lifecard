@@ -2176,10 +2176,48 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, onBack, o
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const [result, setResult] = useState(null)
+  // 「想要什么样的人」。默认收起：它只影响取舍和提问，不是必填项，
+  // 一进来就摊在面前会让人以为不填就不准分析。
+  const [concept, setConcept] = useState(null)
+  const [showConcept, setShowConcept] = useState(false)
+  const [savingConcept, setSavingConcept] = useState(false)
 
   useEffect(() => {
     if (about === '' && cards.length > 0) setAbout(cards[0].id)
   }, [cards, about])
+
+  useEffect(() => {
+    let alive = true
+    call('concept.get', {}).then((r) => {
+      if (alive === true && r.ok === true && r.concept !== null && r.concept !== undefined) setConcept(r.concept)
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+
+  // 草稿只在本地改，收起面板（或点「存一下」）时才落盘。
+  // 每敲一个字都发一次网络请求，在弱的机器上会让输入明显卡顿。
+  const [conceptDraft, setConceptDraft] = useState(null)
+  const shownConcept = conceptDraft !== null ? conceptDraft : concept
+
+  const flushConcept = async (value) => {
+    const next = value ?? conceptDraft ?? concept
+    setConceptDraft(null)
+    setConcept(next)
+    setSavingConcept(true)
+    try {
+      const r = await call('concept.set', { concept: next })
+      if (r.ok !== true) setErr(r.error ?? '没存上')
+    } catch (e) { setErr(humanizeError(e)) } finally { setSavingConcept(false) }
+  }
+
+  const toggleConcept = () => {
+    if (showConcept === true && conceptDraft !== null) flushConcept(conceptDraft)
+    setShowConcept(!showConcept)
+  }
+
+  // ListEditor 给的是 [{label}]，concept 里存的是纯字符串。两个方向都要转。
+  const asLabels = (list) => (Array.isArray(list) ? list : []).map((x) => (typeof x === 'string' ? { label: x } : x))
+  const asStrings = (list) => (Array.isArray(list) ? list : []).map((x) => (typeof x === 'string' ? x : x?.label ?? '')).filter((x) => String(x).trim() !== '')
 
   const toggleMaterial = (path) => {
     setChosen((prev) => prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path])
@@ -2188,7 +2226,12 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, onBack, o
   const run = async () => {
     setBusy(true); setErr(null); setResult(null)
     try {
-      const r = await call('analyze.run', { about, name: cards.find((c) => c.id === about)?.name ?? about, materials: chosen.length > 0 ? chosen : undefined })
+      const r = await call('analyze.run', {
+        about,
+        name: cards.find((c) => c.id === about)?.name ?? about,
+        materials: chosen.length > 0 ? chosen : undefined,
+        concept: concept === null ? undefined : concept,
+      })
       if (r.ok !== true) { setErr(r.error ?? '没跑成'); return }
       setResult(r)
       flash(`读出了 ${r.accepted} 条${r.rejected > 0 ? `，${r.rejected} 条没能核实已丢掉` : ''}`)
@@ -2225,6 +2268,53 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, onBack, o
         ? h('div', { className: 'lc-meta' }, '还没有卡。先建一张。')
         : h('select', { className: 'lc-select', value: about, onChange: (e) => setAbout(e.target.value) },
             cards.map((c) => h('option', { key: c.id, value: c.id }, c.name))),
+    ),
+
+    h('div', { className: 'lc-sec' },
+      h('div', {
+        className: 'lc-row',
+        role: 'button', tabIndex: 0,
+        style: { cursor: 'pointer', alignItems: 'center' },
+        onClick: toggleConcept,
+      },
+        h(Icon, { name: 'chevron', size: 12, style: { transform: showConcept ? 'rotate(90deg)' : 'none', transition: 'transform .12s' } }),
+        h('span', { className: 'lc-grow', style: { fontWeight: 600 } }, '你想让 TA 是什么样的人'),
+        shownConcept === null
+          ? h('span', { className: 'lc-tag' }, '没写')
+          : h('span', { className: 'lc-tag' }, '已写'),
+        savingConcept === true ? h(Spinner, { size: 12 }) : null,
+      ),
+      h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '可选。它不会变成卡里的内容——只影响这次读材料时突出什么、还该补问什么。'),
+      showConcept === false ? null : h('div', { className: 'lc-stack', style: { marginTop: 8 } },
+        h(Field, { label: '一句话', hint: '比如「一个嘴上凶、心里软的老太太」。' },
+          h('input', {
+            className: 'lc-input',
+            value: shownConcept?.idea ?? '',
+            onChange: (e) => setConceptDraft({ ...(shownConcept ?? {}), idea: e.target.value }),
+            onBlur: () => { if (conceptDraft !== null) flushConcept(conceptDraft) },
+            placeholder: '一个不爱说话但手艺很好的人',
+            spellCheck: false,
+          }),
+        ),
+        h(Field, { label: '想突出的', hint: '一行一个。读材料时会优先找这些。' },
+          h(ListEditor, {
+            items: asLabels(shownConcept?.want),
+            onChange: (v) => setConceptDraft({ ...(shownConcept ?? {}), want: asStrings(v) }),
+            placeholder: '手很巧',
+          }),
+        ),
+        h(Field, { label: '不想要的', hint: '一行一个。太俗套、太像宣传稿的写法写在这儿。' },
+          h(ListEditor, {
+            items: asLabels(shownConcept?.avoid),
+            onChange: (v) => setConceptDraft({ ...(shownConcept ?? {}), avoid: asStrings(v) }),
+            placeholder: '苦情戏',
+          }),
+        ),
+        h('div', { className: 'lc-row' },
+          h(Btn, { size: 'sm', icon: 'check', disabled: conceptDraft === null || savingConcept === true, onClick: () => flushConcept(conceptDraft) }, savingConcept === true ? '存着…' : '存一下'),
+          shownConcept === null ? null : h(Btn, { size: 'sm', ghost: true, icon: 'trash', onClick: () => flushConcept(null) }, '清空'),
+        ),
+      ),
     ),
 
     h(Field, { label: '读哪些材料', hint: chosen.length === 0 ? '一个都不选就是全读。' : `已选 ${chosen.length} 份。` },

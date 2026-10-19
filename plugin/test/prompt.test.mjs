@@ -66,5 +66,44 @@ const base = { aboutId: 'x', aboutName: '甲', schemaHint: '- name' }
   t('确实检查到带选项的题', checked > 20, checked)
 }
 
+// 9. 「想要什么样的人」只能影响取舍与提问，绝不能变成事实来源
+{
+  const material = { 'a.md': '她十六岁进厂，干了三十七年。' }
+
+  // 没写概念时也要有这一段，且明确说「按材料本身的分量来」
+  const none = P.buildAnalyzePrompt({ ...base, materials: material })
+  t('没写概念时也有这一段', none.includes('我想要的这个人'))
+  t('没写时说明按材料来', none.includes('没写'))
+
+  const withConcept = P.buildAnalyzePrompt({
+    ...base,
+    materials: material,
+    concept: { idea: '一个嘴上凶、心里软的老太太', want: ['手很巧'], avoid: ['苦情戏'] },
+  })
+  t('想法进了提示词', withConcept.includes('一个嘴上凶、心里软的老太太'))
+  t('想突出的进了提示词', withConcept.includes('手很巧'))
+  t('不想要的进了提示词', withConcept.includes('苦情戏'))
+
+  // 最关键的一条：提示词里必须明确写「这不是事实来源」，
+  // 否则模型会顺着期待编一条没有出处的断言，引文闸门拦得住但浪费一次调用。
+  t('明确说了不是事实来源', withConcept.includes('不是事实来源'))
+  t('说了没写的不能进 items', withConcept.includes('不能写进 items'))
+  t('说了该去 questions', withConcept.includes('questions'))
+
+  // 概念不能挤掉真正的规则
+  t('三条硬规则还在', withConcept.includes('每条都必须带逐字引文') && withConcept.includes('不许推断') && withConcept.includes('不许总结成评价'))
+  t('材料仍然完整出现', withConcept.includes('她十六岁进厂，干了三十七年'))
+
+  // 只写想法、不写列表时也不能崩
+  const partial = P.buildAnalyzePrompt({ ...base, materials: material, concept: { idea: '只写了个想法' } })
+  t('只有想法时不出现空列表标题', !partial.includes('想突出的：、') && !partial.includes('不想要的：、'))
+  t('只有想法时想法在', partial.includes('只写了个想法'))
+
+  // concept 是空对象 = 等同于没写
+  const empty = P.buildAnalyzePrompt({ ...base, materials: material, concept: {} })
+  t('空概念走「没写」分支', empty.includes('没写'))
+  t('空概念不出现杜撰的标题', !empty.includes('一句话概括：'))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

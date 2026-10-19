@@ -292,5 +292,48 @@ console.log('\n=== 10. 头像存在 assets/，不塞进卡文件 ===')
   t('卡文件本身很短', String(card.text ?? '').length < 1000, String(card.text ?? '').length)
 }
 
+console.log('\n=== 11. 「想要什么样的人」只存在配置里，不进卡 ===')
+{
+  const ws = path.join(tmpdir(), 'lifecard-concept-' + Date.now())
+  store.openWorkspace(ws, { create: true })
+  await fs.mkdir(ws, { recursive: true })
+
+  t('一开始是空的', (await store.readConcept(ws)) === null)
+
+  const saved = await store.writeConcept(ws, { idea: '一个嘴上凶、心里软的老太太', want: ['手很巧', '会做菜'], avoid: ['苦情戏'] })
+  t('能存下来', saved.ok === true, saved)
+  const back = await store.readConcept(ws)
+  t('读回来想法还在', back?.idea === '一个嘴上凶、心里软的老太太', back)
+  t('想突出的两项都在', JSON.stringify(back?.want) === JSON.stringify(['手很巧', '会做菜']), back?.want)
+  t('不想要的那项也在', JSON.stringify(back?.avoid) === JSON.stringify(['苦情戏']), back?.avoid)
+
+  // 先确认它落在配置文件里（此时还是上面那条内容）
+  const cfgText = await fs.readFile(path.join(ws, 'lifecard.config.json'), 'utf8')
+  t('概念存在配置文件里', cfgText.includes('嘴上凶'), '配置里没有')
+
+  // 空白项要被清掉，不然界面上会出现一堆空行
+  await store.writeConcept(ws, { idea: '  只剩想法  ', want: ['', '  ', '有内容'], avoid: [] })
+  const cleaned = await store.readConcept(ws)
+  t('想法两边的空格去掉', cleaned?.idea === '只剩想法', cleaned?.idea)
+  t('空项被清掉', JSON.stringify(cleaned?.want) === JSON.stringify(['有内容']), cleaned?.want)
+
+  // 关键：概念不能污染卡文件
+  const rel = 'people/mom.card.md'
+  await store.writeCard(ws, rel, { lifecard: '0.1', id: 'mom', kind: 'real', name: '妈妈', world: 'reality' }, [{ title: '自述', body: '〔自述〕她做饭。' }])
+  const card = await store.readCard(ws, rel)
+  t('卡文件里没有概念', !String(card.text ?? '').includes('嘴上凶'), '概念漏进卡文件了')
+
+  // 全空等于清除
+  const cleared = await store.writeConcept(ws, { idea: '', want: [], avoid: [] })
+  t('全空等于清除', cleared.ok === true && cleared.concept === null, cleared)
+  t('清除后读回 null', (await store.readConcept(ws)) === null)
+  t('清除后配置文件里也不留空壳', !(await fs.readFile(path.join(ws, 'lifecard.config.json'), 'utf8')).includes('concept'))
+
+  // 传 null 也要能清
+  await store.writeConcept(ws, { idea: 'temp' })
+  const cleared2 = await store.writeConcept(ws, null)
+  t('传 null 也能清', cleared2.ok === true && (await store.readConcept(ws)) === null)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
