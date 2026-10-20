@@ -50,7 +50,7 @@ dsh plugin --profile desktop add /path/to/LifeCard/plugin
 ├── people/                  主世界的人          妈妈.card.md
 ├── self/                    我自己 + 偏好透镜
 ├── relations/               有向关系边          mama--self.relation.md
-├── worlds/                  世界观（含 world info）
+├── worlds/                  世界观；导进来的世界书落成 worlds/<名字>/world.md
 ├── systems/                 消费协议（扮演 / 访谈 / 写作素材）
 ├── materials/               原始材料，只追加、不可编辑
 ├── interviews/              访谈账本（问答过程，不是结果）
