@@ -314,6 +314,18 @@ async function inflateRawAsync(buf) {
 
 /**
  * 判断一份 JSON 是什么。
+ *
+ * 判断顺序是有讲究的，改之前先看完这段：
+ *
+ * 1. 带 `spec` 的，`spec` 说了算。这是规范里唯一一个「作者明确声明」的字段。
+ * 2. **再看世界书**。ST 导出的独立世界书经常带着顶层 `name` 甚至
+ *    `description`（那是这本设定的名字和简介，不是角色卡）。如果先判 V1，
+ *    一本世界书会被当成角色卡导进来，所有条目当场丢掉——而且不报错，
+ *    用户只会发现「导进来的东西是空的」。
+ * 3. 最后才判 V1。V1 没有 `spec`、字段直接摊在顶层，所以只要看见几个
+ *    专属字段就算数，不要求必须同时有 `name` 和 `description`——
+ *    只有名字、或者只有名字 + 开场白的卡是合法的，以前会被判成 unknown。
+ *
  * @param {unknown} json
  * @returns {'v1'|'v2'|'v3'|'worldinfo'|'unknown'}
  */
@@ -323,18 +335,30 @@ export function detectJsonKind(json) {
   if (spec === 'chara_card_v3') return 'v3'
   if (spec === 'chara_card_v2') return 'v2'
   if (spec === 'lorebook_v3') return 'worldinfo'
-  // V1：顶层直接是 name/description，没有 spec
-  if (typeof json.name === 'string' && typeof json.description === 'string' && spec === undefined) return 'v1'
-  if (json.data !== null && typeof json.data === 'object' && typeof json.data.name === 'string') {
-    const sv = String(json.spec_version ?? '')
-    return sv.startsWith('3') ? 'v3' : 'v2'
-  }
+
   // ST 的独立世界书把 entries 存成以 uid 为键的对象，规范里也有写成数组的。
   const looksLikeEntries = (v) => Array.isArray(v)
     || (v !== null && typeof v === 'object' && Object.keys(v).length > 0
         && Object.values(v).every((e) => e !== null && typeof e === 'object' && ('key' in e || 'keys' in e || 'content' in e)))
   if (looksLikeEntries(json.entries)) return 'worldinfo'
   if (json.data !== null && typeof json.data === 'object' && looksLikeEntries(json.data.entries)) return 'worldinfo'
+
+  // V2/V3 的两种写法：包在 data 里，或者没有 spec 但字段在顶层。
+  if (json.data !== null && typeof json.data === 'object' && typeof json.data.name === 'string') {
+    const sv = String(json.spec_version ?? '')
+    return sv.startsWith('3') ? 'v3' : 'v2'
+  }
+
+  // V1：没有 spec，字段直接摊在顶层。认这几种「只属于角色卡」的字段就够了。
+  // `tags` / `creator` / `extensions` 不在此列——世界书也常有。
+  if (spec === undefined && typeof json.name === 'string') {
+    const V1_MARKERS = ['description', 'personality', 'scenario', 'first_mes', 'mes_example',
+      'post_history_instructions', 'system_prompt', 'character_book']
+    if (V1_MARKERS.some((k) => json[k] !== undefined)) return 'v1'
+    // 只剩一个光秃秃的 name：可能是极简角色卡，也可能是别人的设定文件。
+    // 按角色卡处理更有用（导进来至少不会丢东西），但这一条放最后。
+    if (Object.keys(json).every((k) => V1_MARKERS.includes(k) || k === 'name')) return 'v1'
+  }
   return 'unknown'
 }
 

@@ -36,6 +36,39 @@ console.log('=== 3. JSON 识别 ===')
   }
   const w = await K.extractCard(S('eldoria.worldinfo.json'), 'eldoria.worldinfo.json')
   t('world info 识别', w.kind === 'worldinfo', w.kind)
+
+  // 回归：ST 导出的独立世界书常带顶层 name / description（那是这本设定的名字，
+  // 不是角色卡）。以前先判 V1，会把它当角色卡导进来，所有条目当场丢失且不报错。
+  const namedBook = {
+    name: '北洋往事',
+    description: '一个民国背景的世界设定集',
+    entries: { 0: { uid: 0, key: ['天津'], content: '天津九国租界。' } },
+  }
+  t('带名字的世界书仍认出是世界书', K.detectJsonKind(namedBook) === 'worldinfo', K.detectJsonKind(namedBook))
+  const namedBook2 = { name: '某某设定集', description: '简介', entries: [{ key: ['码头'], content: '扛包按件计钱。' }] }
+  t('带名字的数组世界书也认得出', K.detectJsonKind(namedBook2) === 'worldinfo', K.detectJsonKind(namedBook2))
+  const noName = { entries: { 0: { key: ['k'], content: 'c' } } }
+  t('没有名字的世界书照旧', K.detectJsonKind(noName) === 'worldinfo')
+  // 实际后果：走完整提取链路，带名字的世界书也要原样交出来，条目一条不少
+  const namedBuf = new TextEncoder().encode(JSON.stringify(namedBook))
+  const namedRes = await K.extractCard(namedBuf, 'beiyang.json')
+  t('带名字的世界书提取出来还是世界书', namedRes.kind === 'worldinfo', namedRes.kind)
+  t('世界书条目没丢', Object.keys(namedRes.json?.entries ?? {}).length === 1)
+
+  // 回归：极简 V1 —— 只有名字、或名字 + 开场白，都是合法角色卡。
+  // 以前要求必须同时有 name 和 description，这些卡会被判成 unknown 导不进来。
+  t('只有名字的卡认得出', K.detectJsonKind({ name: '孤儿卡' }) === 'v1', K.detectJsonKind({ name: '孤儿卡' }))
+  t('名字+开场白认得出', K.detectJsonKind({ name: 'A', first_mes: 'f' }) === 'v1', K.detectJsonKind({ name: 'A', first_mes: 'f' }))
+  t('名字+性格认得出', K.detectJsonKind({ name: 'A', personality: 'p' }) === 'v1', K.detectJsonKind({ name: 'A', personality: 'p' }))
+  t('名字+场景认得出', K.detectJsonKind({ name: 'A', scenario: 's' }) === 'v1', K.detectJsonKind({ name: 'A', scenario: 's' }))
+  // 不误伤：没有名字的东西不能硬认成卡
+  t('空对象仍认不出', K.detectJsonKind({}) === 'unknown', K.detectJsonKind({}))
+  t('只有 tags 认不出', K.detectJsonKind({ tags: ['a'] }) === 'unknown', K.detectJsonKind({ tags: ['a'] }))
+  t('null 认不出', K.detectJsonKind(null) === 'unknown')
+  t('字符串认不出', K.detectJsonKind('x') === 'unknown')
+  // spec 说了算，不能被后面的规则抢走
+  t('spec v2 不被世界书规则抢走', K.detectJsonKind({ spec: 'chara_card_v2', data: { name: 'A' } }) === 'v2')
+  t('spec v3 不被世界书规则抢走', K.detectJsonKind({ spec: 'chara_card_v3', data: { name: 'A' } }) === 'v3')
 }
 
 console.log('=== 4. 保真：不认识的键零丢失 ===')
