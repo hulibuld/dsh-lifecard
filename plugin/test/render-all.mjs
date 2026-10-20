@@ -436,13 +436,21 @@ if (seen.has('CardRow')) {
   renderOne('列表行（有错）', seen.get('CardRow'), { card: LISTING.cards[1], onOpen: () => {} })
   renderOne('列表行（世界）', seen.get('CardRow'), { card: LISTING.cards[3], onOpen: () => {} })
   renderOne('世界书列表行', seen.get('WorldRow'), { world: LISTING.worlds[0], onOpen: () => {} })
-  renderOne('世界书详情', seen.get('WorldView'), { world: WORLD, listing: LISTING, onOpenCard: () => {}, onAnalyze: () => {} })
-  renderOne('世界书详情（摘出来一条）', seen.get('WorldView'), { world: WORLD, listing: LISTING, onOpenCard: () => {}, onAnalyze: () => {} }, { 0: '北洋' })
+  renderOne('世界书详情', seen.get('WorldView'), { world: WORLD, listing: LISTING, onOpenCard: () => {} })
+  renderOne('世界书详情（摘出来一条）', seen.get('WorldView'), { world: WORLD, listing: LISTING, onOpenCard: () => {} }, { 0: '北洋' })
+  // 这里曾经有个「整理材料」按钮，点了跳去「让 AI 读你写的材料」，可那一页
+  // 要先选一个人，跟这本世界书没有关系。按钮做不到它字面上说的事就先拿掉。
+  {
+    const before = visibleText.length
+    renderOne('世界书详情（没有跑偏的按钮）', seen.get('WorldView'), { world: WORLD, listing: LISTING, onOpenCard: () => {} })
+    const joined = visibleText.slice(before).join('|')
+    t('世界书页不放通往人物分析的按钮', !joined.includes('整理材料'), joined.slice(0, 200))
+  }
   // 人手工改过文本文件时，触发词可能写成 `keys: 北洋`（字符串）而不是数组。
   // 这时界面上要说得出「北洋」，不能显示「没有触发词」。
   renderOne('世界书详情（触发词手写成一串）', seen.get('WorldView'), {
     world: { ...WORLD, entries: [{ uid: 9, keys: '手写的', content: '一样能搜到。', enabled: true }] },
-    listing: LISTING, onOpenCard: () => {}, onAnalyze: () => {},
+    listing: LISTING, onOpenCard: () => {},
   }, { 0: '手写' })
 }
 

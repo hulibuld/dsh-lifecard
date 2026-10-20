@@ -800,7 +800,6 @@ function LifeCardTab(props) {
               world: activeWorld,
               listing,
               onOpenCard: openCard,
-              onAnalyze: () => { setInterviewFor(null); setView(VIEWS.analyze) },
             })
       case VIEWS.doctor:
         return h(DoctorView, { report: doctor, onRun: async () => { const r = await call('doctor.run', {}); setDoctor(r); await refresh() } })
@@ -1087,7 +1086,7 @@ function keysText(raw) {
   return typeof raw === 'string' ? raw : ''
 }
 
-function WorldView({ world, listing, onOpenCard, onAnalyze }) {
+function WorldView({ world, listing, onOpenCard }) {
   const [q, setQ] = useState('')
   const entries = world?.entries ?? []
   const data = world?.data ?? {}
@@ -1113,7 +1112,9 @@ function WorldView({ world, listing, onOpenCard, onAnalyze }) {
       h(Tag, null, `${entries.length} 条设定`),
       off === 0 ? null : h(Tag, { tone: 'warn' }, `${off} 条关着`),
       h('div', { className: 'lc-grow' }),
-      h(Btn, { size: 'sm', icon: 'spark', onClick: onAnalyze }, '整理材料'),
+      // 这里原来有个「整理材料」按钮，点了却跳去「让 AI 读你写的材料」——
+      // 那一页只认人物（要选一个 about），跟这一本世界书没有关系。
+      // 按钮只能做它字面上说的事，做不到就先拿掉。
     ),
 
     entries.length === 0
