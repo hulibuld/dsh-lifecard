@@ -241,6 +241,15 @@ function renderRoot(name, presets) {
   }
 }
 
+/** 从 `seen` 里取一个组件按名字渲染（要求它此前已被整棵树访问到过）。 */
+function h0(name, props) {
+  const C = seen.get(name)
+  if (C === undefined) return null
+  hookIndex = 0
+  hookStore = []
+  return C(props ?? {})
+}
+
 /** 单独渲染一个子组件（独立 hook 槽）。presets 用来把它推到某个状态。 */
 function renderOne(name, Component, props, presets = {}) {
   hookIndex = 0
@@ -402,6 +411,16 @@ renderRoot('一本世界书', base('world', { 11: WORLD }))
 renderRoot('一本世界书（空的）', base('world', { 11: { ...WORLD, entries: [] } }))
 renderRoot('一本世界书（没拿到）', base('world'))
 renderRoot('检查一下', base('doctor', { 8: DOCTOR }))
+// 体检页的「还能补的卡」要能点进去。只给一行名字、点了没反应，
+// 等于告诉人「这儿不好」却不给路。
+{
+  let opened = null
+  const tree = h0('DoctorView', { report: DOCTOR, onRun: async () => {}, onOpenCard: (c) => { opened = c } })
+  const clicked = tree === null ? false : clickByText(tree, '老张')
+  t('体检页「还能补的卡」点得动', clicked === true)
+  t('点得到的是那一张卡', opened !== null && opened.name === '老张', JSON.stringify(opened))
+  t('点得到的是它的路径', opened !== null && opened.path === 'cards/lao-zhang.card.md', JSON.stringify(opened))
+}
 renderRoot('新建一张卡', base('newCard'))
 renderRoot('选个文件夹', base('home', { 1: { ...STATE, exists: false } }))
 renderRoot('连不上后台', base('home', { 1: null, 4: 'TypeError: fetch failed' }))

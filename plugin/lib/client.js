@@ -872,7 +872,7 @@ function LifeCardTab(props) {
               onOpenCard: openCard,
             })
       case VIEWS.doctor:
-        return h(DoctorView, { report: doctor, onRun: async () => { const r = await call('doctor.run', {}); setDoctor(r); await refresh() } })
+        return h(DoctorView, { report: doctor, onOpenCard: openCard, onRun: async () => { const r = await call('doctor.run', {}); setDoctor(r); await refresh() } })
       default:
         return h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
     }
@@ -2638,7 +2638,7 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, onBack, o
 
 // ── 检查 ──────────────────────────────────────────────────────────
 
-function DoctorView({ report, onRun }) {
+function DoctorView({ report, onRun, onOpenCard }) {
   const [busy, setBusy] = useState(false)
   const run = async () => { setBusy(true); try { await onRun() } finally { setBusy(false) } }
 
@@ -2649,7 +2649,7 @@ function DoctorView({ report, onRun }) {
     report === null ? null : h('div', { className: 'lc-stack' },
       report.ok === false ? h(Note, { tone: 'warn', icon: 'warning' }, '有几个地方写法不对。不影响你继续用，但会让导出和 AI 读不准。') : null,
 
-      scoreSection(report),
+      scoreSection(report, onOpenCard),
 
       h('div', { className: 'lc-sec' },
         h('div', { className: 'st' }, '这里有多少东西'),
@@ -2689,7 +2689,7 @@ function DoctorView({ report, onRun }) {
  * 用的是「分数 + 几句话」的形式，不是仪表盘：这个数字唯一的作用是
  * 让人知道「现在大概几成」，真正有用的是下面那几条「去改这里」。
  */
-function scoreSection(report) {
+function scoreSection(report, onOpenCard) {
   const cards = Array.isArray(report.score?.cards) ? report.score.cards : []
   if (cards.length === 0) return null
   const avg = Math.round(cards.reduce((acc, c) => acc + c.score.score, 0) / cards.length)
@@ -2708,12 +2708,21 @@ function scoreSection(report) {
       ? h('div', { className: 'lc-meta', style: { marginTop: 6 } }, '每张卡都在 90 分以上。')
       : h('div', { className: 'lc-stack', style: { marginTop: 8 } },
           h(GroupTitle, { tone: 'doctor', icon: 'doctor' }, '还能补的卡'),
-          worse.map((c) => h('div', { key: c.path, className: 'lc-row' },
-            h('span', { className: 'lc-grow lc-ellipsis' }, c.name),
-            h('div', { className: 'lc-bar', style: { maxWidth: 70 } }, h('i', { style: { width: `${c.score.score}%` } })),
-            h('span', { className: 'lc-meta', style: { minWidth: 30, textAlign: 'right' } }, `${c.score.score}`),
-          )),
-          h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '点开卡片就能补。补一条也算。'),
+          worse.map((c) => (typeof onOpenCard === 'function'
+            ? h('button', {
+                key: c.path, type: 'button', className: 'lc-row', onClick: () => onOpenCard({ path: c.path, id: c.id, name: c.name }),
+                style: { width: '100%', background: 'none', border: 0, padding: '4px 0', textAlign: 'left', font: 'inherit', color: 'inherit', cursor: 'pointer' },
+              },
+                h('span', { className: 'lc-grow lc-ellipsis' }, c.name),
+                h('div', { className: 'lc-bar', style: { maxWidth: 70 } }, h('i', { style: { width: `${c.score.score}%` } })),
+                h('span', { className: 'lc-meta', style: { minWidth: 30, textAlign: 'right' } }, `${c.score.score}`),
+              )
+            : h('div', { key: c.path, className: 'lc-row' },
+                h('span', { className: 'lc-grow lc-ellipsis' }, c.name),
+                h('div', { className: 'lc-bar', style: { maxWidth: 70 } }, h('i', { style: { width: `${c.score.score}%` } })),
+                h('span', { className: 'lc-meta', style: { minWidth: 30, textAlign: 'right' } }, `${c.score.score}`),
+              ))),
+          h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '点一下就能去补。补一条也算。'),
         ),
   )
 }
