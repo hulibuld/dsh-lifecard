@@ -337,6 +337,76 @@ export async function readJobProfile(store, root) {
   return { ok: true, found: true, profile: job, path: self.path }
 }
 
+// ── 模拟面试 ─────────────────────────────────────────────────
+
+const INTERVIEW_DIR = 'jobs/interviews'
+
+/**
+ * 存一场模拟面试。
+ *
+ * 一场一次覆盖（同名同 id），不是每答一题写一个新文件——
+ * 面试是一段对话，中途离开再回来应该回到同一场，而不是看见
+ * 八个只答了一题的残稿。文件名里的 id 由调用方给。
+ */
+export async function saveInterview(root, session) {
+  const id = safeName(session?.id, '')
+  if (id === '') return { ok: false, error: '这场面试没有编号，存不了。' }
+  const rel = path.posix.join(INTERVIEW_DIR, `${id}.json`)
+  const saved = await writeInside(root, rel, JSON.stringify(session, null, 2))
+  if (!saved.ok) return saved
+  // 顺带留一份能读的 Markdown：用户可能想拿它复习，或者发给朋友看
+  const mdRel = path.posix.join(INTERVIEW_DIR, `${id}.md`)
+  if (typeof session?.markdown === 'string' && session.markdown !== '') {
+    await writeInside(root, mdRel, session.markdown)
+  }
+  return { ok: true, path: rel, markdown: session.markdown === undefined ? null : mdRel }
+}
+
+export async function readInterview(root, id) {
+  const safe = safeName(id, '')
+  if (safe === '') return { ok: false, error: '没有给出是哪一场。' }
+  const body = await readInside(root, path.posix.join(INTERVIEW_DIR, `${safe}.json`))
+  if (body === null) return { ok: false, error: '找不到这场面试。' }
+  try {
+    return { ok: true, session: JSON.parse(body) }
+  } catch {
+    return { ok: false, error: '这场面试的文件坏了，读不出来。' }
+  }
+}
+
+/**
+ * 列以前练过的场次。新的在前。
+ *
+ * 只在真的练过之后才有东西——第一次点进来这里是空的，
+ * 界面不该把空列表画成一块空白的框。
+ */
+export async function listInterviews(root) {
+  const base = path.resolve(root)
+  const abs = path.resolve(base, INTERVIEW_DIR)
+  if (abs !== base && !abs.startsWith(base + path.sep)) return { ok: true, items: [] }
+  let names = []
+  try { names = await fs.readdir(abs) } catch { return { ok: true, items: [] } }
+  const items = []
+  for (const name of names.filter((n) => n.endsWith('.json')).sort().reverse()) {
+    const rel = path.posix.join(INTERVIEW_DIR, name)
+    let session = null
+    try { session = JSON.parse(await fs.readFile(path.join(root, rel), 'utf8')) } catch { session = null }
+    if (session === null) continue
+    items.push({
+      id: String(session.id ?? name.replace(/\.json$/, '')),
+      company: String(session.company ?? ''),
+      role: String(session.role ?? ''),
+      started_at: String(session.started_at ?? ''),
+      turns: Array.isArray(session.turns) ? session.turns.length : 0,
+      answered: Array.isArray(session.turns)
+        ? session.turns.filter((t) => String(t.answer ?? '').trim() !== '').length
+        : 0,
+      done: session.ended_at !== undefined,
+    })
+  }
+  return { ok: true, items }
+}
+
 /**
  * 写求职设置。只覆盖传进来的键，不整块替换——
  * 用户在界面上只改了薪资，不该把「不能接受的事」清空。

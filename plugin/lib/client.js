@@ -177,6 +177,7 @@ function Icon({ name, size = 16 }) {
     case 'list': return h('svg', common, h('path', { d: 'M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01' }))
     case 'history': return h('svg', common, h('path', { d: 'M4 12a8 8 0 1 0 2.5-5.8' }), h('path', { d: 'M4 4.5V10h5.5' }), h('path', { d: 'M12 8v4.5l3 2' }))
     case 'briefcase': return h('svg', common, h('rect', { x: 3, y: 7.5, width: 18, height: 12, rx: 2 }), h('path', { d: 'M9 7.5V6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v1.5' }), h('path', { d: 'M3 12.5h18' }))
+    case 'mic': return h('svg', common, h('rect', { x: 9, y: 3, width: 6, height: 11, rx: 3 }), h('path', { d: 'M5.5 11.5a6.5 6.5 0 0 0 13 0' }), h('path', { d: 'M12 18v3' }), h('path', { d: 'M8.5 21h7' }))
     default: return h('svg', common, h('circle', { cx: 12, cy: 12, r: 8 }))
   }
 }
@@ -3199,6 +3200,7 @@ function JobsView({ onBack, flash }) {
   const [written, setWritten] = useState(null) // {kind:'resume'|'cover', markdown, path, warning}
   const [writing, setWriting] = useState(null) // 'resume' | 'cover' | null
   const [newStoryBody, setNewStoryBody] = useState('')
+  const [showMock, setShowMock] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -3277,6 +3279,19 @@ function JobsView({ onBack, flash }) {
     } finally {
       setNetBusy(false)
     }
+  }
+
+  // 模拟面试单独占一屏：面试是对话，把它塞在招聘说明下面那一长条里，
+  // 用户会一边滚一边答，注意力全散了。
+  if (showMock === true) {
+    const reqs = (report?.rows ?? []).filter((r) => r.verdict === 'gap' || r.verdict === 'unclear')
+    return h(MockView, {
+      company: report?.company ?? company,
+      role: report?.role ?? '',
+      requirements: reqs,
+      onBack: () => setShowMock(false),
+      flash,
+    })
   }
 
   const shownRoles = draftRoles !== null ? draftRoles : (profile?.target_roles ?? '')
@@ -3399,6 +3414,13 @@ function JobsView({ onBack, flash }) {
                 ),
             h('div', { className: 'lc-meta' }, '这是你档案里写着的原话。要不要去问，你自己定。'),
           ),
+    ),
+
+    // ── 模拟面试 ──
+    // 放在报告之后：看完整份评估的人，才知道自己哪几条最可能被问穿。
+    h('div', { className: 'lc-stack', style: { marginTop: 10 } },
+      h(Btn, { size: 'sm', icon: 'mic', onClick: () => setShowMock(true) }, '练一轮面试'),
+      h('div', { className: 'lc-meta' }, '它会针对刚才那些没对上的地方问你，然后咬住你的回答往下追。'),
     ),
 
     // ── 我的投递 ──
@@ -3540,6 +3562,191 @@ function JobReport({ report }) {
     ),
 
     report.path === undefined ? null : h('div', { className: 'lc-meta' }, '已经存下来了，下次进来能在「以前看过的」里找到。'),
+  )
+}
+
+// ── 模拟面试 ──────────────────────────────────────────────────────
+
+/** 面试官提问的说法。和宿主侧 jobs-interview.js 的 KIND_LABEL 同一套。 */
+const ASK_LABEL = {
+  gap: '材料里没写的',
+  behavior: '讲一件具体的事',
+  explain: '往回追一句',
+  pressure: '给点压力',
+  motivation: '你图什么',
+}
+
+/**
+ * 一场模拟面试。
+ *
+ * 这一页跟别处不一样的地方：**它是那个问的人**。别处都是用户填、AI 读，
+ * 这里反过来——它针对你刚说的话往下追，追到你必须给出具体的人、时间、做法。
+ *
+ * 界面刻意不做成「AI 打分 + 总分」那种：分数会让人以为「80 分就稳了」，
+ * 而面试里真正会挂人的是「我做过」和「我参与过」之间的区别。
+ * 所以这里只列事实：这一题你有没有讲清楚你本人做了什么。
+ */
+function MockView({ company, role, requirements, onBack, flash }) {
+  const [session, setSession] = useState(null)
+  const [answer, setAnswer] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const [tips, setTips] = useState([])
+  const [summary, setSummary] = useState(null)
+  const [done, setDone] = useState(null)
+  // 新 hook 一律排最后（render-all 用数字引前面的槽位）
+  const [past, setPast] = useState(null)
+
+  const turns = session?.turns ?? []
+  const last = turns.length === 0 ? null : turns[turns.length - 1]
+  const answered = last !== null && (String(last.answer ?? '').trim() !== '' || last.skipped === true)
+
+  const ask = async (sess) => {
+    const base = sess ?? session
+    if (base === null) return
+    setBusy(true); setErr(null); setTips([])
+    try {
+      const r = await call('job.interview.turn', { id: base.id })
+      if (r.ok !== true) { setErr(r.error ?? '没问出来'); return }
+      setSession(r.session)
+      if (r.done === true) { setDone(r.reason ?? '这一场到这儿就够了。'); return }
+      setAnswer('')
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
+  }
+
+  const start = async () => {
+    setBusy(true); setErr(null)
+    try {
+      const r = await call('job.interview.start', { company, role, requirements: requirements ?? [] })
+      if (r.ok !== true) { setErr(r.error ?? '开不了'); return }
+      setSession(r.session)
+      await ask(r.session)
+    } catch (e) { setErr(humanizeError(e)); setBusy(false) }
+  }
+
+  const submit = async (skipped) => {
+    if (session === null) return
+    setBusy(true); setErr(null)
+    try {
+      const r = await call('job.interview.answer', { id: session.id, answer, skipped })
+      if (r.ok !== true) { setErr(r.error ?? '没记上'); return }
+      setSession(r.session)
+      setTips(r.tips ?? [])
+      await ask(r.session)
+    } catch (e) { setErr(humanizeError(e)); setBusy(false) }
+  }
+
+  const finish = async () => {
+    if (session === null) return
+    setBusy(true)
+    try {
+      const r = await call('job.interview.end', { id: session.id })
+      if (r.ok !== true) { setErr(r.error ?? '没存上'); return }
+      setSession(r.session)
+      setSummary(r.summary ?? [])
+      setDone('这一场结束了。')
+      flash('存下来了')
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
+  }
+
+  const loadPast = async () => {
+    if (past !== null) { setPast(null); return }
+    const r = await call('job.interview.list', {})
+    setPast(r.ok === true ? (r.items ?? []) : [])
+  }
+
+  return h('div', { className: 'lc-pad lc-stack' },
+    h('div', { className: 'lc-meta' },
+      '它会挑你材料里没写的地方问，然后咬住你刚才那句话往下追。练的就是这个：被追问的时候还能不能说出具体的事。'),
+    h('div', { className: 'lc-meta' },
+      '它不问你结没结婚、多大、哪里人——这些本来就不该问。也不做背景调查。'),
+
+    session === null
+      ? h('div', { className: 'lc-stack' },
+          company === '' && role === '' ? null : h('div', { className: 'lc-meta' }, `这一场：${[company, role].filter((x) => String(x ?? '').trim() !== '').join(' · ')}`),
+          h(Btn, { tone: 'primary', big: true, block: true, icon: 'mic', onClick: start, disabled: busy }, busy ? '正在开始…' : '开始练'),
+          (requirements ?? []).length === 0
+            ? h('div', { className: 'lc-meta' }, '没有先看过一份招聘说明，那就从通用的问题开始练。')
+            : h('div', { className: 'lc-meta' }, `会优先问刚才那 ${(requirements ?? []).length} 条里你没对上的。`),
+        )
+      : null,
+
+    err === null ? null : h(Err, { text: err }),
+
+    // 对话：只显示最近几条，翻回去看没意义，看的是「他刚才追我什么」
+    turns.length === 0 ? null : h('div', { className: 'lc-stack' },
+      turns.slice(-6).map((t, i) => h('div', { key: `${t.asked_at}-${i}`, className: 'lc-sec' },
+        h('div', { className: 'lc-row' },
+          h('span', { className: 'lc-tag' }, ASK_LABEL[t.kind] ?? '提问'),
+          h('div', { className: 'lc-grow' }),
+          t.by === 'local' ? h('span', { className: 'lc-meta' }, '本地出的题') : null,
+        ),
+        h('div', { className: 'st', style: { marginTop: 4 } }, t.question),
+        t.quoted === undefined || t.quoted === '' ? null : h('div', { className: 'lc-meta' }, `追的是你那句「${t.quoted}」`),
+        String(t.answer ?? '').trim() === '' ? null : h('div', { className: 'sb', style: { marginTop: 6, whiteSpace: 'pre-wrap' } }, t.answer),
+        t.skipped === true ? h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '这题跳过了。') : null,
+      )),
+    ),
+
+    // 上一题哪里可以更好。不叫「你的问题」，因为这不是评语，是下一步该补什么。
+    tips.length === 0 ? null : h('div', { className: 'lc-sec' },
+      h('div', { className: 'lc-meta' }, '这一题可以再具体一点：'),
+      h('div', { className: 'lc-stack', style: { marginTop: 4 } }, tips.map((x, i) => h('div', { key: i, className: 'lc-meta' }, `· ${x}`))),
+    ),
+
+    done !== null ? null : (last === null || answered
+      ? h(Btn, { tone: 'primary', big: true, block: true, icon: 'mic', onClick: () => ask(null), disabled: busy },
+          busy ? '正在想下一个问题…' : '问下一个')
+      : h('div', { className: 'lc-stack' },
+          h('textarea', {
+            className: 'lc-textarea',
+            value: answer,
+            onChange: (e) => setAnswer(e.target.value),
+            placeholder: '就当对面坐着人，把话说出来。有具体的事就说具体的事。',
+            spellCheck: false,
+            style: { minHeight: 110 },
+          }),
+          h('div', { className: 'lc-row' },
+            h(Btn, { tone: 'primary', icon: 'send', onClick: () => submit(false), disabled: busy }, busy ? '…' : '答完了'),
+            h(Btn, { size: 'sm', ghost: true, icon: 'skip', onClick: () => submit(true), disabled: busy }, '这题跳过'),
+            h('div', { className: 'lc-grow' }),
+            h(Btn, { size: 'sm', ghost: true, icon: 'stop', onClick: finish, disabled: busy }, '今天到这'),
+          ),
+        )),
+
+    done === null ? null : h('div', { className: 'lc-stack' },
+      h(Note, { tone: 'ok', icon: 'check' }, done),
+      summary === null ? null : h('div', { className: 'lc-sec' },
+        h('div', { className: 'st' }, '这一场下来'),
+        h('div', { className: 'lc-stack', style: { marginTop: 4 } }, summary.map((x, i) => h('div', { key: i, className: 'lc-meta' }, `· ${x}`))),
+      ),
+      h('div', { className: 'lc-row' },
+        h(Btn, { size: 'sm', icon: 'mic', onClick: () => { setSession(null); setDone(null); setSummary(null); setTips([]) } }, '再练一场'),
+        h('div', { className: 'lc-grow' }),
+        h(Btn, { size: 'sm', ghost: true, icon: 'download', onClick: () => {
+          downloadText(String(session?.markdown ?? ''), `模拟面试-${company === '' ? '练习' : company}.md`)
+        }, disabled: String(session?.markdown ?? '') === '' }, '存成文件'),
+      ),
+      h('div', { className: 'lc-meta' }, '这一场也留在「以前练过的」里，面试前一天翻出来看一遍。'),
+    ),
+
+    // 以前练过的：面试前一晚最有用的东西是自己上次怎么答的
+    h('div', { style: { marginTop: 14 } },
+      h('button', { className: 'lc-btn ghost sm', type: 'button', onClick: loadPast, style: { width: '100%', justifyContent: 'flex-start' } },
+        h('span', { style: { display: 'inline-flex', transform: past !== null ? 'rotate(90deg)' : 'none', transition: 'transform .12s' } }, h(Icon, { name: 'chevron', size: 12 })),
+        '以前练过的',
+      ),
+      past === null ? null : h('div', { className: 'lc-stack', style: { marginTop: 8 } },
+        past.length === 0
+          ? h('div', { className: 'lc-meta' }, '还没练过。练一场就会有记录。')
+          : past.slice(0, 8).map((it) => h('div', { key: it.id, className: 'lc-sec' },
+              h('div', { className: 'st' }, `${it.company === '' ? '没写公司' : it.company}${it.role === '' ? '' : ' · ' + it.role}`),
+              h('div', { className: 'lc-meta' }, `${shortDate(it.started_at)} · 问了 ${it.turns} 个，答了 ${it.answered} 个${it.done === true ? ' · 练完了' : ''}`),
+            )),
+      ),
+    ),
+
+    h('div', { style: { marginTop: 10 } }, h(Btn, { ghost: true, size: 'sm', icon: 'back', onClick: onBack }, '回去')),
   )
 }
 

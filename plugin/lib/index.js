@@ -23,6 +23,7 @@ import * as score from './score.js'
 import * as memory from './memory.js'
 import * as jobs from './jobs.js'
 import * as jobsStore from './jobs-store.js'
+import * as interview from './jobs-interview.js'
 export const name = 'dsh-lifecard'
 
 /** 需要宿主提供的服务。缺 webServer 就什么都不做（明确失败胜过静默半死）。 */
@@ -1259,6 +1260,203 @@ function buildApi(ctx, workspace, config) {
       if (text === '') return { ok: false, error: 'AI 没写出东西来。' }
       const saved = await jobsStore.saveDraft(ws, 'cover', String(body?.company ?? '求职信'), text)
       return { ok: true, markdown: text, path: saved.ok === true ? saved.path : null }
+    },
+
+    // ── 模拟面试 ──────────────────────────────────────────────
+    //
+    // 这是「看工作」里唯一会**反过来问你**的东西。三件事写死在这里：
+    //   1. 只问不说教——它不会告诉你答得好不好，只在最后列事实；
+    //   2. 不背调、不碰就业歧视那些问题（禁问表在 jobs-interview.js 里）；
+    //   3. 追问必须引用你上一句的原话，引不出来就退回一句朴素的本地问题。
+
+    /**
+     * 开一场模拟面试。
+     *
+     * `requirements` 一般来自刚做完的那份评估（rows 里每条要求的
+     * importance 和 verdict），也可以不给——那样就只练通用的几问。
+     */
+    'job.interview.start': async (body) => {
+      const ws = await root(body)
+      const stamp = new Date()
+      const id = `mock-${stamp.toISOString().replace(/[-:T.]/g, '').slice(0, 12)}-${Math.floor(stamp.getTime() / 1000) % 100000}`
+      const reqs = Array.isArray(body?.requirements) ? body.requirements : []
+      const session = {
+        id,
+        company: String(body?.company ?? '').trim(),
+        role: String(body?.role ?? '').trim(),
+        jd: String(body?.jd ?? '').slice(0, 8000),
+        requirements: reqs.map((r) => ({
+          requirement: String(r?.requirement ?? '').trim(),
+          importance: String(r?.importance ?? 'medium'),
+          verdict: String(r?.verdict ?? 'unclear'),
+          proof: String(r?.proof ?? ''),
+        })),
+        started_at: stamp.toISOString(),
+        turns: [],
+        asked: [],
+      }
+      const saved = await jobsStore.saveInterview(ws, session)
+      if (saved.ok !== true) return saved
+      return { ok: true, session, path: saved.path }
+    },
+
+    /**
+     * 问下一个问题。
+     *
+     * 有 AI 就让 AI 问（追问质量高得多），没有 AI 或它给的这一问过不了闸，
+     * 就退回本地从招聘说明里抠出来的那句——面试练习不该因为模型抽风就开不了。
+     */
+    'job.interview.turn': async (body) => {
+      const ws = await root(body)
+      const got = await jobsStore.readInterview(ws, body?.id)
+      if (got.ok !== true) return got
+      const session = got.session
+      if (Array.isArray(session.turns) && session.turns.length >= interview.MAX_TURNS) {
+        return { ok: true, done: true, session, reason: `已经问了 ${interview.MAX_TURNS} 个问题，再问下去人会开始敷衍。` }
+      }
+
+      const turns = Array.isArray(session.turns) ? session.turns : []
+      const target = interview.pickTarget(session.requirements, session.asked)
+      const lastAnswer = String(turns[turns.length - 1]?.answer ?? '')
+      const focus = interview.pickFocus(lastAnswer)
+      const askedList = turns.map((t) => t.question)
+
+      let question = null
+      let by = 'local'
+      const offline = interview.offlineQuestion(target, { company: session.company })
+
+      const llm = ctx.get?.('llm')
+      if (llm !== undefined && llm !== null) {
+        const prompt = interview.buildTurnPrompt({
+          company: session.company,
+          role: session.role,
+          requirements: session.requirements,
+          transcript: turns.flatMap((t) => [
+            { role: 'interviewer', text: t.question },
+            ...(String(t.answer ?? '').trim() === '' ? [] : [{ role: 'candidate', text: t.answer }]),
+          ]),
+          target,
+          focus,
+          cvText: session.cvText ?? '',
+          questionNo: turns.length + 1,
+        })
+        const called = await callModel(ctx, {
+          system: '你在一场模拟面试里当面试官。你只提问，不评价，不解释。你问的每一句都会被程序检查：重复的不算、问了不该问的会被拦下、追问他上一句时引不到原话会被丢掉。',
+          user: prompt,
+          model: typeof body?.model === 'string' && body.model !== '' ? body.model : (config?.defaultAnalysisModel ?? undefined),
+        })
+        // 被拦下时带着原因重问一次：模型不知道自己踩了哪条线，
+        // 不告诉它就只会原样再问一遍，白丢一整轮。
+        let reject = ''
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          const retryPrompt = reject === ''
+            ? prompt
+            : interview.buildTurnPrompt({
+              company: session.company,
+              role: session.role,
+              requirements: session.requirements,
+              transcript: turns.flatMap((t) => [
+                { role: 'interviewer', text: t.question },
+                ...(String(t.answer ?? '').trim() === '' ? [] : [{ role: 'candidate', text: t.answer }]),
+              ]),
+              target,
+              focus,
+              cvText: session.cvText ?? '',
+              questionNo: turns.length + 1,
+              reject,
+            })
+          const called = await callModel(ctx, {
+            system: '你在一场模拟面试里当面试官。你只提问，不评价，不解释。你问的每一句都会被程序检查：重复的不算、问了不该问的会被拦下、追问他上一句时引不到原话会被丢掉。',
+            user: retryPrompt,
+            model: typeof body?.model === 'string' && body.model !== '' ? body.model : (config?.defaultAnalysisModel ?? undefined),
+          })
+          if (!called.ok) break
+          const checked = interview.checkQuestion(extractJson(called.text), { asked: askedList, lastAnswer })
+          if (checked.ok === true) {
+            question = checked.question
+            by = 'ai'
+            break
+          }
+          reject = checked.reason ?? ''
+        }
+        if (question === null && reject !== '') {
+          // 把被丢掉的原因带回去，界面上看得出来这不是模型随口问的
+          session.lastDropReason = reject
+        }
+      }
+
+      if (question === null) {
+        question = { question: offline, kind: target.kind, quoted: '', why_ask: '' }
+      }
+
+      const turn = {
+        ...question,
+        target_index: target.requirement === null || target.requirement === undefined ? null : target.requirement.index,
+        asked_at: new Date().toISOString(),
+        by,
+      }
+      session.turns = [...turns, turn]
+      session.asked = [...(session.asked ?? []), ...(target.requirement === null || target.requirement === undefined ? [] : [`req:${target.requirement.index}`])]
+      const saved = await jobsStore.saveInterview(ws, session)
+      if (saved.ok !== true) return saved
+      return { ok: true, session, turn, by, done: false }
+    },
+
+    /**
+     * 答一题。
+     *
+     * 本地先看一遍这段回答（有没有具体的事、有没有说「我」做了什么、
+     * 有没有结果）——这些判断不需要 AI，而且当场给出比事后给更有用。
+     */
+    'job.interview.answer': async (body) => {
+      const ws = await root(body)
+      const got = await jobsStore.readInterview(ws, body?.id)
+      if (got.ok !== true) return got
+      const session = got.session
+      const turns = Array.isArray(session.turns) ? session.turns : []
+      if (turns.length === 0) return { ok: false, error: '还没问问题，先点一下「开始」。' }
+      const answer = String(body?.answer ?? '')
+      const skipped = body?.skipped === true
+      const last = turns[turns.length - 1]
+      const review = skipped ? { length: 0, verdict: 'skipped', findings: [] } : interview.reviewAnswer(answer)
+      turns[turns.length - 1] = {
+        ...last,
+        answer: skipped ? '' : answer,
+        skipped,
+        review,
+        answered_at: new Date().toISOString(),
+      }
+      session.turns = turns
+      const saved = await jobsStore.saveInterview(ws, session)
+      if (saved.ok !== true) return saved
+      const summary = interview.summarize(session)
+      return { ok: true, session, review, tips: review.findings.map((f) => f.say), summary: summary.lines }
+    },
+
+    /** 结束这一场：写出能读的一份，并存盘。 */
+    'job.interview.end': async (body) => {
+      const ws = await root(body)
+      const got = await jobsStore.readInterview(ws, body?.id)
+      if (got.ok !== true) return got
+      const session = got.session
+      session.ended_at = new Date().toISOString()
+      session.markdown = interview.renderTranscript(session)
+      const saved = await jobsStore.saveInterview(ws, session)
+      if (saved.ok !== true) return saved
+      const summary = interview.summarize(session)
+      return { ok: true, session, markdown: session.markdown, path: saved.markdown, summary: summary.lines }
+    },
+
+    'job.interview.get': async (body) => {
+      const ws = await root(body)
+      const got = await jobsStore.readInterview(ws, body?.id)
+      if (got.ok !== true) return got
+      return { ok: true, session: got.session, summary: interview.summarize(got.session).lines }
+    },
+
+    'job.interview.list': async (body) => {
+      const ws = await root(body)
+      return await jobsStore.listInterviews(ws)
     },
 
     /**

@@ -27,7 +27,8 @@
     "locale/*.json",
     "icon.svg",
     "lib/jobs.js",
-    "lib/jobs-store.js"
+    "lib/jobs-store.js",
+    "lib/jobs-interview.js"
   ],
   "dsh": {
     "bundle": {

@@ -885,11 +885,83 @@ if (seen.has('CardRow')) {
   t('没看过工作就不给写求职信', !joined3.includes('写封求职信'))
 }
 
+{
+  // 模拟面试：这一页反过来问用户，最要紧的是「不许越界问人」和「不主动投递」
+  const SESSION = {
+    id: 'mock-1',
+    company: '某公司',
+    role: '后端',
+    started_at: '2026-10-20T10:00:00.000Z',
+    turns: [
+      { question: '讲讲你做过最复杂的一个系统。', kind: 'behavior', answer: '做过一个交易系统。', review: { findings: [] }, by: 'ai', asked_at: '2026-10-20T10:01:00.000Z' },
+      { question: '你说的那个交易系统，峰值多少笔？', kind: 'explain', quoted: '交易系统', answer: '', by: 'ai', asked_at: '2026-10-20T10:02:00.000Z' },
+    ],
+  }
+
+  let before = visibleText.length
+  renderOne('模拟面试（还没开始）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
+    4: { company: '某公司', role: '后端', blocked: [], matched: [], gaps: [], unclear: [], questions: [], warnings: [], dropped: [] },
+    23: true,
+  })
+  let joined = visibleText.slice(before).join('|')
+  t('面试页说了它会追着问', joined.includes('咬住'))
+  t('面试页说了不碰婚育年龄', joined.includes('结没结婚'))
+  t('面试页说了不做背调', joined.includes('不做背景调查'))
+  t('面试页有开始的按钮', joined.includes('开始练'))
+  t('面试页没有「一键投递」这类诱导', !joined.includes('一键投递') && !joined.includes('自动投递'))
+
+  before = visibleText.length
+  renderOne('模拟面试（问到第二题）', seen.get('MockView'), { company: '某公司', role: '后端', requirements: [], onBack: () => {}, flash: () => {} }, {
+    0: SESSION,
+  })
+  joined = visibleText.slice(before).join('|')
+  t('问题显示出来了', joined.includes('讲讲你做过最复杂的一个系统'))
+  t('追问指出了追的是哪一句', joined.includes('交易系统'))
+  t('答过的显示出来了', joined.includes('做过一个交易系统'))
+  t('有作答的输入框', joined.includes('就当对面坐着人'))
+  t('可以跳过一题', joined.includes('这题跳过'))
+  t('可以中途结束', joined.includes('今天到这'))
+
+  before = visibleText.length
+  renderOne('模拟面试（这一题答完给了提示）', seen.get('MockView'), { company: '某公司', role: '后端', requirements: [], onBack: () => {}, flash: () => {} }, {
+    0: SESSION,
+    4: ['没听见「我做了什么」。', '一个数字都没有。'],
+  })
+  joined = visibleText.slice(before).join('|')
+  t('答完之后说清哪里能更好', joined.includes('可以再具体一点'))
+  t('提示是真的说出来了', joined.includes('一个数字都没有'))
+  // 提示出现时通常已经自动问出下一题了，所以这时该能直接接着答
+  t('给完提示就能接着答下一题', joined.includes('就当对面坐着人'))
+
+  before = visibleText.length
+  renderOne('模拟面试（练完了）', seen.get('MockView'), { company: '某公司', role: '后端', requirements: [], onBack: () => {}, flash: () => {} }, {
+    0: { ...SESSION, ended_at: '2026-10-20T10:09:00.000Z', markdown: '# 模拟面试' },
+    5: ['一共问了 2 个问题，答了 1 个。', '有 1 次回答里一个数字都没有。'],
+    6: '这一场结束了。',
+  })
+  joined = visibleText.slice(before).join('|')
+  t('结束语出来了', joined.includes('这一场结束了'))
+  t('总结说清答了几题', joined.includes('一共问了 2 个问题'))
+  t('总结点出没有数字', joined.includes('一个数字都没有'))
+  t('能再练一场', joined.includes('再练一场'))
+  t('能把这一场存成文件', joined.includes('存成文件'))
+
+  before = visibleText.length
+  renderOne('模拟面试（以前练过的）', seen.get('MockView'), { company: '某公司', role: '后端', requirements: [], onBack: () => {}, flash: () => {} }, {
+    0: null,
+    7: [{ id: 'mock-1', company: '某公司', role: '后端', started_at: '2026-10-20T10:00:00.000Z', turns: 2, answered: 1, done: true }],
+  })
+  joined = visibleText.slice(before).join('|')
+  t('以前练过的那一场显示出来了', joined.includes('以前练过的'))
+  t('写着问了几个答了几个', joined.includes('问了 2 个'))
+  t('练完了有标记', joined.includes('练完了'))
+}
+
 // 遍历渲染完之后再核对：所有子组件都该被访问到过。
 const missing = []
 for (const want of ['CardForm', 'ProposalPanel', 'HistoryPanel', 'BookEditor', 'AvatarPicker', 'CompetencyEditor', 'ListEditor', 'CardRow',
   'HomeView', 'CardView', 'ImportView', 'AnalyzeView', 'InterviewView', 'DoctorView',
-  'NewCardView', 'SetupView', 'Field', 'Action', 'WorldRow', 'WorldView', 'MemoryView', 'JobsView']) {
+  'NewCardView', 'SetupView', 'Field', 'Action', 'WorldRow', 'WorldView', 'MemoryView', 'JobsView', 'MockView']) {
   if (!seen.has(want)) missing.push(want)
 }
 t('抓到了所有子组件', missing.length === 0, '缺：' + missing.join(', ') + '；实际：' + [...seen.keys()].join(', '))
