@@ -128,6 +128,59 @@ if (typeof api.apply === 'function') {
   } catch (e) {
     t('缺 betterSidebar 时优雅退化', false, e.message)
   } finally { console.warn = warn }
+
+  // ── 左侧栏入口（面板图标 + 主区域页面）────────────────────────────
+  // 用户上次找不到插件，是因为入口只在右侧栏的「+」菜单里。
+  // 这一组锁住「左侧栏那排图标里也有它」，别以后改着改着又没了。
+  t('inject 含 slots', Array.isArray(api.inject) && api.inject.includes('slots'), JSON.stringify(api.inject))
+
+  // 假 slots：inject 立即调用回调（真宿主也是座位一出现就调用），register 记账
+  const slotRegistrations = []
+  const makeSlots = () => ({
+    inject: (name, fn) => { const d = fn(); return typeof d === 'function' ? d : () => {} },
+    register: (spec, component) => { slotRegistrations.push({ spec, component }); return () => {} },
+  })
+  const ctxSlots = {
+    slots: makeSlots(),
+    get: (name) => name === 'betterSidebar' ? { registerTab: () => () => {} } : undefined,
+    effect: (fn) => { const d = fn(); return () => {} },
+  }
+  let slotsError = null
+  try { api.apply(ctxSlots) } catch (e) { slotsError = e }
+  t('有 slots 时 apply 不抛错', slotsError === null, slotsError?.message)
+
+  const mainReg = slotRegistrations.find((r) => r.spec.name === 'main')
+  const navReg = slotRegistrations.find((r) => r.spec.name === 'sidebar.panellist')
+  t('注册了主区域页面', mainReg !== undefined, slotRegistrations.map((r) => r.spec.name).join(','))
+  t('注册了左侧栏图标', navReg !== undefined, slotRegistrations.map((r) => r.spec.name).join(','))
+  t('两边的 id 配对（左侧栏 id === 主区域 key）',
+    mainReg !== undefined && navReg !== undefined && mainReg.spec.key === navReg.spec.id,
+    `${mainReg?.spec.key} vs ${navReg?.spec.id}`)
+  t('左侧栏 id 是 lifecard', navReg?.spec.id === 'lifecard', navReg?.spec.id)
+  t('左侧栏有位置顺序', typeof navReg?.spec.order === 'number')
+  t('左侧栏有名字', typeof navReg?.spec.label === 'function' && navReg.spec.label() === 'Life Cards', navReg?.spec.label?.())
+
+  // 图标组件能被外壳调用（外壳会塞一个 size 进来）
+  let iconTree = null
+  try { iconTree = navReg.component({ size: 16, active: false }) } catch (e) { iconTree = e }
+  t('图标组件能画', iconTree !== null && typeof iconTree === 'object' && iconTree.type === 'svg', String(iconTree?.message ?? ''))
+  t('图标跟着外壳给的尺寸走', iconTree?.props?.width === 16, iconTree?.props?.width)
+
+  // 主区域页面能渲染
+  hookIndex = 0
+  hookStore.length = 0
+  let pageTree = null
+  try { pageTree = mainReg.component({}) } catch (e) { pageTree = e }
+  t('主区域页面能渲染', pageTree !== null && typeof pageTree === 'object' && pageTree.type === 'div', String(pageTree?.message ?? ''))
+
+  // 座位不存在时（老外壳 / 精简 profile）不能把启动搞挂
+  const ctxNoSlots = {
+    get: () => ({ registerTab: () => () => {} }),
+    effect: (fn) => { const d = fn(); return () => {} },
+  }
+  let noSlotsError = null
+  try { api.apply(ctxNoSlots) } catch (e) { noSlotsError = e }
+  t('没有 slots 时优雅退化', noSlotsError === null, noSlotsError?.message)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

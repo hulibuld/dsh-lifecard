@@ -2517,12 +2517,69 @@ function TabIcon() {
   )
 }
 
+/**
+ * 左侧栏那排图标里的一个。外壳负责按钮、文字提示、高亮，
+ * 这里只画那个小图标；size 由外壳给（它会随折叠状态变）。
+ */
+function PanelIcon({ size }) {
+  const edge = typeof size === 'number' && size > 0 ? size : 18
+  return h('svg', {
+    'data-dsh-panel-entry': PANEL_ID,
+    width: edge, height: edge, viewBox: '0 0 24 24', fill: 'none',
+    stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round',
+    'aria-hidden': 'true',
+  },
+    h('path', { d: 'M4 5.5A1.5 1.5 0 0 1 5.5 4H10v15H5.5A1.5 1.5 0 0 1 4 17.5z' }),
+    h('path', { d: 'M12 4h6.5A1.5 1.5 0 0 1 20 5.5v12a1.5 1.5 0 0 1-1.5 1.5H12z' }),
+    h('path', { d: 'M7 8h1M15 8h2M15 12h2' }),
+  )
+}
+
+/** 点开左侧栏那个图标以后，中间主区域显示的就是它。 */
+function PanelPage(props) {
+  // 外壳给的主区域不保证有确定高度，这里自己撑满，否则里面那层滚不动。
+  return h('div', { style: { height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 } },
+    h(LifeCardTab, props))
+}
+
+/** 左侧栏那一行与中间那块页面靠同一个 id 配对，所以两边都用这个常量。 */
+const PANEL_ID = 'lifecard'
+const PANEL_ORDER = 35
+
 function apply(ctx) {
   ensureStyle(document)
+
+  // 一、挂到左侧栏那排图标里 —— 平时点开东西都是从那儿点的，比右侧栏的「+」好找。
+  // 用 slots.inject：座位什么时候出现由外壳决定；没有这个座位就什么都不做，不影响启动。
+  const slots = ctx.slots
+  if (slots !== undefined && slots !== null && typeof slots.inject === 'function') {
+    ctx.effect(() => {
+      const disposers = []
+      disposers.push(slots.inject('main', () => slots.register({
+        name: 'main',
+        key: PANEL_ID,
+        inject: () => ({}),
+      }, PanelPage)))
+      disposers.push(slots.inject('sidebar.panellist', () => slots.register({
+        name: 'sidebar.panellist',
+        id: PANEL_ID,
+        order: PANEL_ORDER,
+        label: () => 'Life Cards',
+      }, PanelIcon)))
+      return () => {
+        for (const d of disposers.splice(0)) {
+          // 卸载时某一边出错，不该把另一边也漏在那儿
+          try { d() } catch (e) { /* 忽略 */ }
+        }
+      }
+    }, 'lifecard: 左侧栏入口')
+  }
+
+  // 二、顺手也挂到右侧栏的标签页里 —— 有人习惯把它开在右边长期看着。
   const sidebar = ctx.get('betterSidebar')
   if (sidebar === undefined || sidebar === null || typeof sidebar.registerTab !== 'function') {
-    // 没有 better-sidebar 就装不上；这不是错误，只是本机没装那个底座。
-    console.warn('[lifecard] 需要 dsh-better-sidebar 才能显示；未找到 ctx.betterSidebar。')
+    // 没有这个底座就只是少一个入口，左边那个照常可用，不算失败。
+    console.warn('[lifecard] 没找到 dsh-better-sidebar，右侧栏标签页不提供；左侧栏入口不受影响。')
     return
   }
   ctx.effect(() => sidebar.registerTab({
@@ -2536,7 +2593,7 @@ function apply(ctx) {
   }), 'lifecard: better-sidebar tab')
 }
 
-const inject = ['betterSidebar']
+const inject = ['betterSidebar', 'slots']
 
 
 
