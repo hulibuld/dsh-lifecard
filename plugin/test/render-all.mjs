@@ -411,6 +411,46 @@ renderRoot('一本世界书', base('world', { 11: WORLD }))
 renderRoot('一本世界书（空的）', base('world', { 11: { ...WORLD, entries: [] } }))
 renderRoot('一本世界书（没拿到）', base('world'))
 renderRoot('检查一下', base('doctor', { 8: DOCTOR }))
+
+// 每个视图里都不许有「按下去什么都不做」的按钮。
+// 这类错最难受：按钮长得像能点的，点了只是没反应，人以为软件坏了。
+{
+  const views = [
+    ['首页', base('home')],
+    ['首页（空）', base('home', { 2: { ok: true, cards: [], materials: [], proposals: [], worlds: [], errors: [] } })],
+    ['卡片详情', base('card', { 6: CARD_DETAIL })],
+    ['建议清单', base('card', { 6: null, 7: PROPOSAL })],
+    ['添加', base('import')],
+    ['让 AI 读材料', base('analyze')],
+    ['陪他聊聊', base('interview')],
+    ['一本世界书', base('world', { 11: WORLD })],
+    ['检查一下', base('doctor', { 8: DOCTOR })],
+    ['新建一张卡', base('newCard')],
+  ]
+  const dead = []
+  for (const [label, presets] of views) {
+    const before = visibleText.length
+    const tree = renderRoot('（死按钮检查）' + label, presets)
+    const root = expand(tree)
+    for (const b of flatButtons(root)) {
+      // 有 onClick 的都算活的；null 也算（Btn 组件对 undefined 也会塞进 props）
+      if (typeof b.props.onClick !== 'function') dead.push(`${label}：「${textOf(b).slice(0, 20)}」`)
+    }
+    // 顺带看有没有「既没 onClick 也没 disabled」的裸 button 节点
+    const walk = (n) => {
+      if (n === null || n === undefined) return
+      if (Array.isArray(n)) { n.forEach(walk); return }
+      if (typeof n !== 'object') return
+      if (n.type === 'button' && n.props?.onClick === undefined && n.props?.disabled === undefined) {
+        dead.push(`${label}（裸 button）：「${textOf(n).slice(0, 20)}」`)
+      }
+      walk(n.children)
+    }
+    walk(root)
+    void before
+  }
+  t('没有按下去什么都不做的按钮', dead.length === 0, dead.join(' | '))
+}
 // 体检页的「还能补的卡」要能点进去。只给一行名字、点了没反应，
 // 等于告诉人「这儿不好」却不给路。
 {
