@@ -774,7 +774,9 @@ function LifeCardTab(props) {
       [VIEWS.newCard]: '新建一张卡',
       [VIEWS.world]: activeWorld?.data?.name ?? '这本世界书',
     }
-    const canBack = view !== VIEWS.home && view !== VIEWS.setup
+    // 「选个文件夹」页一般不该有返回按钮（还没地方可回），
+    // 但已经选过文件夹、是从首页主动进来换的时候要能退回去。
+    const canBack = view !== VIEWS.home && (view !== VIEWS.setup || state?.exists === true)
     return h('div', { className: 'lc-head' },
       canBack ? h('button', { className: 'lc-btn ghost sm', onClick: () => { setView(VIEWS.home); setError(null); setProposal(null) }, title: '回到列表', type: 'button' }, h(Icon, { name: 'back', size: 14 })) : null,
       h('div', { className: 'lc-grow lc-ellipsis' },
@@ -1078,6 +1080,12 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
           h('div', { className: 'lc-row' },
             h(Btn, { size: 'sm', icon: 'spark', onClick: () => onNavigate(VIEWS.analyze), disabled: materials.length === 0 }, '让 AI 读出建议'),
             h(Btn, { size: 'sm', icon: 'doctor', onClick: onDoDoctor }, '检查档案有没有问题'),
+          ),
+          // 选错了文件夹在这里就没路可退——档案都在那个文件夹里，
+          // 重装软件也改不回来。给一条明路。
+          h('div', { className: 'lc-row', style: { marginTop: 6 } },
+            h(Btn, { size: 'sm', ghost: true, icon: 'folder', onClick: () => onNavigate(VIEWS.setup) }, '换个文件夹'),
+            h('span', { className: 'lc-meta lc-ellipsis' }, state?.workspace ?? ''),
           ),
         )
       : null,

@@ -350,6 +350,30 @@ const hasRotate = (tree) => {
   t('点「整理材料」不再带着上一个人', hookStore[9] === null, JSON.stringify(hookStore[9]))
 }
 {
+  // 选错文件夹以前就没路可退了：档案全在那边，换不回来。
+  const tree = renderRoot('首页（想换文件夹）', base('home', { 10: true }))
+  const clicked = clickByText(tree, '换个文件夹')
+  t('「换个文件夹」点得动', clicked === true)
+  t('点它跳到选文件夹那页', hookStore[0] === 'setup', String(hookStore[0]))
+}
+{
+  // 已经有档案的时候，选文件夹那页要能退回来（否则点进去就是死胡同）。
+  const tree = renderRoot('选文件夹（已经选过）', base('setup'))
+  const back = clickByText(tree, '')
+  void back
+  const head = expand(tree)
+  let hasBack = false
+  const walk = (n) => {
+    if (n === null || n === undefined) return
+    if (Array.isArray(n)) { n.forEach(walk); return }
+    if (typeof n !== 'object') return
+    if (n.props?.title === '回到列表') hasBack = true
+    walk(n.children)
+  }
+  walk(head)
+  t('已经选过文件夹时，那一页能退回来', hasBack === true)
+}
+{
   // 「更多工具」的箭头要跟着开合转，否则看不出这是能展开的。
   const closed = renderRoot('首页（更多工具收起）', base('home', { 10: false }))
   t('收起时箭头不转', hasRotate(closed) === false)
