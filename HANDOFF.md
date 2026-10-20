@@ -7,7 +7,12 @@
 
 ## 一句话现状
 
-**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 **934 项**通过，对一个真实运行的 DSH 实例做的端到端验收 **14/14** 通过。**P0（上传 GitHub 前的准备）、P1（陈旧文档）、P2（六项功能扩展）全部做完。** 之后又做了四轮加固：数据层 20 处隐患、编码/路由层 20 处隐患、世界书导入与展示、测试补到 934 项。
+**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 **1136 项**通过，对一个真实运行的 DSH 实例做的端到端验收 **14/14** 通过。**P0（上传 GitHub 前的准备）、P1（陈旧文档）、P2（六项功能扩展）全部做完。** 之后又做了四轮加固：数据层 20 处隐患、编码/路由层 20 处隐患、世界书导入与展示，以及一批界面死路修复。
+
+**P3 之后新加的三块**（2026-10-20）：
+- **关系视角改造**：访谈页不再问「你们是什么关系（父母/祖辈/伴侣）」，改成「他是我的什么人」（父亲 / 母亲 / 爷爷 / 奶奶 / 伴侣 / 好友 / 兄弟姐妹 / 同学 / 老师 / 同事 / 亲戚 / 我自己 / 虚构角色 / 自己填），并且可以勾「还有别的吗」（也是伴侣 / 也是家人 / 也是好友 / 也是同事 / 也是老师 / 也是对手）。「这是谁」那栏改名「他叫什么」，跟关系不再重复。
+- **写卡草稿**：卡片编辑表单停手 1.5 秒自动存草稿到 `.lifecard/drafts/`，下次打开这张卡会问「接着上次写」还是「不要了，从头写」。草稿不自动恢复（用户可能故意放弃那一版），保存成功后自动删。
+- **看工作（求职）**：把一份招聘说明贴进来，得到「哪里会卡住你」的顺序化清单，每条挂两处原文；带「这家公司我认识谁」（用关系网找人）、投递记录、面试故事、照招聘说明改简历/求职信。**不自动投递**。
 
 ---
 
@@ -27,7 +32,7 @@
 
 B 和 C 产出同一种东西（材料），之后走完全相同的一条链。**每条 AI 断言必须带原文引文，找不到原文直接丢弃**——这是整个项目的核心闸门，别把它优化掉。
 
-**不是**角色扮演平台，**不是**云端服务，**不是**简历生成器。
+**不是**角色扮演平台，**不是**云端服务。它现在能帮你看工作、改简历，但那是**用你自己写过的材料**去重组，不是简历生成器——它不会替你编一个数字。
 
 ---
 
@@ -57,15 +62,18 @@ LifeCard/
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `lib/client.js` | 2902 | **整个侧边栏界面**。纯手写，没有 React 依赖注入以外的框架 |
-| `lib/index.js` | 1436 | 宿主侧：33 条 HTTP 路由、调用模型、**注册访谈 skill**、路径越界闸、导出 consent 闸 |
-| `lib/store.js` | 1126 | 工作区、快照、墓碑 `redactions.jsonl`、提案与勾选旁路、头像、概念、doctor |
+| `lib/client.js` | 3608 | **整个侧边栏界面**。纯手写，没有 React 依赖注入以外的框架 |
+| `lib/index.js` | 1883 | 宿主侧：55 条 HTTP 路由、调用模型、**注册访谈 skill**、路径越界闸、导出 consent 闸 |
+| `lib/store.js` | 1296 | 工作区、快照、墓碑 `redactions.jsonl`、提案与勾选旁路、头像、概念、草稿、doctor |
 | `lib/core.js` | 1019 | 零依赖：YAML 子集解析/序列化、卡片校验、覆盖率、**引文校验门** |
 | `lib/codec.js` | 785 | PNG tEXt/iTXt 读写、CCv2/CCv3/CHARX、双 chunk 导出、保真字段 |
-| `lib/prompts.js` | 454 | 11 类关系 × 问题库、`buildAnalyzePrompt` |
+| `lib/jobs.js` | 607 | **求职纯逻辑**：两遍读法、五档重要性 + 三档证据、一票否决、关系网找人、报告渲染。不联网不调模型 |
+| `lib/prompts.js` | 497 | 14 类关系视角 × 问题库（带 `bank` 映射）、`buildAnalyzePrompt` |
+| `lib/jobs-store.js` | 367 | 求职落盘：评估报告、投递表、故事银行、简历/求职信草稿、求职设置（存在 self 卡上） |
 | `lib/score.js` | 329 | **纯本地**体检打分 0–100、字数估算、占位符与世界书健康度 |
+| `lib/memory.js` | 262 | 从本机记忆文件里认出「你身边的人」，给出还缺什么 |
 | `skills/lifecard-interview/SKILL.md` | 192 | **会随包安装的那份**访谈 skill |
-| `test/` | 13 个在 `all.mjs` 里 + `live.mjs`，另有 `make-samples.mjs` | 934 项断言 |
+| `test/` | 15 个在 `all.mjs` 里 + `live.mjs`，另有 `make-samples.mjs` | 1136 项断言 |
 | `locale/{zh,en}.json` | — | 侧栏 tab 的标题与描述 |
 | `cordis.patch.yml` | — | 装进 profile 时插入的插件条目 |
 | `node_modules/@deepseek-ai/schemastery` | — | 软链，见下面坑 #2 |
@@ -79,7 +87,7 @@ LifeCard/
 ```bash
 cd .../LifeCard/plugin
 
-# 1. 全量单元测试：934 项
+# 1. 全量单元测试：1136 项
 node test/all.mjs
 # → roundtrip 23 / codec 52 / store 121 / score 51 / json-extract 10 / prompt 154
 #   client-smoke 27 / skill-register 18 / routes 63 / hardening-routes 46
@@ -93,7 +101,7 @@ node test/render-all.mjs
 node test/wording-test.mjs
 ```
 
-**2026-10-20 12:45 的实测结果**：`all.mjs` 934 项全过；`live.mjs` 14/14 全过。
+**2026-10-20 15:05 的实测结果**：`all.mjs` 1136 项全过；`live.mjs` 14/14 全过。
 
 live 那 14 项验的是：插件已激活 / 宿主有 llm / 建工作区 / 卡被列出 / 材料被列出 / 分析跑通 / 有可采纳条目 / 默认不勾选 / 每条都有引文 / 采纳成功 / 导出 PNG / 双 chunk 同源 / doctor 跑通 / 宿主段已写。
 
@@ -119,11 +127,11 @@ live 那 14 项验的是：插件已激活 / 宿主有 llm / 建工作区 / 卡�
 - **端口每次重启都会变**（见过 49204 / 49192 / 53872）。不要写死，以运行时上下文给的 GUI URL 为准，或从 `ps aux | grep dsh-desktop-host` 里看 `--port`。
 - `POST /api/dsh-lifecard/state.get` **不需要 token 就能打**（其它 `/api/*` 路由要 401），所以外部脚本能验插件。
 
-完整的 33 条路由：
+完整的 55 条路由：
 
 ```
 state.get  workspace.init  workspace.inspect  workspace.list
-card.get  card.save  card.delete
+card.get  card.save  card.delete  card.memoryStatus
 world.get
 card.history  card.version  card.restore
 avatar.set  avatar.remove  avatar.list
@@ -135,6 +143,11 @@ proposal.list  proposal.get  proposal.check  proposal.apply
 doctor.run
 interview.questions  interview.plan  interview.record  interview.history
 concept.get  concept.set
+draft.get  draft.save  draft.drop  draft.list
+memory.scan  memory.import
+job.profile.get  job.profile.set  job.evaluate  job.evaluations  job.evaluation.get
+job.network  job.tracker.list  job.tracker.add  job.tracker.update
+job.stories  job.story.add  job.drafts  job.draft.get  job.resume.build  job.cover.build
 ```
 
 ---
@@ -181,8 +194,8 @@ concept.get  concept.set
 ### P1 — 文档陈旧（✅ 已完成）
 | 位置 | 原来写的 | 现在是 |
 |---|---|---|
-| `README.md:27` | 「96 项测试全部通过」 | 934 项 |
-| `plugin/README.md:178` | `# 全部测试（96 项）` | 934 项 |
+| `README.md:27` | 「96 项测试全部通过」 | 1136 项 |
+| `plugin/README.md:178` | `# 全部测试（96 项）` | 1136 项 |
 | `plugin/README.md:29` | 侧栏会出现**人物档案** | **Life Cards** |
 
 `plugin/README.md` 的目录树与"三个入口"图已对着现在的界面重写（commit `43266e6`）。
@@ -249,7 +262,7 @@ concept.get  concept.set
 
 **为什么世界书不进卡列表**：它没有覆盖度、不参与体检打分，混进卡列表会显示成"这张卡才写了 20%"。
 
-**测试**：`roundtrip` +10（条目解析）、`routes-test` +12（导入到显示的整条链路）、`render-all` +17（世界书列表行/详情/空/未取到、编辑表单的世界下拉、手写触发词、搜索联动、世界下拉不留空值、卡片能点回所属世界书）。合计 651 → 710 → 722 → 725 → 736 → 741 → **934**。新增断言用 `git show HEAD:plugin/lib/...` 的旧代码验过会红 10 项。
+**测试**：`roundtrip` +10（条目解析）、`routes-test` +12（导入到显示的整条链路）、`render-all` +17（世界书列表行/详情/空/未取到、编辑表单的世界下拉、手写触发词、搜索联动、世界下拉不留空值、卡片能点回所属世界书）。合计 651 → 710 → 722 → 725 → 736 → 741 → 934 → **1136**。新增断言用 `git show HEAD:plugin/lib/...` 的旧代码验过会红 10 项。
 
 ### P3 — 还没做的（都需要人点头）
 
