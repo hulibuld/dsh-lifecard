@@ -10,19 +10,49 @@
 /**
  * 关系类型 → 这一类的记忆密度在哪里。
  * 判断标准：这一组问题答完，能不能撑起一次像样的扮演和一篇文章。
+ *
+ * 两件事分开写，别混：
+ *   id    界面上那个选项，要具体到「父亲」「母亲」这种能一眼认领的词
+ *   bank  背后用哪一套题（同类的题一样，只是叫法不同）
+ *
+ * 为什么父亲母亲要分成两项：以前只有一项「父母」，界面上一列出来就是
+ * 「父母 / 祖辈 / 伴侣」，全是从关系类别出发的第三人称说法，用户对着
+ * 自己妈妈要选「父母」，读起来像在填表格。改成「他是我的什么人」之后
+ * 选项就是「母亲」——用户脑子里的那个词。
+ * 分类名（父母/祖辈）留着，但只作 bank 的键，不进界面。
  */
 export const RELATION_TYPES = [
-  { id: 'parent', label: '父母', hint: '他们为你做过的具体事、期待与你的落差、你第一次意识到他们是普通人的时刻', min: 12 },
-  { id: 'grandparent', label: '祖辈', hint: '手艺与职业细节、说过的老话、与你父母的关系、身体变化、家族迁移', min: 10 },
-  { id: 'sibling', label: '兄弟姐妹', hint: '一起长大的具体场景、争过什么、谁护过谁', min: 9 },
-  { id: 'classmate', label: '同学', hint: '共同经历的具体场景、一次冲突或和解、他现在的处境', min: 8 },
-  { id: 'relative', label: '远房亲戚', hint: '一年见几次、见面的固定仪式、两家为什么疏远或亲近', min: 6 },
-  { id: 'teacher', label: '老师', hint: '他教的具体内容、一个标志性动作或口头禅、他怎么对待差生', min: 7 },
-  { id: 'partner', label: '伴侣', hint: '初见场景、吵架的模式、对方的雷区、做过的最像你们俩的事', min: 10 },
-  { id: 'friend', label: '朋友', hint: '怎么认识的、一起干过最蠢的事、现在多久联系一次', min: 8 },
-  { id: 'colleague', label: '同事', hint: '他负责什么、一天怎么过、他抱怨什么', min: 6 },
-  { id: 'self', label: '自己', hint: '时间线、能力和证据、反复出现的困境、不愿承认的部分', min: 15 },
-  { id: 'fictional', label: '虚构角色', hint: '来历、动机、说话方式、绝不做什么', min: 8 },
+  { id: 'father', label: '父亲', bank: 'parent', hint: '他为你做过的具体事、期待与你的落差、你第一次意识到他是普通人的时刻', min: 12 },
+  { id: 'mother', label: '母亲', bank: 'parent', hint: '她为你做过的具体事、期待与你的落差、你第一次意识到她是普通人的时刻', min: 12 },
+  { id: 'grandpa', label: '爷爷', bank: 'grandparent', hint: '手艺与职业细节、说过的老话、与你父母的关系、身体变化、家族迁移', min: 10 },
+  { id: 'grandma', label: '奶奶', bank: 'grandparent', hint: '手艺与职业细节、说过的老话、与你父母的关系、身体变化、家族迁移', min: 10 },
+  { id: 'partner', label: '伴侣', bank: 'partner', hint: '初见场景、吵架的模式、对方的雷区、做过的最像你们俩的事', min: 10 },
+  { id: 'friend', label: '好友', bank: 'friend', hint: '怎么认识的、一起干过最蠢的事、现在多久联系一次', min: 8 },
+  { id: 'sibling', label: '兄弟姐妹', bank: 'sibling', hint: '一起长大的具体场景、争过什么、谁护过谁', min: 9 },
+  { id: 'classmate', label: '同学', bank: 'classmate', hint: '共同经历的具体场景、一次冲突或和解、他现在的处境', min: 8 },
+  { id: 'teacher', label: '老师', bank: 'teacher', hint: '他教的具体内容、一个标志性动作或口头禅、他怎么对待差生', min: 7 },
+  { id: 'colleague', label: '同事', bank: 'colleague', hint: '他负责什么、一天怎么过、他抱怨什么', min: 6 },
+  { id: 'relative', label: '亲戚', bank: 'relative', hint: '一年见几次、见面的固定仪式、两家为什么疏远或亲近', min: 6 },
+  { id: 'self', label: '我自己', bank: 'self', hint: '时间线、能力和证据、反复出现的困境、不愿承认的部分', min: 15 },
+  { id: 'fictional', label: '虚构角色', bank: 'fictional', hint: '来历、动机、说话方式、绝不做什么', min: 8 },
+  { id: 'custom', label: '自己填', bank: 'parent', hint: '上面都没有？直接写你们的关系，题还是一样地问', min: 8 },
+]
+
+/**
+ * 一个人可以同时是几种身份（好友也是伴侣、家人也是伴侣）。
+ * 这些是「补充」那一栏的候选，跟主关系分开存：
+ *   relation       主关系，界面上选的那一个（或自己填的那句话）
+ *   relation_extra 补充，可以有多个
+ * 为什么不让主关系变成数组：卡文件是给人看也给 grep 的，第一个词就是
+ * 这个人最要紧的那个身份；数组会把这件事说不清。
+ */
+export const RELATION_EXTRAS = [
+  '也是伴侣',
+  '也是家人',
+  '也是好友',
+  '也是同事',
+  '也是老师',
+  '也是对手',
 ]
 
 // ── 问题库 ────────────────────────────────────────────────────────
@@ -313,10 +343,22 @@ export const QUESTION_BANK = {
   ],
 }
 
-/** 取某关系类型的问题库；没有就退回通用的 parent 库（并标出来）。 */
+/**
+ * 取某关系类型的问题库。
+ *
+ * 先按 id 找 RELATION_TYPES 拿它的 bank；找不到就把 relationId 本身当
+ * bank 的键再试一次（老数据、手写调用都兼容）；再找不到退回 parent，
+ * 并标 exact:false。
+ *
+ * 「自己填」这一项的 id 是 custom、bank 是 parent：用户写了一句
+ * 「隔壁王叔」，我们不知道怎么问他，但父母那一套题（他为你做过什么、
+ * 你们怎么吵、你第一次发现他是普通人的时刻）几乎对任何人都成立。
+ */
 export function questionsFor(relationId) {
   const key = String(relationId ?? '')
-  if (QUESTION_BANK[key] !== undefined) return { questions: QUESTION_BANK[key], exact: true }
+  const type = RELATION_TYPES.find((r) => r.id === key)
+  const bank = type?.bank ?? key
+  if (QUESTION_BANK[bank] !== undefined) return { questions: QUESTION_BANK[bank], exact: true }
   return { questions: QUESTION_BANK.parent, exact: false }
 }
 
@@ -447,6 +489,7 @@ export const SCHEMA_HINT = `- name（字符串）
 
 export default {
   RELATION_TYPES,
+  RELATION_EXTRAS,
   QUESTION_BANK,
   questionsFor,
   buildAnalyzePrompt,

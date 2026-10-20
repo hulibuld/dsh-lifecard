@@ -117,10 +117,16 @@ export async function readConfig(root) {
   }
 }
 
-/** 写配置。 */
+/**
+ * 写配置。
+ *
+ * 先建目录：还没选文件夹（或选的那个被删了）时直接写文件会抛 ENOENT，
+ * 界面拿到的是一句英文报错，人看不出「你还没选文件夹」。
+ */
 export async function writeConfig(root, patch) {
   const current = await readConfig(root)
   const next = { ...current, ...patch }
+  await fs.mkdir(root, { recursive: true })
   await fs.writeFile(path.join(root, CONFIG_NAME), JSON.stringify(next, null, 2) + '\n', 'utf8')
   return next
 }
@@ -169,6 +175,106 @@ export async function writeConcept(root, concept) {
   const value = { idea, want, avoid, updated_at: new Date().toISOString() }
   await writeConfig(root, { concept: value })
   return { ok: true, concept: value }
+}
+
+// ── 草稿 ──────────────────────────────────────────────────────────
+//
+// 写卡写到一半关掉，以前就白写了。草稿是给人留的后路：把「还没点保存的
+// 那半张卡」原样存下来，下次打开同一张卡时问一句「接着上次写的？」。
+//
+// 为什么放在 .lifecard/drafts/ 而不是卡文件里：
+//   - 卡文件是归档，草稿是过程。过程不该进 git diff。
+//   - 一张卡同时只有一份草稿，保存成功后立刻删掉，不会越积越多。
+//   - 草稿永远不参与体检、打分、导出——它还没定稿。
+
+const DRAFTS_DIR = '.lifecard/drafts'
+
+function draftRelPath(cardId) {
+  return path.posix.join(DRAFTS_DIR, `${core.safeId(cardId)}.json`)
+}
+
+/**
+ * 存一份草稿。同一张卡反复存只保留最新那份。
+ *
+ * @param {string} root
+ * @param {string} cardId 这张卡将来会用的 id（新卡还没 id 时由调用方先定一个）
+ * @param {{ data?: object, sections?: Array<{title: string, body: string}>, avatarTouched?: boolean, avatar?: string|null }} draft
+ */
+export async function writeDraft(root, cardId, draft) {
+  const id = String(cardId ?? '').trim()
+  if (id === '') return { ok: false, error: '还没给这张卡一个 id，草稿没法存。' }
+  const rel = draftRelPath(id)
+  const abs = path.join(root, rel)
+  await fs.mkdir(path.dirname(abs), { recursive: true })
+  const payload = {
+    id: core.safeId(id),
+    saved_at: new Date().toISOString(),
+    data: draft?.data ?? {},
+    sections: Array.isArray(draft?.sections) ? draft.sections : [],
+    // 头像很大（几百 KB 的 base64）。草稿里只在用户真动过头像时才带，
+    // 否则每存一次草稿都把同一个头像重写一遍，盘上全是重复。
+    avatar_touched: draft?.avatarTouched === true,
+    ...(draft?.avatarTouched === true ? { avatar: draft?.avatar ?? null } : {}),
+  }
+  await fs.writeFile(abs, JSON.stringify(payload, null, 2) + '\n', 'utf8')
+  return { ok: true, draft: payload }
+}
+
+/**
+ * 读草稿。没有就返回 null——「没有草稿」是正常状态，不是错误。
+ * @returns {Promise<object|null>}
+ */
+export async function readDraft(root, cardId) {
+  const id = String(cardId ?? '').trim()
+  if (id === '') return null
+  try {
+    const text = await fs.readFile(path.join(root, draftRelPath(id)), 'utf8')
+    const raw = JSON.parse(text)
+    if (raw === null || typeof raw !== 'object') return null
+    return {
+      id: String(raw.id ?? core.safeId(id)),
+      saved_at: typeof raw.saved_at === 'string' ? raw.saved_at : null,
+      data: raw.data !== null && typeof raw.data === 'object' ? raw.data : {},
+      sections: Array.isArray(raw.sections) ? raw.sections : [],
+      avatar_touched: raw.avatar_touched === true,
+      avatar: typeof raw.avatar === 'string' ? raw.avatar : null,
+    }
+  } catch {
+    return null
+  }
+}
+
+/** 删草稿。保存成功之后必须调它，否则下次打开会拿旧草稿盖掉刚存的内容。 */
+export async function removeDraft(root, cardId) {
+  const id = String(cardId ?? '').trim()
+  if (id === '') return { ok: true }
+  await fs.rm(path.join(root, draftRelPath(id)), { force: true })
+  return { ok: true }
+}
+
+/** 列出所有草稿（界面用来提示「有 2 张卡还没写完」）。 */
+export async function listDrafts(root) {
+  const dir = path.join(root, DRAFTS_DIR)
+  let names = []
+  try {
+    names = await fs.readdir(dir)
+  } catch {
+    return []
+  }
+  const out = []
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue
+    const id = name.slice(0, -'.json'.length)
+    const d = await readDraft(root, id)
+    if (d === null) continue
+    out.push({
+      id: d.id,
+      name: typeof d.data?.name === 'string' ? d.data.name : '',
+      saved_at: d.saved_at,
+      filled: d.sections.filter((s) => String(s?.body ?? '').trim() !== '').length,
+    })
+  }
+  return out.sort((a, b) => String(b.saved_at ?? '').localeCompare(String(a.saved_at ?? '')))
 }
 
 // ── 墓碑 ──────────────────────────────────────────────────────────
@@ -1101,6 +1207,10 @@ export default {
   writeConfig,
   readConcept,
   writeConcept,
+  writeDraft,
+  readDraft,
+  removeDraft,
+  listDrafts,
   readRedactions,
   appendRedaction,
   sha256,

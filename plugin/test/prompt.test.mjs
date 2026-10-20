@@ -1,4 +1,5 @@
 // 提示词层的硬约束：材料截断必须告知、短材料不能被误伤。
+import { readFileSync } from 'node:fs'
 import * as P from '../lib/prompts.js'
 
 let pass = 0, fail = 0
@@ -103,6 +104,85 @@ const base = { aboutId: 'x', aboutName: '甲', schemaHint: '- name' }
   const empty = P.buildAnalyzePrompt({ ...base, materials: material, concept: {} })
   t('空概念走「没写」分支', empty.includes('没写'))
   t('空概念不出现杜撰的标题', !empty.includes('一句话概括：'))
+}
+
+// 10. 关系选项必须是「他是我的什么人」的视角，不是从关系类别出发的第三人称
+//     用户原话：「父母」关系是什么鬼？肯定是父子关系嘛。但是父子关系也不够好，
+//     要是女生呢？所以直接选：他是我的什么人？父亲、母亲、好友、爷爷、奶奶、情侣。
+{
+  const labels = P.RELATION_TYPES.map((r) => r.label)
+  // 绝对不能出现这两个：它们是分类名，不是一个人
+  t('没有「父母」这个选项', !labels.includes('父母'), labels.join(' / '))
+  t('没有「祖辈」这个选项', !labels.includes('祖辈'), labels.join(' / '))
+  t('没有「兄弟姐妹」以外含糊的辈分词', !labels.includes('长辈'), labels.join(' / '))
+
+  // 用户点名要的六个必须都在
+  for (const want of ['父亲', '母亲', '好友', '爷爷', '奶奶', '伴侣']) {
+    t(`有「${want}」这一项`, labels.includes(want), labels.join(' / '))
+  }
+  t('有「自己填」兜底', labels.includes('自己填'))
+
+  // 父亲和母亲必须是两项，不能合成一项：用户明确说「父子不够好，要是女生呢」
+  t('父亲母亲分成两项', labels.indexOf('父亲') !== labels.indexOf('母亲'))
+  t('父亲在母亲前面', labels.indexOf('父亲') < labels.indexOf('母亲'))
+
+  // id 要稳定（账本靠它续接），得是英文小写
+  t('每个 id 都是小写英文', P.RELATION_TYPES.every((r) => /^[a-z][a-z0-9]*$/.test(r.id)), P.RELATION_TYPES.map((r) => r.id).join(','))
+
+  // 每项都要有 bank，且 bank 必须真在题库里（否则会静默退回 parent）
+  const banks = new Set(P.RELATION_TYPES.map((r) => r.bank))
+  t('每项都指定了题库', P.RELATION_TYPES.every((r) => typeof r.bank === 'string' && r.bank !== ''))
+  for (const b of banks) {
+    t(`题库 ${b} 真的有题`, P.questionsFor(b).exact, b)
+  }
+
+  // 同类共享题库：父亲母亲问一样的题
+  t('父亲和母亲共用一套题', P.RELATION_TYPES.find((r) => r.id === 'father').bank === P.RELATION_TYPES.find((r) => r.id === 'mother').bank)
+  t('爷爷和奶奶共用一套题', P.RELATION_TYPES.find((r) => r.id === 'grandpa').bank === P.RELATION_TYPES.find((r) => r.id === 'grandma').bank)
+
+  // 「自己填」不能没有题库可用
+  t('自己填也有一套题', P.questionsFor('custom').questions.length >= 5)
+
+  // hint 要是「你能想起来的具体事」，不能是「他是什么样的人」这种空话
+  // hint 要指向「你能想起来的具体事」，不能是「他是什么样的人」这种空话。
+  // 怎么判：不许出现纯抽象的评语词。
+  // 一开始我写的是「必须含 具体/场景/事/话/手艺/时刻/地方」，结果
+  // 「他负责什么、一天怎么过、他抱怨什么」被误判——它很具体，只是没用那几个字。
+  // 断言比文案苛刻的时候，改断言，别去改文案凑字。
+  const VAGUE = /\u6027\u683c|\u4eba\u54c1|\u4e3a\u4eba|\u7279\u70b9|\u4f18\u70b9|\u7f3a\u70b9|\u5f62\u8c61/
+  const vague = P.RELATION_TYPES.filter((r) => VAGUE.test(r.hint) || r.hint.length < 8)
+  t('每项 hint 都不说空话', vague.length === 0, vague.map((r) => r.label + ':' + r.hint).join(' | '))
+  // 「自己填」不算关系类型，它是个兜底出口，不需要给抓手。
+  const kinds = P.RELATION_TYPES.filter((r) => r.id !== 'custom')
+  t('每种关系都给了不止一个抓手', kinds.every((r) => r.hint.includes('\u3001')), kinds.filter((r) => !r.hint.includes('\u3001')).map((r) => r.label).join(' / '))
+}
+
+// 11. 一个人可以同时是几种身份：补充那一栏要有，且不和主关系混在一起
+{
+  t('有补充身份的候选词', Array.isArray(P.RELATION_EXTRAS) && P.RELATION_EXTRAS.length >= 4, String(P.RELATION_EXTRAS?.length))
+  // 用户举的例子：好友也可以是情侣，家人也可以是伴侣
+  t('补充里能写「也是伴侣」', P.RELATION_EXTRAS.some((x) => x.includes('伴侣')), P.RELATION_EXTRAS.join(' / '))
+  t('补充里能写「也是家人」', P.RELATION_EXTRAS.some((x) => x.includes('家人')), P.RELATION_EXTRAS.join(' / '))
+  t('补充里能写「也是好友」', P.RELATION_EXTRAS.some((x) => x.includes('好友')), P.RELATION_EXTRAS.join(' / '))
+  // 补充词不能说成主关系：主关系是那一个人，补充是「还有这一层」
+  t('补充词都带「也是」前缀', P.RELATION_EXTRAS.every((x) => x.startsWith('也是')), P.RELATION_EXTRAS.join(' / '))
+}
+
+// 12. 浏览器侧那份兜底列表必须和宿主这份对得上
+//     （两边各写一份是不得已：浏览器拿不到 node 模块。所以要有测试盯着）
+{
+  const clientSrc = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  const block = clientSrc.slice(clientSrc.indexOf('const RELATION_FALLBACK = ['), clientSrc.indexOf('// 一个人常常不止一种身份'))
+  t('浏览器侧有兜底列表', block.length > 100)
+  const fbLabels = [...block.matchAll(/label: '([^']+)'/g)].map((m) => m[1])
+  const hostLabels = P.RELATION_TYPES.map((r) => r.label).filter((l) => l !== '自己填')
+  t('兜底列表顺序和宿主一致', JSON.stringify(fbLabels) === JSON.stringify(hostLabels),
+    `浏览器：${fbLabels.join('/')} 宿主：${hostLabels.join('/')}`)
+  // 补充词那份也要对得上
+  const exBlock = clientSrc.slice(clientSrc.indexOf('const RELATION_EXTRAS = ['), clientSrc.indexOf('const SECTIONS_MAIN'))
+  const exClient = [...exBlock.matchAll(/'([^']+)'/g)].map((m) => m[1])
+  t('补充词两边一致', JSON.stringify(exClient) === JSON.stringify(P.RELATION_EXTRAS),
+    `浏览器：${exClient.join('/')} 宿主：${P.RELATION_EXTRAS.join('/')}`)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

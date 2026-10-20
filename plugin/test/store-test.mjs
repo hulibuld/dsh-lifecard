@@ -448,5 +448,75 @@ console.log('=== 14. 同一天再跑一次分析，不许覆盖上一轮 ===')
   t('换个人不用排队', /proposals\/mama-\d{4}-\d{2}-\d{2}\.json$/.test(other.json), other.json)
 }
 
+// 15. 草稿：写卡写到一半关掉，下次还能接着写
+//     草稿不是卡，也不是材料。它存在 .lifecard/drafts/，不进卡文件，
+//     不参与体检、打分、导出；保存成功后必须立刻删掉，否则下次打开
+//     会拿旧草稿盖掉刚存的内容。
+{
+  const r15 = path.join(tmpdir(), 'lifecard-draft-' + Date.now())
+  await store.openWorkspace(r15, { create: true })
+
+  t('没有草稿时读回 null', (await store.readDraft(r15, 'mama')) === null)
+  t('没有草稿时列表是空的', (await store.listDrafts(r15)).length === 0)
+
+  const draft = {
+    data: { name: '妈妈', relation: '母亲', relation_extra: ['也是好友'] },
+    sections: [{ title: '自述', body: '她十九岁进厂。' }, { title: '性格', body: '' }],
+  }
+  const w = await store.writeDraft(r15, 'mama', draft)
+  t('草稿写得进去', w.ok === true)
+  const onDisk = path.join(r15, '.lifecard', 'drafts', 'mama.json')
+  t('落在 .lifecard/drafts/ 下', await fs.access(onDisk).then(() => true, () => false))
+  t('没有写进卡文件', await fs.access(path.join(r15, 'people', 'mama.card.md')).then(() => false, () => true))
+
+  const back = await store.readDraft(r15, 'mama')
+  t('读回来名字对', back.data.name === '妈妈', back.data.name)
+  t('读回来关系对', back.data.relation === '母亲')
+  t('读回来补充身份对', JSON.stringify(back.data.relation_extra) === '["也是好友"]')
+  t('读回来小节对', back.sections.length === 2 && back.sections[0].body === '她十九岁进厂。')
+  t('带保存时间', typeof back.saved_at === 'string' && back.saved_at.includes('T'))
+
+  // 再写一次只保留最新那份，不会存出第二份
+  await store.writeDraft(r15, 'mama', { data: { name: '妈妈' }, sections: [{ title: '自述', body: '改过了。' }] })
+  const list = await store.listDrafts(r15)
+  t('同一张卡只有一份草稿', list.length === 1, JSON.stringify(list.map((d) => d.id)))
+  t('内容是最新那次', (await store.readDraft(r15, 'mama')).sections[0].body === '改过了。')
+  t('列表里带名字', list[0].name === '妈妈', list[0].name)
+  t('列表里数得出写了几段', list[0].filled === 1, String(list[0].filled))
+
+  // 不同的人各存各的，不互相覆盖
+  await store.writeDraft(r15, 'baba', { data: { name: '爸爸' }, sections: [] })
+  t('两张卡两份草稿', (await store.listDrafts(r15)).length === 2)
+
+  // 头像只在动过时才进草稿：头像 base64 几百 KB，每次都存会把盘撑满
+  const noAvatar = await store.writeDraft(r15, 'baba', { data: { name: '爸爸' }, sections: [] })
+  t('没动过头像就不带头像字段', noAvatar.draft.avatar_touched === false && noAvatar.draft.avatar === undefined,
+    JSON.stringify(Object.keys(noAvatar.draft)))
+  const withAvatar = await store.writeDraft(r15, 'baba', { data: { name: '爸爸' }, sections: [], avatarTouched: true, avatar: 'iVBORw0KGgo=' })
+  t('动过头像才带', withAvatar.draft.avatar === 'iVBORw0KGgo=' && withAvatar.draft.avatar_touched === true)
+  t('读回来也带', (await store.readDraft(r15, 'baba')).avatar === 'iVBORw0KGgo=')
+
+  // 删除
+  await store.removeDraft(r15, 'mama')
+  t('删掉之后读回 null', (await store.readDraft(r15, 'mama')) === null)
+  t('删不存在的草稿不报错', (await store.removeDraft(r15, 'never-existed')).ok === true)
+
+  // 空 id 不许写：否则所有新卡都会挤到同一个文件里
+  const bad = await store.writeDraft(r15, '', { data: {}, sections: [] })
+  t('没有 id 时拒绝写草稿', bad.ok === false)
+  t('拒绝时给了人话', String(bad.error ?? '').includes('id'), String(bad.error))
+
+  // 草稿目录被手删掉也要能读（返回 null，不抛）
+  await fs.rm(path.join(r15, '.lifecard', 'drafts'), { recursive: true, force: true })
+  t('目录没了读草稿不抛', (await store.readDraft(r15, 'baba')) === null)
+  t('目录没了列表返回空数组', (await store.listDrafts(r15)).length === 0)
+
+  // 坏文件不许把界面拖垮
+  await fs.mkdir(path.join(r15, '.lifecard', 'drafts'), { recursive: true })
+  await fs.writeFile(path.join(r15, '.lifecard', 'drafts', 'broken.json'), '这不是 json', 'utf8')
+  t('坏草稿文件读回 null 不抛', (await store.readDraft(r15, 'broken')) === null)
+  t('坏文件不进列表', (await store.listDrafts(r15)).length === 0)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

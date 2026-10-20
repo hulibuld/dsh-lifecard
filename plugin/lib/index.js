@@ -927,6 +927,38 @@ function buildApi(ctx, workspace, config) {
       return { ok: true, concept: saved.concept }
     },
 
+    /**
+     * 草稿：写卡写到一半先存下来，下次接着写。
+     *
+     * `cardId` 由界面给（新卡还没保存时也有 id，是名字算出来的），
+     * 所以这里不需要先有一张卡。草稿存在 .lifecard/drafts/，不进卡文件。
+     */
+    'draft.get': async (body) => {
+      const ws = await root(body)
+      const cardId = String(body?.cardId ?? '')
+      if (cardId === '') return { ok: true, draft: null }
+      const draft = await store.readDraft(ws, cardId)
+      return { ok: true, draft }
+    },
+
+    'draft.save': async (body) => {
+      const ws = await root(body)
+      const saved = await store.writeDraft(ws, String(body?.cardId ?? ''), body?.draft ?? {})
+      if (saved.ok !== true) return saved
+      return { ok: true, saved_at: saved.draft.saved_at }
+    },
+
+    'draft.drop': async (body) => {
+      const ws = await root(body)
+      await store.removeDraft(ws, String(body?.cardId ?? ''))
+      return { ok: true }
+    },
+
+    'draft.list': async (body) => {
+      const ws = await root(body)
+      return { ok: true, drafts: await store.listDrafts(ws) }
+    },
+
     'analyze.run': async (body) => {
       const ws = await root(body)
       const aboutId = String(body?.about ?? '')

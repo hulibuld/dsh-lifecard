@@ -462,6 +462,24 @@ const CSS = `
   background: var(--lc-interview-soft); color: var(--lc-interview); border: 1px solid var(--lc-interview);
 }
 
+/* 关系选项：一片一片能点的词，比下拉框好点——一屏就能看见父亲母亲爷爷都在 */
+.lc-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.lc-chip {
+  padding: 5px 11px; border-radius: 999px; border: 1px solid var(--lc-line-strong);
+  background: var(--lc-panel); color: inherit; font-family: inherit; font-size: 12.5px;
+  cursor: pointer; transition: border-color .1s, background .1s, color .1s;
+}
+.lc-chip:hover { border-color: var(--lc-interview); background: var(--lc-interview-soft); }
+.lc-chip.on {
+  border-color: var(--lc-interview); background: var(--lc-interview-soft);
+  color: var(--lc-interview); font-weight: 650;
+}
+/* 「补充」那一片是虚线框：勾上之后会多出一排小词，样式比主关系淡一档，
+   免得看成一主多从的并列关系 */
+.lc-chip.add { border-style: dashed; }
+.lc-chip.add.on { border-style: solid; font-weight: 400; }
+.lc-chip.sm { padding: 3px 9px; font-size: 11.5px; }
+
 /* 正文小节（阅读态） */
 .lc-sec { padding: 9px 11px; border-radius: 9px; background: var(--lc-panel); border: 1px solid var(--lc-line); }
 .lc-sec .st { font-size: 11.5px; font-weight: 650; color: var(--lc-muted); letter-spacing: .03em; margin-bottom: 3px; }
@@ -582,6 +600,38 @@ const STATUS_LABEL = {
 }
 
 const LEVEL_LABEL = ['入门', '熟手', '精通', '专家']
+
+// 关系选项平时由宿主给（state.relations），这份只在拿不到时兜底。
+// 为什么要有：宿主还是旧版、或者插件刚装好还没重启时，state.relations 是空的，
+// 这一页就只剩一个「自己填」和一片空白，用户以为软件坏了。
+// 兜底列表跟 prompts.js 里那份保持一致，改的时候两边一起改。
+const RELATION_FALLBACK = [
+  { id: 'father', label: '父亲', hint: '他为你做过的具体事、期待与你的落差' },
+  { id: 'mother', label: '母亲', hint: '她为你做过的具体事、期待与你的落差' },
+  { id: 'grandpa', label: '爷爷', hint: '手艺与职业细节、说过的老话' },
+  { id: 'grandma', label: '奶奶', hint: '手艺与职业细节、说过的老话' },
+  { id: 'partner', label: '伴侣', hint: '初见场景、吵架的模式、对方的雷区' },
+  { id: 'friend', label: '好友', hint: '怎么认识的、一起干过最蠢的事' },
+  { id: 'sibling', label: '兄弟姐妹', hint: '一起长大的具体场景、争过什么' },
+  { id: 'classmate', label: '同学', hint: '共同经历的具体场景、一次冲突或和解' },
+  { id: 'teacher', label: '老师', hint: '他教的具体内容、一个标志性动作' },
+  { id: 'colleague', label: '同事', hint: '他负责什么、一天怎么过' },
+  { id: 'relative', label: '亲戚', hint: '一年见几次、见面的固定仪式' },
+  { id: 'self', label: '我自己', hint: '时间线、能力和证据、反复出现的困境' },
+  { id: 'fictional', label: '虚构角色', hint: '来历、动机、说话方式、绝不做什么' },
+]
+
+// 一个人常常不止一种身份：好友也是伴侣、家人也是伴侣。
+// 这几个词跟宿主侧的 prompts.js 里那份是同一套，浏览器侧拿不到那边的东西，
+// 所以在这里再写一遍。改的时候两边一起改（render-all 有一条断言盯着）。
+const RELATION_EXTRAS = [
+  '也是伴侣',
+  '也是家人',
+  '也是好友',
+  '也是同事',
+  '也是老师',
+  '也是对手',
+]
 
 const SECTIONS_MAIN = [
   { title: '自述', hint: '他是什么样的人。像跟朋友介绍他那样写。' },
@@ -1644,6 +1694,54 @@ function CardForm({ card, onCancel, onSaved, worlds }) {
   const [err, setErr] = useState(null)
   const [more, setMore] = useState(false)
 
+  // ── 草稿 ──
+  // 这张卡的 id：已存在的卡用它的，新建的卡用名字算一个。
+  // 必须是稳定的同一个值，否则每次改名都存出一份新草稿。
+  const cardId = String(card?.data?.id ?? '')
+  // 打开时读一次草稿。null = 读过了没有；undefined = 还在读。
+  const [draft, setDraft] = useState(undefined)
+  // 用户已经决定「不要草稿了」或「已经接着写了」，就不再问
+  const [draftAsked, setDraftAsked] = useState(false)
+  // 上一次落盘的内容指纹，用来避免每敲一个字就发一次请求
+  const [savedPrint, setSavedPrint] = useState('')
+
+  useEffect(() => {
+    let alive = true
+    if (cardId === '') { setDraft(null); return () => {} }
+    call('draft.get', { cardId })
+      .then((r) => {
+        if (!alive) return
+        const got = r?.ok === true ? (r.draft ?? null) : null
+        setDraft(got)
+        // 没有旧草稿就没什么可问的，直接开始自动保存；
+        // 有旧草稿则等用户选过（接着写 / 不要了）再开始，
+        // 否则会在他还没看见那两条按钮之前，就用新内容把旧草稿盖掉。
+        if (got === null) setDraftAsked(true)
+      })
+      .catch(() => { if (alive) { setDraft(null); setDraftAsked(true) } })
+    return () => { alive = false }
+  }, [cardId])
+
+  // 自动存草稿：改动停下来 1.5 秒就存一次。
+  // 为什么不在每次 onChange 都存：每敲一个字符发一次网络请求，
+  // 打字会卡，而且盘上全是中间态。停手 1.5 秒意味着「他想了想，可能要去接杯水」。
+  useEffect(() => {
+    if (draftAsked !== true) return () => {}
+    if (cardId === '') return () => {}
+    const print = JSON.stringify({ data, sections: sections.filter((x) => String(x.body ?? '').trim() !== '') })
+    // 一个字都没写就没什么可存的；否则用户点一下「改这张卡」又立刻退出，
+    // 都会在盘上留一份空草稿，下次进来还问「上次写到一半」——那是假话。
+    const empty = Object.keys(data).length === 0 && sections.every((x) => String(x.body ?? '').trim() === '')
+    if (empty) return () => {}
+    if (print === savedPrint) return () => {}
+    const timer = setTimeout(() => {
+      call('draft.save', { cardId, draft: { data, sections, avatarTouched, avatar } })
+        .then(() => setSavedPrint(print))
+        .catch(() => {})
+    }, 1500)
+    return () => clearTimeout(timer)
+  }, [cardId, data, sections, avatar, avatarTouched, draftAsked, savedPrint])
+
   const set = (key, value) => setData((prev) => ({ ...prev, [key]: value }))
 
   // 篇幅提示：不是限制，只是让人知道自己写到哪个量级了
@@ -1686,6 +1784,9 @@ function CardForm({ card, onCancel, onSaved, worlds }) {
           : await call('avatar.set', { path: card.path, base64: avatar })
         if (a.ok !== true) { setErr(a.error ?? '卡存好了，但头像没存上'); return }
       }
+      // 卡已经存进文件了，草稿的使命结束。不删的话，下次打开这张卡
+      // 会拿旧草稿盖掉刚存的内容——那是数据回退，比丢草稿严重得多。
+      if (cardId !== '') await call('draft.drop', { cardId }).catch(() => {})
       await onSaved()
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
   }
@@ -1694,8 +1795,35 @@ function CardForm({ card, onCancel, onSaved, worlds }) {
   const kind = String(data.kind ?? 'real')
   const isPerson = kind === 'real' || kind === 'hybrid' || kind === 'self' || kind === 'fictional'
 
+  // 有草稿就问一句。不自动恢复：用户上次可能是故意放弃那个版本的，
+  // 悄悄盖上去会让他看到一堆自己没打算留下的字，还以为软件出错了。
+  const draftBanner = draft !== null && draft !== undefined && draftAsked !== true
+    ? h('div', { className: 'lc-note' },
+        h('div', { style: { fontWeight: 650, marginBottom: 4 } }, '上次写到一半，还留着。'),
+        h('div', { className: 'lc-meta' },
+          `存于 ${humanWhen(draft.saved_at)}，写了 ${draft.sections.filter((x) => String(x?.body ?? '').trim() !== '').length} 段。`),
+        h('div', { className: 'lc-row', style: { marginTop: 8 } },
+          h(Btn, {
+            size: 'sm', tone: 'primary', icon: 'check',
+            onClick: () => {
+              setData({ ...(draft.data ?? {}) })
+              setSections((draft.sections ?? []).map((x) => ({ ...x })))
+              if (draft.avatar_touched === true) { setAvatar(draft.avatar ?? null); setAvatarTouched(true) }
+              setDraftAsked(true)
+              setSavedPrint(JSON.stringify({ data: draft.data ?? {}, sections: (draft.sections ?? []).filter((x) => String(x?.body ?? '').trim() !== '') }))
+            },
+          }, '接着上次写'),
+          h(Btn, {
+            size: 'sm', tone: 'ghost',
+            onClick: () => { setDraftAsked(true); call('draft.drop', { cardId }).catch(() => {}) },
+          }, '不要了，从头写'),
+        ),
+      )
+    : null
+
   return h('div', { className: 'lc-pad lc-stack' },
     err === null ? null : h(Err, { text: err }),
+    draftBanner,
     h('div', { className: 'lc-row' },
       h('div', { className: 'lc-meta lc-grow' }, '写多少算多少。空着的地方不会影响别的东西，以后想起来再补。'),
       h(Tag, { tone: sizeTag().tone }, sizeTag().label),
@@ -1711,7 +1839,7 @@ function CardForm({ card, onCancel, onSaved, worlds }) {
         onChange: (v) => { setAvatar(v); setAvatarTouched(true) },
       }),
 
-      h(Field, { label: '叫什么' },
+      h(Field, { label: '他叫什么' },
         h('input', { className: 'lc-input', value: String(data.name ?? ''), onChange: (e) => set('name', e.target.value), placeholder: '妈妈 / 老张 / 塞拉菲娜', spellCheck: false }),
       ),
       h(Field, { label: '你平时怎么称呼他', hint: '可以不填。写「妈」「张哥」这种。' },
@@ -1723,8 +1851,24 @@ function CardForm({ card, onCancel, onSaved, worlds }) {
           KIND_CHOICES.includes(kind) ? null : h('option', { value: kind }, KIND_LABEL[kind] ?? kind)),
       ),
       kind === 'real' || kind === 'hybrid' || kind === 'self'
-        ? h(Field, { label: '跟你的关系', hint: '写「母亲」「大学室友」都行，随便写。' },
+        ? h(Field, { label: '他是我的什么人', hint: '写「母亲」「隔壁王叔」都行。' },
             h('input', { className: 'lc-input', value: String(data.relation ?? ''), onChange: (e) => set('relation', e.target.value), placeholder: '母亲', spellCheck: false }),
+          )
+        : null,
+      // 一个人常常不止一种身份。这一栏是可选的：空白不代表「没有别的身份」，
+      // 只代表这次没想起来——所以不给它必填标记。
+      kind === 'real' || kind === 'hybrid' || kind === 'self'
+        ? h(Field, { label: '还有别的吗', hint: '一个人常常不止一种身份，不填也没关系。' },
+            h('div', { className: 'lc-chips' },
+              (() => {
+                const cur = Array.isArray(data.relation_extra) ? data.relation_extra : []
+                return RELATION_EXTRAS.map((x) => h('button', {
+                  key: x, type: 'button',
+                  className: `lc-chip add sm ${cur.includes(x) ? 'on' : ''}`,
+                  onClick: () => set('relation_extra', cur.includes(x) ? cur.filter((t) => t !== x) : [...cur, x]),
+                }, cur.includes(x) ? `✓ ${x}` : `＋ ${x}`))
+              })(),
+            ),
           )
         : null,
       kind === 'real' || kind === 'hybrid' || kind === 'self'
@@ -2164,7 +2308,7 @@ function NewCardView({ state, onCreate, presetName }) {
   return h('div', { className: 'lc-pad lc-stack' },
     h('div', { className: 'lc-meta' }, '只要一个名字就能开始。其他的建好之后再慢慢填。'),
     h('div', { className: 'lc-fset' },
-      h(Field, { label: '叫什么' },
+      h(Field, { label: '他叫什么' },
         h('input', { className: 'lc-input', value: name, onChange: (e) => setName(e.target.value), placeholder: '妈妈 / 老张 / 塞拉菲娜', spellCheck: false }),
       ),
       h(Field, { label: '他是' },
@@ -2172,7 +2316,7 @@ function NewCardView({ state, onCreate, presetName }) {
           KIND_CHOICES.map((k) => h('option', { key: k, value: k }, KIND_LABEL[k]))),
       ),
       kind === 'real' || kind === 'hybrid' || kind === 'self'
-        ? h(Field, { label: '跟你的关系', hint: '可以不填。' },
+        ? h(Field, { label: '他是我的什么人', hint: '可以不填。' },
             h('input', { className: 'lc-input', value: relation, onChange: (e) => setRelation(e.target.value), placeholder: '母亲', spellCheck: false }),
           )
         : null,
@@ -2188,10 +2332,17 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
   const [phase, setPhase] = useState('pick')   // pick | talk | done
   const [name, setName] = useState(preset?.name ?? '')
   const [relation, setRelation] = useState(() => {
-    const relations = state?.relations ?? []
+    const relations = (state?.relations?.length ?? 0) > 0 ? state.relations : RELATION_FALLBACK
     const hit = relations.find((r) => r.label === preset?.relationLabel)
-    return hit?.id ?? 'parent'
+    // 旧数据里存的可能是「父母」这种分类名，或者一个已经不存在的 id。
+    // 对不上就落在「父亲」——它是父亲/母亲这一支里最靠前的那个，
+    // 题一样问，用户点一下就能改。
+    return hit?.id ?? 'father'
   })
+  // 「自己填」时写的那句话，和主关系分开存：主关系是 id，这句是内容。
+  const [customRelation, setCustomRelation] = useState('')
+  // 「还有别的吗」勾出来的补充身份，可以有多个
+  const [extras, setExtras] = useState([])
   const [plan, setPlan] = useState(null)
   const [queue, setQueue] = useState([])
   const [current, setCurrent] = useState(null)
@@ -2202,7 +2353,8 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
   const [aboutId, setAboutId] = useState(preset?.id ?? '')
   const scrollRef = useRef(null)
 
-  const relations = state?.relations ?? []
+  // 宿主给什么就用什么；一个都没有（还没重启、旧版宿主）就用本地这份。
+  const relations = (state?.relations?.length ?? 0) > 0 ? state.relations : RELATION_FALLBACK
 
   useEffect(() => {
     if (scrollRef.current !== null) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
@@ -2210,16 +2362,39 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
 
   const start = async () => {
     const targetName = (preset?.name ?? name).trim()
-    if (targetName === '') { setErr('先告诉我这是谁'); return }
+    if (targetName === '') { setErr('先写一下他叫什么'); return }
+    // 卡上记的是人能读的那句话（「母亲」「隔壁王叔」），不是 parent/custom 这种内部标识。
+    // 自己填的时候没有现成的词，就用用户写的那一句；他什么都没写，就空着——
+    // 空着比随便塞一个「父母」诚实。
+    const relationText = relation === 'custom'
+      ? customRelation.trim()
+      : (relations.find((r) => r.id === relation)?.label ?? '')
     setBusy(true); setErr(null)
     try {
       const id = preset?.id ?? safeId(targetName)
       const existing = (listing?.cards ?? []).find((c) => c.id === id || c.name === targetName)
       if (existing === undefined) {
         await call('card.save', {
-          data: { lifecard: '0.1', id, kind: 'real', world: 'reality', name: targetName, relation: relations.find((r) => r.id === relation)?.label ?? '' },
+          data: {
+            lifecard: '0.1', id, kind: 'real', world: 'reality', name: targetName,
+            relation: relationText,
+            // 只有真有补充身份时才写这个字段，不然每张卡都多一行空数组
+            ...(extras.length > 0 ? { relation_extra: extras } : {}),
+          },
           sections: [],
         })
+      } else if (extras.length > 0 || relationText !== '') {
+        // 已经有卡的话，把这次点的关系补进去（别把原来写的覆盖成空）
+        const got = await call('card.get', { path: existing.path })
+        if (got?.ok) {
+          const data = { ...got.data }
+          if (relationText !== '') data.relation = relationText
+          if (extras.length > 0) {
+            const before = Array.isArray(data.relation_extra) ? data.relation_extra : []
+            data.relation_extra = [...new Set([...before, ...extras])]
+          }
+          await call('card.save', { path: existing.path, data, sections: got.sections ?? [] })
+        }
       }
       setAboutId(existing?.id ?? id)
       const p = await call('interview.plan', { about: existing?.id ?? id, relation, limit: 3 })
@@ -2286,12 +2461,49 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
       ),
       lockedName
         ? h(Note, { tone: undefined, icon: 'person' }, `正在给「${preset.name}」补内容。`)
-        : h(Field, { label: '这是谁' },
-            h('input', { className: 'lc-input', value: name, onChange: (e) => setName(e.target.value), placeholder: '妈妈 / 爷爷 / 老张', spellCheck: false }),
+        : h(Field, { label: '他叫什么' },
+            h('input', { className: 'lc-input', value: name, onChange: (e) => setName(e.target.value), placeholder: '妈 / 爷爷 / 老张', spellCheck: false }),
           ),
-      h(Field, { label: '你们是什么关系', hint: '关系不同，问的问题不一样。' },
-        h('select', { className: 'lc-select', value: relation, onChange: (e) => setRelation(e.target.value) },
-          relations.map((r) => h('option', { key: r.id, value: r.id }, r.label))),
+      h(Field, { label: '他是我的什么人', hint: '随便点一个最贴的。这一句只决定先问什么，不决定他的身份。' },
+        h('div', { className: 'lc-chips' },
+          relations
+            .filter((r) => r.id !== 'custom')
+            .map((r) => h('button', {
+              key: r.id,
+              type: 'button',
+              className: `lc-chip ${relation === r.id ? 'on' : ''}`,
+              onClick: () => setRelation(r.id),
+            }, r.label)),
+          h('button', {
+            key: 'custom',
+            type: 'button',
+            className: `lc-chip ${relation === 'custom' ? 'on' : ''}`,
+            onClick: () => setRelation('custom'),
+          }, '自己填'),
+        ),
+      ),
+      // 「自己填」不是另起一个下拉，而是把主关系直接变成一句话写进卡里。
+      // 界面上一句话、卡里一句话，中间不再多一层翻译。
+      relation === 'custom'
+        ? h(Field, { label: '那就写一句话', hint: '「隔壁王叔」「高中班主任」都行。' },
+            h('input', {
+              className: 'lc-input',
+              value: customRelation,
+              onChange: (e) => setCustomRelation(e.target.value),
+              placeholder: '隔壁王叔',
+              spellCheck: false,
+            }),
+          )
+        : null,
+      h(Field, { label: '还有别的吗', hint: '一个人常常不止一种身份。' },
+        h('div', { className: 'lc-chips' },
+          RELATION_EXTRAS.map((x) => h('button', {
+            key: x,
+            type: 'button',
+            className: `lc-chip add sm ${extras.includes(x) ? 'on' : ''}`,
+            onClick: () => setExtras(extras.includes(x) ? extras.filter((t) => t !== x) : [...extras, x]),
+          }, extras.includes(x) ? `✓ ${x}` : `＋ ${x}`)),
+        ),
       ),
       h('div', { className: 'lc-meta' }, relations.find((r) => r.id === relation)?.hint ?? ''),
       err === null ? null : h(Err, { text: err }),
