@@ -1078,7 +1078,7 @@ function WorldView({ world, listing, onOpenCard, onAnalyze }) {
       h(Avatar, { name: data.name, kind: 'world', big: true }),
       h('div', { className: 'lc-grow' },
         h('div', { className: 'lc-title' }, data.name ?? '这本世界书'),
-        h('div', { className: 'lc-meta' }, world?.path ?? ''),
+        h('div', { className: 'lc-meta' }, '一本设定集：写一个地方、一段时间里的规矩和人物'),
       ),
     ),
 
