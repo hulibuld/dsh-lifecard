@@ -771,6 +771,7 @@ function LifeCardTab(props) {
           : h(CardView, {
               card: activeCard,
               worlds: listing?.worlds ?? [],
+              onOpenWorld: openWorld,
               proposal,
               setProposal,
               flash,
@@ -1096,7 +1097,7 @@ function WorldView({ world, listing, onOpenCard, onAnalyze }) {
     return entries.filter((e) => `${keysText(e.keys)} ${String(e.content ?? '')} ${String(e.comment ?? '')}`.toLowerCase().includes(needle))
   }, [entries, q])
   // 这本世界书底下的卡（worlds/<id>/cards/ 里的，或者 world 字段指向它的）
-  const here = (listing?.cards ?? []).filter((c) => c.world === data.id)
+  const here = (listing?.cards ?? []).filter((c) => String(c.world ?? '') === String(data.id ?? ''))
   const off = entries.filter((e) => e.enabled === false).length
 
   return h('div', { className: 'lc-pad lc-stack' },
@@ -1148,7 +1149,7 @@ function WorldView({ world, listing, onOpenCard, onAnalyze }) {
 
 // ── 单张卡 ────────────────────────────────────────────────────────
 
-function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, onInterview, onAnalyze, worlds }) {
+function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, onInterview, onAnalyze, worlds, onOpenWorld }) {
   const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState('')
   const [err, setErr] = useState(null)
@@ -1220,6 +1221,15 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
       h('div', { className: 'lc-grow' },
         h('div', { style: { fontWeight: 650, fontSize: 15 } }, data.name ?? '(还没起名字)'),
         h('div', { className: 'lc-meta' }, [KIND_LABEL[data.kind] ?? data.kind, data.relation, data.address].filter(Boolean).join(' · ')),
+        // 属于某本世界书时给一条能点回去的路。只显示名字，不显示磁盘上的
+        // 那串 id——人不需要知道文件夹叫什么。
+        bookOf(data, worlds) === null
+          ? null
+          : h('button', {
+              className: 'lc-btn ghost sm', type: 'button',
+              style: { padding: '2px 0', height: 'auto' },
+              onClick: () => onOpenWorld?.(bookOf(data, worlds)),
+            }, h(Icon, { name: 'book', size: 12 }), ` ${bookOf(data, worlds).name ?? bookOf(data, worlds).id}`),
       ),
     ),
 
@@ -1309,6 +1319,13 @@ function findBook(data) {
   const direct = data?.lorebook?.entries
   if (Array.isArray(direct)) return direct
   return []
+}
+
+/** 这张卡归哪本世界书。找不到就返回 null——不要假装它是 reality。 */
+function bookOf(data, worlds) {
+  const id = String(data?.world ?? '').trim()
+  if (id === '' || id === REALITY) return null
+  return (Array.isArray(worlds) ? worlds : []).find((w) => String(w.id) === id) ?? null
 }
 
 /** 把小字段（能力、禁忌、知道什么）用人话列出来。 */

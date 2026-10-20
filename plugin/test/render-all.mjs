@@ -268,6 +268,26 @@ renderRoot('首页（空）', base('home', { 2: { ok: true, cards: [], materials
 renderRoot('首页（展开更多工具）', base('home', { 10: true }))
 renderRoot('卡片详情', base('card', { 6: CARD_DETAIL }))
 renderRoot('卡片详情＋建议面板', base('card', { 6: CARD_DETAIL, 7: PROPOSAL }))
+// 归到某本世界书里的卡：详情页要能点回那本书。
+// 断言要看这一次渲染出来的文字，不能看全局的 visibleText——首页本来就
+// 列着「北京」，全局断言永远为真，等于没测。
+{
+  const before = visibleText.length
+  renderRoot('卡片详情（属于一本世界书）', base('card', {
+    6: { ...CARD_DETAIL, data: { ...CARD_DATA, kind: 'fictional', world: 'beijing', name: '林小姐' } },
+    2: { ...LISTING, cards: [...LISTING.cards, { id: 'lin', path: 'people/lin.card.md', name: '林小姐', kind: 'fictional', world: 'beijing', coverage: 40, tags: [] }] },
+  }))
+  const slice = visibleText.slice(before)
+  // slice 是「一段一段文字」的数组，按元素精确比会漏掉带前后空格的片段
+  t('卡片详情里能点回那本世界书', slice.join('|').includes('北京'), slice.join(' | ').slice(0, 200))
+  t('现实世界的卡不显示书名', (() => {
+    const b2 = visibleText.length
+    renderRoot('卡片详情（现实世界）', base('card', { 6: CARD_DETAIL }))
+    const s2 = visibleText.slice(b2)
+    const joined = s2.join('|')
+    return !joined.includes('北京') && !joined.includes('beijing') && !joined.includes('reality')
+  })())
+}
 renderRoot('卡片详情（虚拟角色卡）', base('card', {
   6: { ...CARD_DETAIL, data: { ...CARD_DATA, kind: 'fictional', world: 'north', name: '塞拉菲娜', consent: { basis: 'fictional' } } },
 }))
