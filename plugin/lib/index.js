@@ -498,6 +498,40 @@ function repairTruncatedJson(text) {
 // ── 路由 ──────────────────────────────────────────────────────────
 
 /**
+ * 把「本机记忆」和「项目档案」两处的正文一起捞出来认人。
+ *
+ * 分开读、分开贴标签，是因为来源本身是有意义的：USER.md 里那句是你自己
+ * 写进记忆的，档案里那句是当时写成一篇的。合并认人之后每个人身上留一份
+ * sources，材料里就能写明「这是在哪几份文件里提到的」。
+ *
+ * @returns {Promise<{found: boolean, files: number, chars: number, people: Array}>}
+ */
+async function gatherMemoryPeople() {
+  const mem = await memory.readMemory(process.env)
+  const arc = await memory.readArchive(process.env)
+
+  const sources = []
+  if (mem.found === true) sources.push({ label: '本机记忆', text: mem.text })
+  // 档案是成篇的散文，用严格模式认人：见 memory.findPerson 的说明。
+  // 不严格的话，「父亲关系」「奶奶家吃饭」都会被当成一个人的名字。
+  for (const doc of arc.docs ?? []) sources.push({ label: doc.title, text: doc.text, strict: true })
+
+  if (sources.length === 0) {
+    return { found: false, files: 0, chars: 0, memory_files: 0, archive_files: 0, people: [] }
+  }
+  return {
+    found: true,
+    files: (mem.found === true ? mem.files.length : 0) + (arc.docs?.length ?? 0),
+    chars: mem.chars + (arc.docs ?? []).reduce((n, d) => n + String(d.text ?? '').length, 0),
+    // 分两类报，界面要说清「这是在哪儿翻出来的」——
+    // 只报总数会让用户以为软件偷偷读了他别的文件
+    memory_files: mem.found === true ? mem.files.length : 0,
+    archive_files: arc.docs?.length ?? 0,
+    people: memory.findPeopleIn(sources),
+  }
+}
+
+/**
  * 全部路由。每个方法一个 key，浏览器侧 `POST /api/dsh-lifecard/<method>`。
  * @param {any} ctx
  * @param {() => Promise<string>} workspace
@@ -1504,17 +1538,20 @@ function buildApi(ctx, workspace, config) {
      * 先落成材料，人能看见每条是从哪句话来的，能拒绝。
      */
     'memory.scan': async () => {
-      const mem = await memory.readMemory(process.env)
-      if (mem.found !== true) {
-        return { ok: true, found: false, people: [], reason: '这台电脑上没有找到记忆文件。' }
+      const got = await gatherMemoryPeople()
+      if (got.found !== true) {
+        return { ok: true, found: false, people: [], reason: '这台电脑上没找到记忆文件，也没找到项目档案。' }
       }
-      const people = memory.findPeople(mem.text)
       return {
         ok: true,
         found: true,
-        files: mem.files.length,
-        chars: mem.chars,
-        people, // 已经含 clues / missing，界面直接就能画
+        files: got.files,
+        chars: got.chars,
+        // 分两类报：界面要说清「这是在哪儿翻出来的」。
+        // 只报一个总数的话，用户会以为软件偷偷读了他别的文件。
+        memory_files: got.memory_files,
+        archive_files: got.archive_files,
+        people: got.people, // 已经含 clues / missing / sources，界面直接就能画
       }
     },
 
@@ -1526,10 +1563,10 @@ function buildApi(ctx, workspace, config) {
      */
     'memory.import': async (body) => {
       const ws = await root(body)
-      const mem = await memory.readMemory(process.env)
-      if (mem.found !== true) return { ok: false, error: '这台电脑上没有找到记忆文件，没什么可导入的。' }
-      const all = memory.findPeople(mem.text)
-      if (all.length === 0) return { ok: false, error: '记忆里没有认出具体的人。' }
+      const got = await gatherMemoryPeople()
+      if (got.found !== true) return { ok: false, error: '这台电脑上没找到记忆文件，也没找到项目档案，没什么可导入的。' }
+      const all = got.people
+      if (all.length === 0) return { ok: false, error: '记忆和项目档案里都没有认出具体的人。' }
       const wanted = Array.isArray(body?.people) && body.people.length > 0
         ? all.filter((p) => body.people.includes(p.name !== '' ? `${p.kin}:${p.name}` : p.kin))
         : all

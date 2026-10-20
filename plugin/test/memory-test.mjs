@@ -147,6 +147,79 @@ console.log('\n记忆提取')
   await fs.rm(root, { recursive: true, force: true })
 }
 
+// ── 7c. 散文里认人：严格模式（项目档案走这一路） ────────────────
+//
+// 记忆文件是短句，「父亲＝张三」写得清清楚楚。
+// 项目档案是散文，满篇「父亲关系」「奶奶家吃饭」「父亲手里」——
+// 用同一把尺子会认出一堆叫「关系」「家吃饭」「手里」的人。
+{
+  // 每一行都停在一个「看起来像名字」的词上——这正是真实档案里的样子：
+  // 换行、标点把关系词和后面那串字隔开，粘人名的正则就以为捡到宝了。
+  const prose = [
+    '那几年父亲关系',
+    '在奶奶家吃饭',
+    '父亲手里拿着个碗',
+    '父亲那篇稿子收了',
+    '导师组副教授也来了',
+  ].join('\n')
+
+  // 不严格：这是记忆文件走的路径，散文上会误判
+  const loose = memory.findPeople(prose)
+  t('不严格时，散文里会误判出名字（对照，说明为什么需要严格模式）',
+    loose.some((p) => p.name !== ''), JSON.stringify(loose.map((p) => p.name)))
+
+  // 严格：关系词后面粘着的那串字不再当名字
+  const strict = memory.findPeople(prose, true)
+  t('严格模式下认不出「关系」', !strict.some((p) => p.name === '关系'))
+  t('严格模式下认不出「家吃饭」', !strict.some((p) => p.name === '家吃饭'))
+  t('严格模式下认不出「手里」', !strict.some((p) => p.name === '手里'))
+  t('严格模式下认不出「那篇」', !strict.some((p) => p.name === '那篇'))
+  t('严格模式下认不出「组副教授」', !strict.some((p) => p.name.includes('副教授')))
+
+  // 但真正写清名字的两种写法，严格模式下照样认得出来
+  const clear = '父亲＝张三。师傅王先生只收过父亲一个徒弟。'
+  const clearHits = memory.findPeople(clear, true)
+  t('严格模式下等号写法照样认得出', clearHits.some((p) => p.name === '张三'))
+  t('严格模式下带称呼的写法照样认得出', clearHits.some((p) => p.name === '王先生'))
+
+  // 严格模式下裸的关系词（没名没姓）仍然认，只是名字为空
+  const bare = memory.findPeople('父亲在XXXX 公司。', true)
+  t('严格模式下裸的关系词还认（名字留空）', bare.some((p) => p.kin === '父亲' && p.name === ''))
+}
+
+// ── 7d. 多来源合并：档案只补充你已经写过的人，不凭空造人 ────────────
+{
+  const sources = [
+    { label: '本机记忆', text: '父亲＝张三。爷爷a 市手艺。' },
+    { label: '某份档案', text: '父亲关系不好。爷爷的手艺很好。老师那天也在。', strict: true },
+  ]
+  const people = memory.findPeopleIn(sources)
+  const father = people.find((p) => p.kin === '父亲')
+  t('记忆里写过的人，档案里的句子会并进来', father !== undefined && father.lines.length >= 2)
+  t('并进来之后名字还在', father?.name === '张三')
+  t('两份来源都记上了', (father?.sources ?? []).length === 2)
+  t('记忆里没有、档案里只说「老师」的，不凭空造一个人',
+    !people.some((p) => p.kin === '老师'))
+  t('档案里那个「关系」没被当成人名', !people.some((p) => p.name === '关系'))
+
+  // 档案里写清了名字的，仍然要认——那可能正是记忆里没记全的人
+  const sources2 = [
+    { label: '本机记忆', text: '父亲＝张三。' },
+    { label: '某份档案', text: '老师＝王建国。', strict: true },
+  ]
+  t('档案里用等号写清名字的新人，认得出来',
+    memory.findPeopleIn(sources2).some((p) => p.name === '王建国'))
+
+  // 反过来：关系词不在表里的（表哥、二舅、发小），一律不认。
+  // 宁可漏掉一个真实存在的人，也不要在列表里摆一个来历不明的空壳——
+  // 用户点进去发现什么都没有，比少一个人更伤。
+  const sources3 = [
+    { label: '本机记忆', text: '父亲＝张三。' },
+    { label: '某份档案', text: '表哥＝周立。', strict: true },
+  ]
+  t('关系词表里没有的称呼（表哥）不认', !memory.findPeopleIn(sources3).some((p) => p.name === '周立'))
+}
+
 // ── 8. 守「不联网、不调模型」 ────────────────────────────
 {
   const src = await fs.readFile(new URL('../lib/memory.js', import.meta.url), 'utf8')

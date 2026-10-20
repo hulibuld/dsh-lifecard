@@ -63,12 +63,18 @@ const KIN_WORDS = [
  * 为什么不认「他父亲叫张三」这类更复杂的句式：
  * 中文人名没有分隔符，「叫」后面跟几个字全看语感，正则判不准。
  * 判不准就不判——错认一个人名会让整张卡从根上错。
+ *
+ * @param {string} line
+ * @param {boolean} strict 严格模式：不认「关系词后面直接粘名字」那一种。
+ *   记忆文件是短句（「父亲＝张三，1970 年生」），粘着写不会误判；
+ *   项目档案是散文，满篇「父亲关系」「父亲手里」「奶奶家吃饭」，
+ *   那种地方关系词后面跟的从来不是名字。两种文体不能用同一把尺子。
  */
-function findPerson(line) {
+function findPerson(line, strict = false) {
   const text = String(line ?? '').replace(/\*\*/g, '')
 
   // 写法一：父亲＝张三 / 父亲=张三
-  const eq = text.match(/(父亲|母亲|爸爸|妈妈|爷爷|奶奶|外公|外婆|姥爷|姥姥|哥哥|姐姐|弟弟|妹妹|丈夫|妻子|老公|老婆|师傅|师父|导师)\s*[＝=]\s*([\u4e00-\u9fa5]{2,4})/)
+  const eq = text.match(/(父亲|母亲|爸爸|妈妈|爷爷|奶奶|外公|外婆|姥爷|姥姥|哥哥|姐姐|弟弟|妹妹|丈夫|妻子|老公|老婆|师傅|师父|导师|老师)\s*[＝=]\s*([\u4e00-\u9fa5]{2,4})/)
   if (eq !== null) {
     const name = eq[2].replace(/(生|是|在|的|现|曾|已).*$/, '')
     return [{ kin: eq[1], name: name.length >= 2 ? name : '' }]
@@ -83,18 +89,27 @@ function findPerson(line) {
   const titled = text.match(/(父亲|母亲|爷爷|奶奶|外公|外婆|师傅|师父|导师|老师)([\u4e00-\u9fa5]{1,2}(?:先生|女士|医生|教授|院士))/)
   // 「父亲是教授」的后缀是「教授」，但前面的「是」是动词不是姓——
   // 姓用一个字是常见的（「王先生」全名就两字），所以这里只挡动词/虚词。
-  if (titled !== null && !/^(是|在|的|有|已|曾|现|当|做|说|和|与|给|把|被|从|到|也|还|都|就|不|没|这|那|一|个|位|名|们)/.test(titled[2])) {
+  // 「导师组副教授」里的「组副」也不是姓：职务词一律不当名字。
+  if (
+    titled !== null
+    && !/^(是|在|的|有|已|曾|现|当|做|说|叫|和|与|给|把|被|从|到|也|还|都|就|不|没|这|那|一|个|位|名|们)/.test(titled[2])
+    && !/[副正级位等们]/.test(titled[2])
+  ) {
     return [{ kin: titled[1], name: titled[2] }]
   }
 
   // 写法三：父亲张三 —— 关系词后紧跟 2~3 个汉字，紧跟标点或括号
-  const glued = text.match(/(父亲|母亲|爷爷|奶奶|外公|外婆|师傅|师父)([\u4e00-\u9fa5]{2,3})(?=[，。、；：\s）)（(「【]|$)/)
-  if (glued !== null) {
-    const tail = glued[2]
-    // 「父亲在浙江」这种不是名字
-    if (!/^(在|是|的|有|已|曾|现|住|做|说|和|与|给|把|被|从|到|今|去|来|也|还|都|就|走|身|用|只)/.test(tail)) {
-      // 「住爷爷奶奶家」里的「奶奶家」不是名字——关系词本身不能当人名
-      if (!KIN_WORDS.some((k) => tail.includes(k))) return [{ kin: glued[1], name: tail }]
+  //
+  // 散文里这一条会疯狂误判，所以 strict 模式直接跳过它。
+  if (!strict) {
+    const glued = text.match(/(父亲|母亲|爷爷|奶奶|外公|外婆|师傅|师父)([\u4e00-\u9fa5]{2,3})(?=[，。、；：\s）)（(「【]|$)/)
+    if (glued !== null) {
+      const tail = glued[2]
+      // 「父亲在浙江」这种不是名字
+      if (!/^(在|是|的|有|已|曾|现|住|做|说|和|与|给|把|被|从|到|今|去|来|也|还|都|就|走|身|用|只)/.test(tail)) {
+        // 「住爷爷奶奶家」里的「奶奶家」不是名字——关系词本身不能当人名
+        if (!KIN_WORDS.some((k) => tail.includes(k))) return [{ kin: glued[1], name: tail }]
+      }
     }
   }
 
@@ -174,14 +189,15 @@ export async function readMemory(env = process.env) {
  * 看看记忆里能认出多少人。**不做任何写入**，界面先给用户看这个。
  *
  * @param {string} text readMemory 拿到的正文
+ * @param {boolean} strict 严格模式，见 findPerson
  * @returns {Array<{kin: string, name: string, bank: string, lines: string[], clues: string[], missing: string[]}>}
  */
-export function findPeople(text) {
+export function findPeople(text, strict = false) {
   /** @type {Map<string, {kin: string, name: string, bank: string, lines: string[], clues: string[]}>} */
   const byKey = new Map()
 
   for (const s of sentences(text)) {
-    for (const hit of findPerson(s)) {
+    for (const hit of findPerson(s, strict)) {
       const key = hit.name !== '' ? `${hit.kin}:${hit.name}` : hit.kin
       const cur = byKey.get(key) ?? { kin: hit.kin, name: hit.name, bank: bankOf(hit.kin), lines: [], clues: [] }
       // 同一个人可能被提到很多次，句子攒起来——它们是之后做卡的原料
@@ -213,16 +229,149 @@ export function findPeople(text) {
     return true
   })
 
-  return unique.map((p) => {
-    const blob = p.lines.join(' ')
-    // 缺什么：这三样是「卡片能不能用」的最低线。缺了不是错，
-    // 是「还要问」——界面上的红点就挂在缺得最多的那张上。
-    const missing = []
-    if (p.name === '') missing.push('名字')
-    if (!/\d{4}\s*年|出生|生[于日]|\d{4}\.\d{2}/.test(blob)) missing.push('出生时间')
-    if (!/做|工作|职|在.{2,10}(局|院|公司|学校|厂)|退休|手艺人|老师|工程师/.test(blob)) missing.push('做什么的')
-    return { kin: p.kin, name: p.name, bank: p.bank, lines: p.lines, clues: p.lines.slice(0, 3), missing }
-  })
+  return unique.map(finalize)
+}
+
+/**
+ * 把一条认出来的记录收尾：算线索、算「还缺什么」。
+ *
+ * 单独抽出来，是因为读项目档案那一路（findPeopleIn）也要走同一套判据。
+ * 两处各写一份，早晚有一处漏改，界面上就会出现「材料里说缺三样、
+ * 卡上的红点说只缺一样」这种自相矛盾的话。
+ */
+function finalize(p) {
+  const blob = p.lines.join(' ')
+  // 缺什么：这三样是「卡片能不能用」的最低线。缺了不是错，
+  // 是「还要问」——界面上的红点就挂在缺得最多的那张上。
+  const missing = []
+  if (p.name === '') missing.push('名字')
+  if (!/\d{4}\s*年|出生|生[于日]|\d{4}\.\d{2}/.test(blob)) missing.push('出生时间')
+  if (!/做|工作|职|在.{2,10}(局|院|公司|学校|厂)|退休|手艺人|老师|工程师/.test(blob)) missing.push('做什么的')
+  return {
+    kin: p.kin,
+    name: p.name,
+    bank: p.bank,
+    lines: p.lines,
+    clues: p.lines.slice(0, 3),
+    missing,
+    sources: p.sources ?? [],
+  }
+}
+
+/**
+ * 从项目档案的正文里取出人起的标题。
+ *
+ * 档案开头是一段 frontmatter，`title:` 那一行就是这篇的题目。
+ * 读不到就退回文件名——有个不好看的名字，也好过一堆无名氏。
+ */
+function titleOf(body, fileName) {
+  const m = String(body ?? '').match(/^---\r?\n[\s\S]*?^title:\s*["']?(.+?)["']?\s*$/m)
+  if (m !== null) return m[1].trim()
+  return String(fileName ?? '').replace(/\.md$/, '')
+}
+
+/**
+ * 读项目档案（记忆插件里那些成篇的文档）。
+ *
+ * 用户用记忆插件时，写得最细的往往不是 USER.md，而是这些档案：
+ * 《家世与人物关系》《父亲张三权威信息补录》。只读 USER.md 会漏掉大半。
+ *
+ * **只读 active**：archived 是用户主动收起来的，再翻出来等于不尊重那个动作。
+ *
+ * @returns {Promise<{found: boolean, dir: string|null, docs: Array<{title: string, path: string, text: string}>}>}
+ */
+export async function readArchive(env = process.env) {
+  for (const dir of candidateRoots(env)) {
+    const docDir = path.join(dir, 'documents', 'active')
+    let names = []
+    try {
+      names = await fs.readdir(docDir)
+    } catch { continue /* 这个候选位置没有档案，试下一个 */ }
+    const docs = []
+    for (const name of names.sort()) {
+      if (!name.endsWith('.md')) continue
+      const abs = path.join(docDir, name)
+      try {
+        const body = await fs.readFile(abs, 'utf8')
+        if (String(body).trim() === '') continue
+        docs.push({ title: titleOf(body, name), path: abs, text: body })
+      } catch { /* 单份读不了不该拖垮整批 */ }
+    }
+    if (docs.length > 0) return { found: true, dir: docDir, docs }
+  }
+  return { found: false, dir: null, docs: [] }
+}
+
+/**
+ * 从好几处来源里一起认人。
+ *
+ * 为什么不把几份正文拼成一个大字符串：拼完就分不清「这是你自己写的」
+ * 和「这是档案里记的」了。分开认、再按「关系+名字」合并，
+ * 每个人身上留一份 `sources`，界面上就能说清「这个人是在哪几份文件里提到的」。
+ *
+ * @param {Array<{label: string, text: string, strict?: boolean}>} sources
+ * @returns {Array} 与 findPeople 同形状，多一个 sources
+ */
+export function findPeopleIn(sources) {
+  /** @type {Map<string, {kin: string, name: string, bank: string, lines: string[], sources: string[]}>} */
+  const byKey = new Map()
+
+  const list = Array.isArray(sources) ? sources : []
+
+  // 先跑「不严格」的那几份（本机记忆），把它们提到的人都记下来。
+  // 这一步是后面筛档案的尺子：档案里只提了「老师」「导师」这种没名没姓的，
+  // 算不算一个人，取决于你自己写没写过这么个人。
+  //   写过 → 档案里的那些句子是给这个人的补充
+  //   没写过 → 八成只是散文里的一个过路人，收进来就是一张空卡
+  const known = new Set()
+  for (const { label, text, strict } of list) {
+    if (strict === true) continue
+    for (const p of findPeople(text, false)) known.add(p.kin)
+  }
+
+  for (const { label, text, strict } of list) {
+    for (const p of findPeople(text, strict === true)) {
+      // 档案里没名没姓、而且本机记忆里也从来没有这个人 → 不要
+      if (strict === true && p.name === '' && !known.has(p.kin)) continue
+      const key = p.name !== '' ? `${p.kin}:${p.name}` : p.kin
+      const cur = byKey.get(key)
+      if (cur === undefined) {
+        byKey.set(key, {
+          kin: p.kin,
+          name: p.name,
+          bank: p.bank,
+          lines: [...p.lines],
+          sources: label === '' ? [] : [label],
+        })
+      } else {
+        for (const l of p.lines) if (!cur.lines.includes(l)) cur.lines.push(l)
+        if (cur.name === '' && p.name !== '') cur.name = p.name
+        if (label !== '' && !cur.sources.includes(label)) cur.sources.push(label)
+      }
+    }
+  }
+
+  // 只知道关系、后面又出现了名字的，合并成一条（与 findPeople 同一套规则）
+  const out = []
+  for (const p of byKey.values()) {
+    const named = [...byKey.values()].find((x) => x.kin === p.kin && x.name !== '')
+    if (p.name === '' && named !== undefined) {
+      for (const l of p.lines) if (!named.lines.includes(l)) named.lines.push(l)
+      for (const s of p.sources) if (!named.sources.includes(s)) named.sources.push(s)
+      continue
+    }
+    out.push(p)
+  }
+
+  const seen = new Set()
+  return out
+    .filter((p) => {
+      const k = `${p.kin}:${p.name}`
+      if (seen.has(k)) return false
+      seen.add(k)
+      return true
+    })
+    .map(finalize)
 }
 
 /**
@@ -246,6 +395,12 @@ export function renderMemoryMaterial(people, meta = {}) {
     const title = p.name === '' ? p.kin : `${p.kin}：${p.name}`
     lines.push(`## ${title}`)
     lines.push('')
+    // 写清「这是从哪儿看到的」：将来在卡上看到一句关于父亲的话，
+    // 想知道它凭什么出现在这里，得能一路追回原标题。
+    if (Array.isArray(p.sources) && p.sources.length > 0) {
+      lines.push(`> 来自：${p.sources.join('、')}`)
+      lines.push('')
+    }
     for (const l of p.lines) lines.push(`- ${l}`)
     if (p.missing.length > 0) lines.push('', `（还缺：${p.missing.join('、')}）`)
     lines.push('')

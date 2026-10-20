@@ -2792,6 +2792,14 @@ function MemoryView({ onDone, onBack }) {
   const people = scan?.people ?? []
   const chosen = picked === null ? people.map(peopleKey) : picked
 
+  // 说清是在哪儿翻的。这两个数字来自两份不同的东西：
+  // 记忆文件是软件自己记的，项目档案是你自己写过的文章。
+  // 混成一句话，用户会以为软件翻了他别的文件夹。
+  const where = []
+  if ((scan?.memory_files ?? 0) > 0) where.push(`${scan.memory_files} 个记忆文件`)
+  if ((scan?.archive_files ?? 0) > 0) where.push(`${scan.archive_files} 篇项目档案`)
+  const whereText = where.length === 0 ? '' : `在${where.join('和')}里，`
+
   const importChosen = async () => {
     setBusy(true); setErr(null); setMsg(null)
     try {
@@ -2817,7 +2825,7 @@ function MemoryView({ onDone, onBack }) {
 
   return h('div', { className: 'lc-pad lc-stack' },
     h('div', { className: 'lc-meta' },
-      `在 ${scan.files} 个记忆文件里，认出了 ${people.length} 个人。`),
+      `${whereText}认出了 ${people.length} 个人。`),
 
     people.length === 0
       ? h(Note, { tone: undefined, icon: 'person' }, '记忆里没有提到具体的人。可以先「陪我聊聊」，聊过的内容会变成材料。')
@@ -2845,6 +2853,10 @@ function MemoryView({ onDone, onBack }) {
               ),
               p.clues.length === 0 ? null : h('div', { className: 'lc-meta', style: { marginTop: 4 } },
                 p.clues[0].length > 60 ? `${p.clues[0].slice(0, 60)}…` : p.clues[0]),
+              // 提一句「这是在哪儿看到的」。用户会想知道「你凭什么说他是我爸」，
+              // 能追回原标题，这件事才可信。
+              (p.sources ?? []).length === 0 ? null : h('div', { className: 'lc-meta', style: { marginTop: 2, opacity: 0.75 } },
+                `来自：${(p.sources ?? []).slice(0, 2).join('、')}${(p.sources ?? []).length > 2 ? ` 等 ${p.sources.length} 处` : ''}`),
             )
           }),
         ),
