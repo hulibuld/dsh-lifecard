@@ -1070,6 +1070,10 @@ function WorldRow({ world, onOpen }) {
  * `keys: 北洋` 这种单个字符串。读的时候一律当数组看，不然搜索漏掉它、
  * 界面上还会说「没有触发词」——两处都不报错，人只会觉得这本书坏了。
  */
+// 现实世界的保留名字。`world` 是 real/fictional/hybrid 的必填字段，
+// 所以「不属于哪本书」不能写成空串——那会让这张卡变成缺字段的坏卡。
+const REALITY = 'reality'
+
 function keysOf(entry) {
   const raw = entry?.keys ?? entry?.key
   if (Array.isArray(raw)) return raw.filter((k) => String(k ?? '').trim() !== '').map((k) => String(k))
@@ -1709,10 +1713,12 @@ function CardForm({ card, onCancel, onSaved, worlds }) {
           h(Field, { label: '属于哪个世界', hint: worldChoices.length === 0 ? '写小说、建宇宙的时候才用。现实中的人就留空。' : '从你导入过的世界书里选一本。' },
             worldChoices.length === 0
               ? h('input', { className: 'lc-input', value: String(data.world ?? ''), onChange: (e) => set('world', e.target.value), placeholder: 'reality', spellCheck: false })
-              : h('select', { className: 'lc-select', value: String(data.world ?? ''), onChange: (e) => set('world', e.target.value) },
-                  h('option', { value: '' }, '不属于任何世界'),
+              : h('select', { className: 'lc-select', value: String(data.world ?? REALITY) || REALITY, onChange: (e) => set('world', e.target.value) },
+                  h('option', { value: REALITY }, '现实世界（不属于哪本书）'),
                   worldChoices.map((w) => h('option', { key: String(w.id), value: String(w.id) }, String(w.name ?? w.id))),
-                  worldChoices.some((w) => String(w.id) === String(data.world ?? '')) ? null : h('option', { value: String(data.world ?? '') }, String(data.world ?? '')),
+                  worldChoices.some((w) => String(w.id) === String(data.world ?? '')) || String(data.world ?? '') === '' || String(data.world) === REALITY
+                    ? null
+                    : h('option', { value: String(data.world) }, String(data.world)),
                 ),
           ),
           h(Field, { label: '标签', hint: '用逗号分开。方便以后搜索。' },

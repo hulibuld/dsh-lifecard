@@ -340,6 +340,28 @@ if (seen.has('CardForm')) {
   renderOne('编辑表单（有世界书可选）', seen.get('CardForm'), {
     card: CARD_DETAIL, worlds: LISTING.worlds, onCancel: () => {}, onSaved: async () => {},
   }, { 6: true })
+  // world 是 real/fictional/hybrid 的必填字段。下拉里绝不能给一个空串的
+  // 选项，否则用户选一下这张卡就变成「缺必需字段 world」的坏卡。
+  const worldSelect = (() => {
+    // 「属于哪个世界」在折叠区里，要先把 more 推成 true 才渲染得出来。
+    const tree = renderOne('编辑表单（折叠区展开）', seen.get('CardForm'), {
+      card: CARD_DETAIL, worlds: LISTING.worlds, onCancel: () => {}, onSaved: async () => {},
+    }, { 6: true })
+    const found = []
+    const dig = (n) => {
+      if (n === null || n === undefined || typeof n !== 'object') return
+      if (Array.isArray(n)) { for (const x of n) dig(x); return }
+      if (n.type === 'select' && n.props?.className === 'lc-select') found.push(n)
+      for (const c of n.children ?? []) dig(c)
+      dig(n.props?.children)
+    }
+    dig(tree)
+    return found
+  })()
+  const worldOptions = worldSelect.length === 0 ? [] : (worldSelect[worldSelect.length - 1].children ?? []).map((o) => String(o?.props?.value ?? ''))
+  t('「属于哪个世界」的下拉里没有空值', worldOptions.every((v) => v !== ''), worldOptions.join(','))
+  t('「属于哪个世界」永远有 reality 兜底', worldOptions.includes('reality'), worldOptions.join(','))
+
   renderOne('新建表单（没有世界书）', seen.get('CardForm'), {
     card: { path: 'cards/new.card.md', data: { lifecard: '0.1', id: 'new', kind: 'real', name: '' }, sections: [] },
     worlds: [], onCancel: () => {}, onSaved: async () => {},
@@ -448,7 +470,7 @@ for (const [label, word] of [
   ['概念入口', '你想让 TA 是什么样的人'],
   ['世界书分组', '世界书 · '],
   ['世界书条数', '条设定'],
-  ['世界下拉的空选项', '不属于任何世界'],
+  ['世界下拉的现实世界', '现实世界（不属于哪本书）'],
   ['手写的触发词也认', '「手写的」'],
 ]) {
   t(`出现了 ${label}`, all.includes(word), word)
