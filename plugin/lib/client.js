@@ -3123,6 +3123,8 @@ function JobsView({ onBack, flash }) {
   const [draftPay, setDraftPay] = useState(null)
   const [draftNo, setDraftNo] = useState(null)
   const [history, setHistory] = useState(null)
+  const [net, setNet] = useState(null)
+  const [netBusy, setNetBusy] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -3165,6 +3167,20 @@ function JobsView({ onBack, flash }) {
       setErr(humanizeError(e))
     } finally {
       setBusy(false)
+    }
+  }
+
+  const whoThere = async () => {
+    const name = (report?.company ?? company).trim()
+    if (name === '') { setNet({ ok: false, error: '先写上公司名，或者先看一份写着公司的招聘说明。' }); return }
+    setNetBusy(true)
+    try {
+      const r = await call('job.network', { company: name })
+      setNet(r)
+    } catch (e) {
+      setNet({ ok: false, error: humanizeError(e) })
+    } finally {
+      setNetBusy(false)
     }
   }
 
@@ -3228,6 +3244,25 @@ function JobsView({ onBack, flash }) {
     h(Btn, { tone: 'primary', big: true, block: true, icon: 'briefcase', onClick: run, disabled: busy }, busy ? '正在读…' : '看看这份工作'),
 
     report === null ? null : h(JobReport, { report }),
+
+    // 这一块是本插件跟通用求职工具唯一不一样的地方：求职工具不认识人。
+    report === null ? null : h('div', { className: 'lc-stack', style: { marginTop: 10 } },
+      h(Btn, { size: 'sm', icon: 'people', onClick: whoThere, disabled: netBusy }, netBusy ? '正在找…' : '我认识这家公司的人吗'),
+      net === null ? null : net.ok !== true
+        ? h(Err, { text: net.error ?? '没查成' })
+        : h('div', { className: 'lc-stack' },
+            net.hits.length === 0
+              ? h('div', { className: 'lc-meta' }, '你写下的这些人里，没有人提到过这家公司。这不代表你没门路，只代表还没写下来。')
+              : h('div', null,
+                  h('div', { className: 'lc-meta' }, `有 ${net.hits.length} 个人提到过这家公司：`),
+                  h('div', { className: 'lc-stack', style: { marginTop: 6 } }, net.hits.map((hit) => h('div', { key: hit.path, className: 'lc-sec' },
+                    h('div', { className: 'st' }, `${hit.name}${hit.relation === '' ? '' : `（${hit.relation}）`}`),
+                    h('div', { className: 'sb' }, `${hit.field}：${hit.line}`),
+                  ))),
+                ),
+            h('div', { className: 'lc-meta' }, '这是你档案里写着的原话。要不要去问，你自己定。'),
+          ),
+    ),
 
     (history ?? []).length === 0 ? null : h('div', null,
       h(GroupTitle, { icon: 'history' }, `以前看过的 · ${history.length}`),

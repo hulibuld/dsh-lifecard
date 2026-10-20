@@ -321,7 +321,38 @@ await store.openWorkspace(root, { create: true })
   t('新建工作区就有 jobs/evaluations', ok === true)
 }
 
-// ── 9. 离线承诺：这一层不联网 ────────────────────────────────
+// ── 9. 这家公司我认识谁 ────────────────────────────────────────
+console.log('\n=== 9. 名字要逐字对上，不做「大概认识」 ===')
+{
+  const cards = [
+    { path: 'people/baba.card.md', data: { id: 'baba', kind: 'real', name: '爸爸', relation: '父亲', address: 'XXXX 公司' }, sections: [] },
+    { path: 'people/zhang.card.md', data: { id: 'zhang', kind: 'real', name: '老张' }, sections: [{ title: '关系史', body: '他在二〇一九年去了那家做支付的公司。\n现在还在。' }] },
+    { path: 'people/sera.card.md', data: { id: 'sera', kind: 'fictional', name: 'Sera' }, sections: [{ title: '自述', body: '住在北洋。' }] },
+    { path: 'worlds/beiyang.card.md', data: { id: 'beiyang', kind: 'world', name: '北洋' }, sections: [{ title: '设定', body: 'XXXX 公司只在这种世界里存在。' }] },
+  ]
+  const hits = jobs.findNetwork(cards, 'XXXX 公司')
+  t('找得到写着公司名的人', hits.length === 1)
+  t('找的这个人对', hits[0].name === '爸爸')
+  t('命中的字段对', hits[0].field === '地址')
+  t('带着原话', hits[0].line.includes('XXXX 公司'))
+  t('世界书不算人', hits.every((h) => h.id !== 'beiyang'))
+  t('正文里提到也算', jobs.findNetwork(cards, '支付').length === 1)
+  t('正文命中带回整行', jobs.findNetwork(cards, '支付')[0].line.includes('二〇一九'))
+  t('没提到就是空', jobs.findNetwork(cards, '某家不存在的公司').length === 0)
+  t('空公司名不返回全库', jobs.findNetwork(cards, '').length === 0)
+  t('一个字也太宽，不算', jobs.findNetwork(cards, '他').length === 0)
+  t('不是数组也不崩', jobs.findNetwork(undefined, '煤炭').length === 0)
+  t('关系词也能命中', jobs.findNetwork([{ path: 'people/x.card.md', data: { id: 'x', kind: 'real', name: 'X', relation: 'XXXX 公司的同事' }, sections: [] }], 'XXXX 公司').length === 1)
+
+  const md = jobs.renderNetwork(hits, 'XXXX 公司')
+  t('说清了是谁提到过', md.includes('爸爸'))
+  t('带着原话', md.includes('XXXX 公司'))
+  t('结尾把决定权交回给人', md.includes('你自己定'))
+  const empty = jobs.renderNetwork([], '某公司')
+  t('没人提到时也说清楚是「没人写」不是「没门路」', empty.includes('没有人提到') && empty.includes('不代表你没有门路'))
+}
+
+// ── 10. 离线承诺：这一层不联网 ────────────────────────────────
 console.log('\n=== 9. 这一层不自己联网 ===')
 {
   const src = await fs.readFile(new URL('../lib/jobs.js', import.meta.url), 'utf8')

@@ -1071,6 +1071,28 @@ function buildApi(ctx, workspace, config) {
       return result
     },
 
+    /**
+     * 求职：这家公司我认识谁。
+     *
+     * 唯一一件通用求职工具做不到的事：档案里躺着「我爸在XXXX 公司」
+     * 「老张去了那家做支付的公司」。这里只逐字找公司名，找到就把那一行
+     * 原样给你看；找不到就说找不到，不推「可能认识」。
+     */
+    'job.network': async (body) => {
+      const ws = await root(body)
+      const company = String(body?.company ?? '').trim()
+      if (company === '') return { ok: false, error: '要查哪家公司？把公司名写上。' }
+      const list = await store.listAll(ws)
+      const cards = []
+      for (const c of list.cards ?? []) {
+        // listAll 给的是摘要，正文要单独读
+        const full = await store.readCard(ws, c.path)
+        if (full.ok === true) cards.push({ path: c.path, data: full.data, sections: full.sections })
+      }
+      const hits = jobs.findNetwork(cards, company)
+      return { ok: true, company, hits, markdown: jobs.renderNetwork(hits, company) }
+    },
+
     /** 求职：以前看过的评估。 */
     'job.evaluations': async (body) => {
       const ws = await root(body)

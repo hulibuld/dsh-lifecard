@@ -504,3 +504,104 @@ export function renderReport(result, meta = {}) {
   }
   return lines.join('\n')
 }
+
+// ── 这家公司我认识谁 ──────────────────────────────────────────────
+//
+// 这是本插件唯一一件通用求职工具做不到的事：一个人的档案里本来就躺着
+// 「我爸在XXXX 公司」「老张去了那家做支付的公司」。求职工具只认识简历，
+// 不认识人。
+//
+// 做法极保守：只在卡里**逐字找公司名**，找到就把那一行原样给你看。
+// 不做「他可能认识」「行业相同大概有门路」这种推断——门路这种事猜错一次，
+// 丢的是一份人情。
+
+/**
+ * 在一堆卡里找出提到某家公司的那些。
+ *
+ * @param {Array<{path: string, data: any, sections: any[]}>} cards 全部卡（带正文）
+ * @param {string} company 公司名
+ * @returns {Array<{id: string, name: string, relation: string, field: string, line: string, path: string}>}
+ */
+export function findNetwork(cards, company) {
+  const needle = String(company ?? '').trim()
+  if (needle === '' || needle.length < 2) return []
+  const out = []
+  for (const card of Array.isArray(cards) ? cards : []) {
+    const data = card?.data ?? {}
+    const kind = String(data.kind ?? '')
+    // 世界书和关系边不是人，跳过
+    if (kind === 'world' || kind === 'relation' || kind === 'lens' || kind === 'system') continue
+    let hit = null
+
+    // 先看结构化字段：关系、住址、标签这些一句话就能说明白的
+    const quick = [
+      ['关系', data.relation],
+      ['地址', data.address],
+      ['标签', Array.isArray(data.tags) ? data.tags.join('、') : data.tags],
+    ]
+    for (const [field, value] of quick) {
+      const text = String(value ?? '')
+      if (text.includes(needle)) { hit = { field, line: text }; break }
+    }
+
+    // 再看正文：一句原话比一个标签有用得多
+    if (hit === null) {
+      for (const sec of Array.isArray(card?.sections) ? card.sections : []) {
+        const body = String(sec?.body ?? '')
+        if (!body.includes(needle)) continue
+        const at = body.indexOf(needle)
+        const lineStart = body.lastIndexOf('\n', at) + 1
+        const lineEnd = body.indexOf('\n', at)
+        const line = body.slice(lineStart, lineEnd === -1 ? undefined : lineEnd).trim()
+        hit = { field: String(sec?.title ?? '正文'), line: line === '' ? needle : line }
+        break
+      }
+    }
+    // 能力那条里也可能写着「在某公司做过什么」
+    if (hit === null) {
+      for (const item of Array.isArray(data.competency) ? data.competency : []) {
+        const text = `${item?.key ?? ''} ${item?.level ?? ''}`
+        if (text.includes(needle)) { hit = { field: '能力', line: text.trim() }; break }
+      }
+    }
+
+    if (hit === null) continue
+    out.push({
+      path: String(card?.path ?? ''),
+      id: String(data.id ?? ''),
+      name: String(data.name ?? data.nickname ?? data.id ?? ''),
+      relation: String(data.relation ?? ''),
+      field: hit.field,
+      line: String(hit.line).slice(0, 160),
+    })
+  }
+  return out
+}
+
+/**
+ * 把「认识谁」渲染成一段给人看的话。
+ *
+ * 空结果也要说清楚是「没人提到」，而不是「没有门路」——
+ * 前者是事实，后者是判断，这个插件只做前者。
+ */
+export function renderNetwork(hits, company) {
+  const lines = [`# 谁提到过「${company}」`, '']
+  if (hits.length === 0) {
+    lines.push('你的档案里没有人提到过这家公司。')
+    lines.push('')
+    lines.push('这不代表你没有门路——只代表你还没写下来。想找找看，可以先问问家里人和老同学在哪工作，再写进卡里。')
+    return lines.join('\n')
+  }
+  lines.push(`有 ${hits.length} 个人提到过。`)
+  lines.push('')
+  for (const h of hits) {
+    lines.push(`## ${h.name}${h.relation === '' ? '' : `（${h.relation}）`}`)
+    lines.push('')
+    lines.push(`在「${h.field}」里写着：${h.line}`)
+    lines.push('')
+  }
+  lines.push('---')
+  lines.push('')
+  lines.push('这些是你的档案里写着的原话。要不要去问，你自己定。')
+  return lines.join('\n')
+}

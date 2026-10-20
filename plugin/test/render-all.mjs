@@ -770,6 +770,36 @@ if (seen.has('CardRow')) {
   t('挡住排在对得上之前', iBlock >= 0 && iBlock < iMatch)
 }
 {
+  // 「这家公司我认识谁」是这一页独有的东西，按钮和结果都得真的出得来
+  const before = visibleText.length
+  renderOne('看工作（报告之后能问认识谁）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
+    4: { company: '某公司', role: '后端', blocked: [], matched: [], gaps: [], unclear: [], questions: [], warnings: [], dropped: [] },
+  })
+  const joined = visibleText.slice(before).join('|')
+  t('报告下面有「认识谁」这个按钮', joined.includes('我认识这家公司的人吗'))
+  t('这一块没有替人决定要不要去问', !joined.includes('快去联系'))
+}
+{
+  const before = visibleText.length
+  renderOne('看工作（认识的谁查出来了）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
+    4: { company: '某公司', role: '后端', blocked: [], matched: [], gaps: [], unclear: [], questions: [], warnings: [], dropped: [] },
+    12: { ok: true, company: '某公司', hits: [{ path: 'people/baba.card.md', name: '爸爸', relation: '父亲', field: '地址', line: 'XXXX 公司' }] },
+  })
+  const joined = visibleText.slice(before).join('|')
+  t('认识的人显示出来了', joined.includes('爸爸'))
+  t('带着那句原话', joined.includes('XXXX 公司'))
+  t('说了这是原话、决定权在人', joined.includes('你自己定'))
+}
+{
+  const before = visibleText.length
+  renderOne('看工作（没人提到这家公司）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
+    4: { company: '某公司', role: '后端', blocked: [], matched: [], gaps: [], unclear: [], questions: [], warnings: [], dropped: [] },
+    12: { ok: true, company: '某公司', hits: [] },
+  })
+  const joined = visibleText.slice(before).join('|')
+  t('没人提到时说的是「没写下来」不是「没门路」', joined.includes('不代表你没门路'))
+}
+{
   const before = visibleText.length
   renderOne('求职报告（什么都没对上）', seen.get('JobReport'), {
     report: { company: '', role: '', blocked: [], matched: [], gaps: [], unclear: [], questions: [], warnings: [], dropped: [] },
