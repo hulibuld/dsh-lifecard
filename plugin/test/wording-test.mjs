@@ -25,7 +25,7 @@ const t = (name, cond, extra) => {
 const forbidden = ['JSON', 'chunk', 'tEXt', 'CHARX', 'CCv2', 'CCv3', 'Zod', 'schema', 'YAML',
   'proposal', 'materials/', 'doctor', 'workspace', '.lifecard', 'tombstone', '墓碑', 'frontmatter']
 
-const files = ['index', 'store', 'core', 'score', 'codec']
+const files = ['index', 'store', 'core', 'score', 'codec', 'memory', 'jobs', 'jobs-store']
 
 /** 抠出「会显示给用户」的字符串字面量。只认单行，宁可漏也别误报。 */
 function shownStrings(source) {
