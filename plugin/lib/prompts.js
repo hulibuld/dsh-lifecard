@@ -27,7 +27,7 @@ export const RELATION_TYPES = [
   { id: 'grandpa', label: '爷爷', bank: 'grandparent', hint: '手艺与职业细节、说过的老话、与你父母的关系、身体变化、家族迁移', min: 10 },
   { id: 'grandma', label: '奶奶', bank: 'grandparent', hint: '手艺与职业细节、说过的老话、与你父母的关系、身体变化、家族迁移', min: 10 },
   { id: 'partner', label: '伴侣', bank: 'partner', hint: '初见场景、吵架的模式、对方的雷区、做过的最像你们俩的事', min: 10 },
-  { id: 'friend', label: '好友', bank: 'friend', hint: '怎么认识的、一起干过最蠢的事、现在多久联系一次', min: 8 },
+  { id: 'friend', label: '朋友', bank: 'friend', hint: '怎么认识的、一起干过最蠢的事、现在多久联系一次', min: 8 },
   { id: 'sibling', label: '兄弟姐妹', bank: 'sibling', hint: '一起长大的具体场景、争过什么、谁护过谁', min: 9 },
   { id: 'classmate', label: '同学', bank: 'classmate', hint: '共同经历的具体场景、一次冲突或和解、他现在的处境', min: 8 },
   { id: 'teacher', label: '老师', bank: 'teacher', hint: '他教的具体内容、一个标志性动作或口头禅、他怎么对待差生', min: 7 },
@@ -39,7 +39,7 @@ export const RELATION_TYPES = [
 ]
 
 /**
- * 一个人可以同时是几种身份（好友也是伴侣、家人也是伴侣）。
+ * 一个人可以同时是几种身份（朋友也是伴侣、家人也是伴侣）。
  * 这些是「补充」那一栏的候选，跟主关系分开存：
  *   relation       主关系，界面上选的那一个（或自己填的那句话）
  *   relation_extra 补充，可以有多个

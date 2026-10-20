@@ -480,6 +480,31 @@ const CSS = `
 .lc-chip.add { border-style: dashed; }
 .lc-chip.add.on { border-style: solid; font-weight: 400; }
 .lc-chip.sm { padding: 3px 9px; font-size: 11.5px; }
+/* 「还有什么」收起时只是一行灰字——它不是一栏，是一个可以点开的小口子 */
+.lc-more { margin-top: 2px; }
+.lc-more-open {
+  border: 0; background: none; padding: 2px 0; color: var(--lc-muted);
+  font-family: inherit; font-size: 12.5px; cursor: pointer;
+}
+.lc-more-open:hover { color: var(--lc-interview); text-decoration: underline; }
+/* 收起来的那一行「还有什么」：灰色小字、没有边框，看着不像按钮——
+   它是个入口，不是要人去点的动作。 */
+.lc-linkweak {
+  background: none; border: 0; padding: 0; margin: 0;
+  color: var(--lc-muted); font-family: inherit; font-size: 11.5px;
+  cursor: pointer; text-align: left;
+}
+.lc-linkweak:hover { color: inherit; text-decoration: underline; }
+/* 只有一条下划线的输入框：填「他是我的什么人」用。
+   给个完整方框会把这一栏显得比上面几栏都重，可它只是一句话。 */
+.lc-line-input {
+  width: 100%; padding: 6px 0; border: 0;
+  border-bottom: 1px solid var(--lc-line-strong); border-radius: 0;
+  background: transparent; color: inherit; font-family: inherit; font-size: 13px;
+  outline: none;
+}
+.lc-line-input:focus { border-bottom-color: var(--lc-interview); }
+.lc-line-input::placeholder { color: var(--lc-muted); }
 
 /* 正文小节（阅读态） */
 .lc-sec { padding: 9px 11px; border-radius: 9px; background: var(--lc-panel); border: 1px solid var(--lc-line); }
@@ -612,7 +637,7 @@ const RELATION_FALLBACK = [
   { id: 'grandpa', label: '爷爷', hint: '手艺与职业细节、说过的老话' },
   { id: 'grandma', label: '奶奶', hint: '手艺与职业细节、说过的老话' },
   { id: 'partner', label: '伴侣', hint: '初见场景、吵架的模式、对方的雷区' },
-  { id: 'friend', label: '好友', hint: '怎么认识的、一起干过最蠢的事' },
+  { id: 'friend', label: '朋友', hint: '怎么认识的、一起干过最蠢的事' },
   { id: 'sibling', label: '兄弟姐妹', hint: '一起长大的具体场景、争过什么' },
   { id: 'classmate', label: '同学', hint: '共同经历的具体场景、一次冲突或和解' },
   { id: 'teacher', label: '老师', hint: '他教的具体内容、一个标志性动作' },
@@ -622,7 +647,7 @@ const RELATION_FALLBACK = [
   { id: 'fictional', label: '虚构角色', hint: '来历、动机、说话方式、绝不做什么' },
 ]
 
-// 一个人常常不止一种身份：好友也是伴侣、家人也是伴侣。
+// 一个人常常不止一种身份：朋友也是伴侣、家人也是伴侣。
 // 这几个词跟宿主侧的 prompts.js 里那份是同一套，浏览器侧拿不到那边的东西，
 // 所以在这里再写一遍。改的时候两边一起改（render-all 有一条断言盯着）。
 const RELATION_EXTRAS = [
@@ -632,6 +657,17 @@ const RELATION_EXTRAS = [
   '也是同事',
   '也是老师',
   '也是对手',
+]
+
+// 访谈第一屏只摆四个最常用的词。
+// 以前把十几种关系全铺成按钮，一屏全是框，看着像在填表；剩下的
+// （爷爷、老师、同事、隔壁王叔）在下面那条横线里自己写，一句话就说清了。
+// 四个词用「朋友」不是「好友」：这是人嘴里说的话，不是分类名。
+const RELATION_QUICK = [
+  { id: 'father', label: '父亲' },
+  { id: 'mother', label: '母亲' },
+  { id: 'friend', label: '朋友' },
+  { id: 'partner', label: '伴侣' },
 ]
 
 const SECTIONS_MAIN = [
@@ -2375,10 +2411,12 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
     // 题一样问，用户点一下就能改。
     return hit?.id ?? 'father'
   })
-  // 「自己填」时写的那句话，和主关系分开存：主关系是 id，这句是内容。
+  // 「他是我的什么人」下面那条横线里自己写的那句话。
+  // 空着表示没自己填，这时看上面四个词点了哪个。
   const [customRelation, setCustomRelation] = useState('')
-  // 「还有别的吗」勾出来的补充身份，可以有多个
-  const [extras, setExtras] = useState([])
+  // 「还有什么」默认收起：一行灰字，点开才出输入框
+  const [showExtras, setShowExtras] = useState(false)
+  const [extrasText, setExtrasText] = useState('')
   const [plan, setPlan] = useState(null)
   const [queue, setQueue] = useState([])
   const [current, setCurrent] = useState(null)
@@ -2399,12 +2437,18 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
   const start = async () => {
     const targetName = (preset?.name ?? name).trim()
     if (targetName === '') { setErr('先写一下他叫什么'); return }
-    // 卡上记的是人能读的那句话（「母亲」「隔壁王叔」），不是 parent/custom 这种内部标识。
-    // 自己填的时候没有现成的词，就用用户写的那一句；他什么都没写，就空着——
+    // 卡上记的是人能读的那句话（「母亲」「隔壁王叔」），不是 father/custom 这种内部标识。
+    // 横线里自己写了就用他写的；没写就用点中的那个词；两样都没有就空着——
     // 空着比随便塞一个「父母」诚实。
-    const relationText = relation === 'custom'
-      ? customRelation.trim()
+    const typed = customRelation.trim()
+    const relationText = typed !== ''
+      ? typed
       : (relations.find((r) => r.id === relation)?.label ?? '')
+    // 「还有什么」里写的东西按顿号/逗号/空格拆成几条，空的不算
+    const extras = extrasText
+      .split(/[、,，;；\s]+/)
+      .map((s) => s.trim())
+      .filter((s) => s !== '')
     setBusy(true); setErr(null)
     try {
       const id = preset?.id ?? safeId(targetName)
@@ -2500,48 +2544,55 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
         : h(Field, { label: '他叫什么' },
             h('input', { className: 'lc-input', value: name, onChange: (e) => setName(e.target.value), placeholder: '妈 / 爷爷 / 老张', spellCheck: false }),
           ),
-      h(Field, { label: '他是我的什么人', hint: '随便点一个最贴的。这一句只决定先问什么，不决定他的身份。' },
+      // 四个最常用的词并排放，一行就完事。
+      // 剩下那些（爷爷、老师、同事、隔壁王叔）不铺成按钮，直接在下面一行里写——
+      // 十四个人排成一片按钮，看着像在填表，不像在说一个人。
+      h(Field, { label: '他是我的什么人' },
         h('div', { className: 'lc-chips' },
-          relations
-            .filter((r) => r.id !== 'custom')
-            .map((r) => h('button', {
-              key: r.id,
+          RELATION_QUICK.map((r) => h('button', {
+            key: r.id,
+            type: 'button',
+            className: `lc-chip ${customRelation.trim() === '' && relation === r.id ? 'on' : ''}`,
+            onClick: () => { setRelation(r.id); setCustomRelation('') },
+          }, r.label)),
+        ),
+        h('input', {
+          className: 'lc-input',
+          style: { marginTop: 8 },
+          value: customRelation,
+          onChange: (e) => {
+            const v = e.target.value
+            setCustomRelation(v)
+            // 手写了就用手写的：上面那四个词随之取消选中。
+            setRelation(v.trim() === '' ? relation : 'custom')
+          },
+          placeholder: '或者直接写：爷爷 / 高中班主任 / 隔壁王叔',
+          spellCheck: false,
+        }),
+      ),
+      // 「还有什么」平时只露一行灰字，点开才有输入框。
+      // 大多数卡只有一个身份，这条一直摊开着会显得每张卡都缺东西。
+      h('div', { className: 'lc-more' },
+        showExtras
+          ? h('div', null,
+              h('input', {
+                className: 'lc-input',
+                value: extrasText,
+                onChange: (e) => setExtrasText(e.target.value),
+                placeholder: '也是伴侣、也是家人、也是同事…',
+                spellCheck: false,
+              }),
+              h('div', { className: 'lc-meta', style: { marginTop: 4 } },
+                '好友也可以是伴侣，家人也可以是伴侣。有就写，没有就不写。'),
+            )
+          : h('button', {
               type: 'button',
-              className: `lc-chip ${relation === r.id ? 'on' : ''}`,
-              onClick: () => setRelation(r.id),
-            }, r.label)),
-          h('button', {
-            key: 'custom',
-            type: 'button',
-            className: `lc-chip ${relation === 'custom' ? 'on' : ''}`,
-            onClick: () => setRelation('custom'),
-          }, '自己填'),
-        ),
+              className: 'lc-more-open',
+              onClick: () => setShowExtras(true),
+            }, '还有什么'),
       ),
-      // 「自己填」不是另起一个下拉，而是把主关系直接变成一句话写进卡里。
-      // 界面上一句话、卡里一句话，中间不再多一层翻译。
-      relation === 'custom'
-        ? h(Field, { label: '那就写一句话', hint: '「隔壁王叔」「高中班主任」都行。' },
-            h('input', {
-              className: 'lc-input',
-              value: customRelation,
-              onChange: (e) => setCustomRelation(e.target.value),
-              placeholder: '隔壁王叔',
-              spellCheck: false,
-            }),
-          )
-        : null,
-      h(Field, { label: '还有别的吗', hint: '一个人常常不止一种身份。' },
-        h('div', { className: 'lc-chips' },
-          RELATION_EXTRAS.map((x) => h('button', {
-            key: x,
-            type: 'button',
-            className: `lc-chip add sm ${extras.includes(x) ? 'on' : ''}`,
-            onClick: () => setExtras(extras.includes(x) ? extras.filter((t) => t !== x) : [...extras, x]),
-          }, extras.includes(x) ? `✓ ${x}` : `＋ ${x}`)),
-        ),
-      ),
-      h('div', { className: 'lc-meta' }, relations.find((r) => r.id === relation)?.hint ?? ''),
+      h('div', { className: 'lc-meta' },
+        relations.find((r) => r.id === relation)?.hint ?? '随便点一个最贴的。这一句只决定先问什么，不决定他的身份。'),
       err === null ? null : h(Err, { text: err }),
       h(Btn, { tone: 'interview', big: true, block: true, onClick: start, disabled: busy, icon: 'send' }, busy ? '准备中…' : '开始聊'),
     )

@@ -117,7 +117,7 @@ const base = { aboutId: 'x', aboutName: '甲', schemaHint: '- name' }
   t('没有「兄弟姐妹」以外含糊的辈分词', !labels.includes('长辈'), labels.join(' / '))
 
   // 用户点名要的六个必须都在
-  for (const want of ['父亲', '母亲', '好友', '爷爷', '奶奶', '伴侣']) {
+  for (const want of ['父亲', '母亲', '朋友', '爷爷', '奶奶', '伴侣']) {
     t(`有「${want}」这一项`, labels.includes(want), labels.join(' / '))
   }
   t('有「自己填」兜底', labels.includes('自己填'))
@@ -179,10 +179,24 @@ const base = { aboutId: 'x', aboutName: '甲', schemaHint: '- name' }
   t('兜底列表顺序和宿主一致', JSON.stringify(fbLabels) === JSON.stringify(hostLabels),
     `浏览器：${fbLabels.join('/')} 宿主：${hostLabels.join('/')}`)
   // 补充词那份也要对得上
-  const exBlock = clientSrc.slice(clientSrc.indexOf('const RELATION_EXTRAS = ['), clientSrc.indexOf('const SECTIONS_MAIN'))
+  // 切片终点停在「访谈第一屏只摆四个最常用的词」那段注释上：再往后的
+  // RELATION_QUICK 是四个快捷词的副本，不是补充词，别把它算进来。
+  const exBlock = clientSrc.slice(clientSrc.indexOf('const RELATION_EXTRAS = ['), clientSrc.indexOf('// 访谈第一屏只摆四个最常用的词'))
   const exClient = [...exBlock.matchAll(/'([^']+)'/g)].map((m) => m[1])
   t('补充词两边一致', JSON.stringify(exClient) === JSON.stringify(P.RELATION_EXTRAS),
     `浏览器：${exClient.join('/')} 宿主：${P.RELATION_EXTRAS.join('/')}`)
+
+  // 第一屏那四个快捷词也有一份副本，同样要盯着。
+  // 它只放四个：再多就成一排按钮墙了（用户原话「太长了看着，这么一长串的按键选项」）。
+  const qBlock = clientSrc.slice(clientSrc.indexOf('const RELATION_QUICK = ['), clientSrc.indexOf('const SECTIONS_MAIN'))
+  const quickLabels = [...qBlock.matchAll(/label: '([^']+)'/g)].map((m) => m[1])
+  t('第一屏只摆四个词', quickLabels.length === 4, quickLabels.join(' / '))
+  t('四个词是父亲母亲朋友伴侣',
+    JSON.stringify(quickLabels) === JSON.stringify(['父亲', '母亲', '朋友', '伴侣']), quickLabels.join(' / '))
+  // 这四个必须都是宿主真有的关系：点下去要真能改问题库
+  const hostAll = P.RELATION_TYPES.map((r) => r.label)
+  const missing = quickLabels.filter((l) => !hostAll.includes(l))
+  t('四个词宿主侧都有', missing.length === 0, missing.join(' / '))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

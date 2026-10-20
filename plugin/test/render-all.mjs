@@ -90,7 +90,7 @@ const RELATIONS = [
   { id: 'grandpa', label: '爷爷', hint: '手艺与职业细节、说过的老话', min: 10 },
   { id: 'grandma', label: '奶奶', hint: '手艺与职业细节、说过的老话', min: 10 },
   { id: 'partner', label: '伴侣', hint: '初见场景、吵架的模式、对方的雷区', min: 10 },
-  { id: 'friend', label: '好友', hint: '怎么认识的、一起干过最蠢的事', min: 8 },
+  { id: 'friend', label: '朋友', hint: '怎么认识的、一起干过最蠢的事', min: 8 },
   { id: 'custom', label: '自己填', hint: '上面都没有？直接写你们的关系', min: 8 },
 ]
 
@@ -451,6 +451,10 @@ renderRoot('让 AI 读材料（已有材料）', base('analyze', { 9: { id: 'mam
 }
 renderRoot('陪他聊聊', base('interview'))
 renderRoot('陪他聊聊（从卡片进来）', base('interview', { 9: { id: 'mama', name: '妈妈', relationLabel: '母亲' } }))
+// 「还有什么」点开之后的样子：收起时只是一行灰字，摊开才有输入框。
+// InterviewView 的 hook 槽：0 phase / 1 name / 2 relation / 3 customRelation / 4 showExtras / 5 extrasText
+renderOne('陪他聊聊（把「还有什么」点开了）', seen.get('InterviewView'), { state: STATE, listing: LISTING }, { 0: 'pick', 4: true })
+renderOne('陪他聊聊（已经在横线里写了爷爷）', seen.get('InterviewView'), { state: STATE, listing: LISTING }, { 0: 'pick', 3: '爷爷' })
 renderRoot('一本世界书', base('world', { 11: WORLD }))
 renderRoot('一本世界书（空的）', base('world', { 11: { ...WORLD, entries: [] } }))
 renderRoot('一本世界书（没拿到）', base('world'))
@@ -931,11 +935,15 @@ for (const [label, word] of [
   ['访谈问的是「他是我的什么人」', '他是我的什么人'],
   ['关系选项里有「父亲」', '父亲'],
   ['关系选项里有「母亲」', '母亲'],
-  ['关系选项里有「爷爷」', '爷爷'],
-  ['关系选项里有「奶奶」', '奶奶'],
-  ['关系选项里有「自己填」', '自己填'],
-  ['有一栏问「还有别的吗」', '还有别的吗'],
-  ['补充身份能点「也是伴侣」', '也是伴侣'],
+  ['关系选项里有「朋友」', '朋友'],
+  ['关系选项里有「伴侣」', '伴侣'],
+  // 用户原话：「留下父亲、母亲、朋友、伴侣四个，并排放，底下放横线让用户自己填。
+  // 因为太长了看着，这么一长串的按键选项。」
+  ['横线上能自己填', '或者直接写：爷爷 / 高中班主任 / 隔壁王叔'],
+  // 用户原话：「「还有什么」默认折叠收起，折叠收起状态下只能看到灰色弱化字的
+  // 「还有什么」几个字，没有输入框。展开就有输入框了。」
+  ['「还有什么」收着时只有一行字', '还有什么'],
+  ['补充身份写了也认', '也是伴侣、也是家人、也是同事'],
 ]) {
   t(`出现了 ${label}`, all.includes(word), word)
 }
