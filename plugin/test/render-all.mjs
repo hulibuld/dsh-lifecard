@@ -287,6 +287,26 @@ renderRoot('正在打开', base('home', { 1: null }))
 renderRoot('出错提示条', base('home', { 4: '保存失败：磁盘满了' }))
 renderRoot('成功提示条', base('home', { 5: { message: '导入完成：2 张成功', tone: 'ok' } }))
 
+// 搜索要连世界书一起筛。以前只筛卡，搜一个卡里没有的词，下面还是整整齐齐
+// 列着所有世界书，看着像「搜到了」。
+if (seen.has('HomeView')) {
+  const before = visibleText.length
+  renderOne('首页（搜不到任何东西）', seen.get('HomeView'), {
+    state: STATE, listing: LISTING, onOpen: () => {}, onOpenWorld: () => {},
+    onNavigate: () => {}, onMore: () => {}, showMore: false, busy: '', onDoDoctor: () => {},
+  }, { 0: 'zzz-不存在的词' })
+  const slice = visibleText.slice(before).join('\n')
+  t('搜不到时世界书也不列出来', slice.includes('没找到') && !slice.includes('世界书 · '), slice.slice(0, 200))
+
+  const before2 = visibleText.length
+  renderOne('首页（搜世界书的名字）', seen.get('HomeView'), {
+    state: STATE, listing: LISTING, onOpen: () => {}, onOpenWorld: () => {},
+    onNavigate: () => {}, onMore: () => {}, showMore: false, busy: '', onDoDoctor: () => {},
+  }, { 0: '北京' })
+  const slice2 = visibleText.slice(before2).join('\n')
+  t('搜世界书的名字能搜到', slice2.includes('世界书 · 1'), slice2.slice(0, 200))
+}
+
 // ── 直接渲染各个子组件 ─────────────────────────────────────────────
 // CardView 默认不在编辑态，要单独把它推到「编辑中」才能渲染出 CardForm
 if (seen.has('CardView')) {

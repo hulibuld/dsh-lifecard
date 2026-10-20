@@ -885,7 +885,14 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
   const materials = listing?.materials ?? []
   // 世界书不是卡：它没有覆盖度、不参与体检打分，放在卡列表里会让人以为
   // 「这张卡才写了 20%」。单独一段，点进去能读条目。
-  const worlds = listing?.worlds ?? []
+  const allWorlds = listing?.worlds ?? []
+  // 搜索时世界书也得跟着筛。以前没筛，搜一个卡里没有的词，下面还是
+  // 整整齐齐列着所有世界书，看着像「搜到了」。
+  const worlds = useMemo(() => {
+    const needle = q.trim().toLowerCase()
+    if (needle === '') return allWorlds
+    return allWorlds.filter((w) => `${w.name ?? ''} ${w.id ?? ''} ${w.genre ?? ''}`.toLowerCase().includes(needle))
+  }, [allWorlds, q])
   const byKind = useMemo(() => {
     const real = filtered.filter((c) => c.kind === 'real' || c.kind === 'self' || c.kind === 'hybrid')
     const fic = filtered.filter((c) => c.kind === 'fictional')
@@ -893,7 +900,7 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
     return { real, fic, other }
   }, [filtered])
 
-  if (cards.length === 0 && worlds.length === 0) {
+  if (cards.length === 0 && allWorlds.length === 0) {
     return h('div', { className: 'lc-pad lc-stack' },
       h('div', { className: 'lc-empty', style: { padding: '18px 8px 10px' } },
         h('div', { className: 'lc-empty-icon' }, h(Icon, { name: 'book', size: 22 })),
