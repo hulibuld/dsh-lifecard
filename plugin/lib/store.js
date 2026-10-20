@@ -180,10 +180,18 @@ export async function memoryStatusOf(root, data) {
   const config = await readConfig(root)
   const map = config?.memory_people
   if (map === null || typeof map !== 'object') return empty
-  // 先按「关系:名字」找，再按纯名字找——用户可能改过关系那一栏
   const candidates = Object.values(map).filter((v) => v !== null && typeof v === 'object' && String(v.name ?? '') === name)
   if (candidates.length === 0) return empty
-  const hit = candidates.find((v) => String(v.kin ?? '') !== '' && relation.includes(String(v.kin))) ?? candidates[0]
+
+  // 同名的人可能有好几个（重名的朋友、同名的亲戚）。这时关系是唯一的区分，
+  // 必须让关系也对上；对不上就当不是同一个人，宁可不红。
+  // 只有一个同名的人时才允许「关系改过」的宽松匹配——否则用户把「母亲」
+  // 改成「妈」之后红点就再也不出现，而他明明还缺东西。
+  let hit = candidates.find((v) => String(v.kin ?? '') !== '' && relation.includes(String(v.kin)))
+  if (hit === undefined) {
+    if (candidates.length > 1) return empty
+    hit = candidates[0]
+  }
   const missing = Array.isArray(hit.missing) ? hit.missing : []
   return { from_memory: true, missing, flag: missing.length > 0 }
 }

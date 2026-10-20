@@ -124,6 +124,29 @@ console.log('\n记忆提取')
   await fs.rm(root, { recursive: true, force: true })
 }
 
+// ── 7b. 红点开关（同名不同关系） ────────────────────────────────
+{
+  const { tmpdir: tdir } = await import('node:os')
+  const store = await import('../lib/store.js')
+  const root = path.join(tdir(), 'lc-memst-' + Date.now())
+  await store.openWorkspace(root, { create: true })
+  await store.rememberMemoryPeople(root, [
+    { kin: '父亲', name: '张三', missing: [] },
+    { kin: '朋友', name: '张三', missing: ['出生时间'] },
+    { kin: '母亲', name: '李四', missing: ['名字', '出生时间'] },
+  ])
+  const st = (name, relation) => store.memoryStatusOf(root, { name, relation })
+
+  t('关系对上才认人（张三/朋友）', (await st('张三', '朋友')).missing.includes('出生时间'))
+  t('同名但关系对不上，不认', (await st('张三', '同事')).from_memory === false)
+  t('信息齐的不亮红点', (await st('张三', '父亲')).flag === false)
+  // 只有一个同名的人时，关系改个说法也还认得出来
+  t('关系改说法仍认得出（李四/妈）', (await st('李四', '妈')).flag === true)
+  t('没记过的人绝不亮红点', (await st('王先生', '朋友')).flag === false)
+  t('没名字不亮红点', (await st('', '朋友')).flag === false)
+  await fs.rm(root, { recursive: true, force: true })
+}
+
 // ── 8. 守「不联网、不调模型」 ────────────────────────────
 {
   const src = await fs.readFile(new URL('../lib/memory.js', import.meta.url), 'utf8')
