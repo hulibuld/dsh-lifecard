@@ -285,6 +285,7 @@ const base = (view, extra = {}) => ({ 0: view, 1: STATE, 2: LISTING, 3: '', 4: n
 renderRoot('首页（有数据）', base('home'))
 renderRoot('首页（空）', base('home', { 2: { ok: true, cards: [], materials: [], proposals: [], worlds: [], errors: [] } }))
 renderRoot('首页（展开更多工具）', base('home', { 10: true }))
+renderRoot('记忆（从首页进来）', base('memory'))
 
 // ── 点一下会怎样：首页那几个入口是「从头开始」的意思 ────────────────
 // 渲染树里的 onClick 是真的闭包，调它就能看到状态被改成了什么。
@@ -540,7 +541,20 @@ if (seen.has('CardView')) {
   }, { 0: true })
 }
 
-// CardView 的 hook 槽：0 editing / 1 busy / 2 err / 3 showExport / 4 showHistory
+// CardView 的红点：卡片是从记忆里认出来的、记忆里只写了半句时，
+// 名字旁边要挂「还缺 N 样」。挂错（不缺点也挂）等于没挂。
+if (seen.has('CardView')) {
+  const tree = renderOne('卡片详情（从记忆来的、还缺东西）', seen.get('CardView'), {
+    card: CARD_DETAIL, proposal: null, setProposal: () => {}, flash: () => {},
+    onRefresh: async () => {}, onDeleted: async () => {},
+    onInterview: () => {}, onAnalyze: () => {},
+  }, { 5: { ok: true, from_memory: true, missing: ['名字', '出生时间'], flag: true } })
+  const text = JSON.stringify(expand(tree))
+  t('红点说出了还缺几样', text.includes('还缺 2 样'))
+  t('红点解释了这几样是哪来的', text.includes('接着聊'))
+}
+
+// CardView 的 hook 槽：0 editing / 1 busy / 2 err / 3 showExport / 4 showHistory / 5 memFlag
 if (seen.has('CardView')) {
   renderOne('卡片详情（历史展开）', seen.get('CardView'), {
     card: CARD_DETAIL, proposal: null, setProposal: () => {}, flash: () => {},
@@ -608,6 +622,27 @@ if (seen.has('HistoryPanel')) {
     3: { stamp: HV[0].stamp, data: CARD_DATA, sections: [{ title: '自述', body: '她那时候还没写这些。' }] },
   })
   renderOne('历史（读不出来的错误）', seen.get('HistoryPanel'), { card: CARD_DETAIL, onClose: () => {}, onRestored: async () => {} }, { 0: HV, 1: '找不到那个位置了。' })
+}
+
+if (seen.has('MemoryView')) {
+  // 记忆页有三种状态：还没读到 / 记忆里没人 / 认出了一堆人。
+  // 第三种最容易出事：每个人的红点挂错了，用户会以为这张卡已经能用了。
+  const MEM_PEOPLE = {
+    ok: true, found: true, files: 2, chars: 5823,
+    people: [
+      { kin: '父亲', name: '张三', bank: 'parent', lines: ['父亲＝张三，1970 年生，在 XXXX 公司上班。'], clues: ['父亲＝张三，1970 年生，在 XXXX 公司上班。'], missing: [] },
+      { kin: '母亲', name: '', bank: 'parent', lines: ['母亲在 YYYY 公司上班。'], clues: ['母亲在 YYYY 公司上班。'], missing: ['名字', '出生时间'] },
+    ],
+  }
+  renderOne('记忆（还没读到）', seen.get('MemoryView'), { onBack: () => {}, onDone: () => {} }, { 0: null, 1: null })
+  renderOne('记忆（认出两个人）', seen.get('MemoryView'), { onBack: () => {}, onDone: () => {} }, { 0: MEM_PEOPLE, 1: ['父亲:张三', '母亲'] })
+  renderOne('记忆（这台电脑没有记忆）', seen.get('MemoryView'), { onBack: () => {}, onDone: () => {} }, {
+    0: { ok: true, found: false, people: [], reason: '这台电脑上没有找到记忆文件。' }, 1: [],
+  })
+  const tree = renderOne('记忆（一个都没认出来）', seen.get('MemoryView'), { onBack: () => {}, onDone: () => {} }, {
+    0: { ok: true, found: true, files: 1, chars: 200, people: [] }, 1: [],
+  })
+  t('记忆页说得清「一个都没认出来」', tree !== null && JSON.stringify(expand(tree)).includes('没有提到具体的人'))
 }
 
 if (seen.has('CompetencyEditor')) {
@@ -688,7 +723,7 @@ if (seen.has('CardRow')) {
 const missing = []
 for (const want of ['CardForm', 'ProposalPanel', 'HistoryPanel', 'BookEditor', 'AvatarPicker', 'CompetencyEditor', 'ListEditor', 'CardRow',
   'HomeView', 'CardView', 'ImportView', 'AnalyzeView', 'InterviewView', 'DoctorView',
-  'NewCardView', 'SetupView', 'Field', 'Action', 'WorldRow', 'WorldView']) {
+  'NewCardView', 'SetupView', 'Field', 'Action', 'WorldRow', 'WorldView', 'MemoryView']) {
   if (!seen.has(want)) missing.push(want)
 }
 t('抓到了所有子组件', missing.length === 0, '缺：' + missing.join(', ') + '；实际：' + [...seen.keys()].join(', '))

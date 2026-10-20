@@ -20,6 +20,7 @@ import * as store from './store.js'
 import * as prompts from './prompts.js'
 
 import * as score from './score.js'
+import * as memory from './memory.js'
 export const name = 'dsh-lifecard'
 
 /** 需要宿主提供的服务。缺 webServer 就什么都不做（明确失败胜过静默半死）。 */
@@ -957,6 +958,87 @@ function buildApi(ctx, workspace, config) {
     'draft.list': async (body) => {
       const ws = await root(body)
       return { ok: true, drafts: await store.listDrafts(ws) }
+    },
+
+    /**
+     * 记忆：从本机的记忆文件里认出「你身边有哪些人」。
+     *
+     * 三步是分开的，因为中间必须有人看一眼：
+     *   ① memory.scan   —— 只读，列出认出来的人，什么都不写
+     *   ② memory.import —— 把选中的人落成一份材料（不是卡！），红点标记不完整
+     *   ③ 之后走正常的「分析 → 提案 → 人勾选」
+     *
+     * 为什么不直接建卡：记忆里关于一个人的信息通常只有一两句，
+     * 直接建卡会造出一排空卡，用户既不知道缺什么也不知道从哪补。
+     * 先落成材料，人能看见每条是从哪句话来的，能拒绝。
+     */
+    'memory.scan': async () => {
+      const mem = await memory.readMemory(process.env)
+      if (mem.found !== true) {
+        return { ok: true, found: false, people: [], reason: '这台电脑上没有找到记忆文件。' }
+      }
+      const people = memory.findPeople(mem.text)
+      return {
+        ok: true,
+        found: true,
+        files: mem.files.length,
+        chars: mem.chars,
+        people, // 已经含 clues / missing，界面直接就能画
+      }
+    },
+
+    /**
+     * 把选中的人写成一份材料。
+     *
+     * body.people 是 user 在界面上勾的那些人的 key（`父亲:张三` 这种），
+     * 不给就全要。写完之后返回材料文件名，好让界面接着走「分析」。
+     */
+    'memory.import': async (body) => {
+      const ws = await root(body)
+      const mem = await memory.readMemory(process.env)
+      if (mem.found !== true) return { ok: false, error: '这台电脑上没有找到记忆文件，没什么可导入的。' }
+      const all = memory.findPeople(mem.text)
+      if (all.length === 0) return { ok: false, error: '记忆里没有认出具体的人。' }
+      const wanted = Array.isArray(body?.people) && body.people.length > 0
+        ? all.filter((p) => body.people.includes(p.name !== '' ? `${p.kin}:${p.name}` : p.kin))
+        : all
+      if (wanted.length === 0) return { ok: false, error: '勾选的人一个都没对上。' }
+      const md = memory.renderMemoryMaterial(wanted, { read_at: new Date().toISOString().slice(0, 10) })
+      const saved = await store.appendMaterial(ws, `记忆里认出来的人`, md)
+      if (saved.ok !== true) return saved
+      // 记下「这些人还缺什么」。等他们变成卡之后，卡上那个红色感叹号
+      // 就是读的这份记录——不写进卡文件，因为那是你的待办，不是他的事实。
+      await store.rememberMemoryPeople(ws, wanted)
+      return {
+        ok: true,
+        file: saved.path,
+        count: wanted.length,
+        // 界面要拿这个数字决定提不提醒「这几条还不全」
+        incomplete: wanted.filter((p) => p.missing.length > 0).length,
+      }
+    },
+
+    /**
+     * 打开某张卡的时候，告诉界面「这张卡是从记忆里来的、还缺什么」。
+     *
+     * 用户要求的那个「红色感叹号气泡」就是靠这个点亮：
+     * 卡上有 memory_source 标记 + 有 missing 清单 → 亮红点。
+     */
+    'card.memoryStatus': async (body) => {
+      const ws = await root(body)
+      const rel = String(body?.path ?? '')
+      if (rel === '') return { ok: false, error: '没给出要看哪张卡。' }
+      const card = await store.readCard(ws, rel)
+      if (card.ok !== true) return card
+      const status = await store.memoryStatusOf(ws, card.data ?? {})
+      return {
+        ok: true,
+        from_memory: status.from_memory,
+        missing: status.missing,
+        // 只有「从记忆来的、且缺东西」才该红。自己手写的卡缺东西，
+        // 体检页会说，不必在这里再红一次——那会让人以为哪里坏了。
+        flag: status.flag,
+      }
     },
 
     'analyze.run': async (body) => {

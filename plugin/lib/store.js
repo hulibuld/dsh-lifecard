@@ -140,6 +140,54 @@ export async function writeConfig(root, patch) {
  *
  * @returns {Promise<{idea: string, avoid: string[], want: string[], updated_at?: string}|null>}
  */
+/**
+ * 记下「这个人是从记忆里认出来的，还缺哪几样」。
+ *
+ * 为什么不写在卡上：卡文件是要能给人看、能导出的。把「这条是软件从记忆里
+ * 猜的、还不全」写进卡，等于把内部状态漏给下游工具。它属于**你这边**的
+ * 待办，不是那个人的事实——和 concept 一样放配置里。
+ *
+ * 存成 `{ [名字或关系]: ['名字', '出生时间'] }`。同名不同关系用 `关系:名字` 区分。
+ */
+export async function rememberMemoryPeople(root, people) {
+  const map = {}
+  for (const p of Array.isArray(people) ? people : []) {
+    if (p === null || typeof p !== 'object') continue
+    const key = String(p.name ?? '').trim() === '' ? String(p.kin ?? '') : `${p.kin}:${p.name}`
+    if (key === '') continue
+    const missing = Array.isArray(p.missing) ? p.missing.filter((m) => typeof m === 'string') : []
+    map[key] = { kin: String(p.kin ?? ''), name: String(p.name ?? ''), missing }
+  }
+  const config = await readConfig(root)
+  const merged = { ...(config?.memory_people ?? {}), ...map }
+  await writeConfig(root, { memory_people: merged })
+  return { ok: true, count: Object.keys(map).length }
+}
+
+/**
+ * 这张卡是不是「从记忆里认出来的、还不全」。
+ *
+ * 只认「还不全」的那种。信息齐了就不红——红点必须代表「有事要做」，
+ * 否则天天亮着，人就不看了。
+ *
+ * @returns {{from_memory: boolean, missing: string[], flag: boolean}}
+ */
+export async function memoryStatusOf(root, data) {
+  const empty = { from_memory: false, missing: [], flag: false }
+  const name = String(data?.name ?? '').trim()
+  const relation = String(data?.relation ?? '').trim()
+  if (name === '') return empty
+  const config = await readConfig(root)
+  const map = config?.memory_people
+  if (map === null || typeof map !== 'object') return empty
+  // 先按「关系:名字」找，再按纯名字找——用户可能改过关系那一栏
+  const candidates = Object.values(map).filter((v) => v !== null && typeof v === 'object' && String(v.name ?? '') === name)
+  if (candidates.length === 0) return empty
+  const hit = candidates.find((v) => String(v.kin ?? '') !== '' && relation.includes(String(v.kin))) ?? candidates[0]
+  const missing = Array.isArray(hit.missing) ? hit.missing : []
+  return { from_memory: true, missing, flag: missing.length > 0 }
+}
+
 export async function readConcept(root) {
   const config = await readConfig(root)
   const raw = config?.concept
@@ -1211,6 +1259,8 @@ export default {
   readDraft,
   removeDraft,
   listDrafts,
+  rememberMemoryPeople,
+  memoryStatusOf,
   readRedactions,
   appendRedaction,
   sha256,

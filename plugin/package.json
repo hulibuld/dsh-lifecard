@@ -21,6 +21,7 @@
     "lib/store.js",
     "lib/prompts.js",
     "lib/score.js",
+    "lib/memory.js",
     "skills/**/SKILL.md",
     "cordis.patch.yml",
     "locale/*.json",

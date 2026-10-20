@@ -647,7 +647,7 @@ const SECTIONS_REL = [
 
 // ── 主界面 ────────────────────────────────────────────────────────
 
-const VIEWS = { home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world' }
+const VIEWS = { home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory' }
 
 /**
  * tab 组件。接收宿主给的 props（ctx / store / scope / tab / visible）。
@@ -868,6 +868,8 @@ function LifeCardTab(props) {
           onDone: () => { setInterviewFor(null); setView(VIEWS.home); refresh() },
           onAnalyze: (about) => { setInterviewFor(about ?? null); setView(VIEWS.analyze) },
         })
+      case VIEWS.memory:
+        return h(MemoryView, { onBack: () => setView(VIEWS.home), onDone: () => setView(VIEWS.analyze) })
       case VIEWS.analyze:
         return h(AnalyzeView, {
           listing, state, flash, presetAbout: interviewFor,
@@ -1066,6 +1068,7 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
     h('div', { className: 'lc-row', style: { marginTop: 2 } },
       h(Btn, { tone: 'interview', size: 'sm', icon: 'chat', onClick: () => onNavigate(VIEWS.interview) }, '聊着建'),
       h(Btn, { tone: 'import', size: 'sm', icon: 'import', onClick: () => onNavigate(VIEWS.import) }, '导入'),
+      h(Btn, { tone: 'analyze', size: 'sm', icon: 'person', onClick: () => onNavigate(VIEWS.memory), title: '从你写过的记忆里认出身边的人' }, '从记忆里认人'),
       h('div', { className: 'lc-grow' }),
       materials.length === 0 ? null : h(Btn, { tone: 'analyze', size: 'sm', icon: 'spark', onClick: () => onNavigate(VIEWS.analyze) }, `整理 ${materials.length} 份材料`),
     ),
@@ -1291,6 +1294,9 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
   const [err, setErr] = useState(null)
   const [showExport, setShowExport] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
+  // 这张卡是不是「从记忆里认出来的、还缺东西」。缺东西的时候，
+  // 名字旁边挂一个红色感叹号——不点开也知道这张还没写完。
+  const [memFlag, setMemFlag] = useState(null)
 
   const data = card?.data ?? {}
   const sections = card?.sections ?? []
@@ -1298,6 +1304,16 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
   const issues = card?.validation?.issues ?? []
 
   useEffect(() => { setEditing(false) }, [card?.path])
+
+  useEffect(() => {
+    let alive = true
+    if (card?.path === undefined || card?.path === '') { setMemFlag(null); return () => { alive = false } }
+    call('card.memoryStatus', { path: card.path }).then((r) => {
+      if (alive === true && r.ok === true && r.flag === true) setMemFlag(r)
+      else if (alive === true) setMemFlag(null)
+    }).catch(() => { if (alive === true) setMemFlag(null) })
+    return () => { alive = false }
+  }, [card?.path])
 
   const exportPng = async () => {
     setBusy('png'); setErr(null)
@@ -1355,7 +1371,18 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
     h('div', { className: 'lc-row' },
       h(Avatar, { name: data.name, kind: data.kind, big: true, photo: card?.avatar ?? null }),
       h('div', { className: 'lc-grow' },
-        h('div', { style: { fontWeight: 650, fontSize: 15 } }, data.name ?? '(还没起名字)'),
+        h('div', { style: { fontWeight: 650, fontSize: 15, display: 'flex', alignItems: 'center', gap: 6 } },
+          h('span', null, data.name ?? '(还没起名字)'),
+          // 红点：这条是从记忆里认出来的，记忆里只写了半句。
+          // 文案只说「还缺什么」，不解释「记忆」是什么——那是别的软件的事。
+          memFlag === null
+            ? null
+            : h('span', {
+                className: 'lc-tag err',
+                title: `这条还不全，还缺：${memFlag.missing.join('、')}`,
+                style: { cursor: 'help' },
+              }, `！还缺 ${memFlag.missing.length} 样`),
+        ),
         h('div', { className: 'lc-meta' }, [KIND_LABEL[data.kind] ?? data.kind, data.relation, data.address].filter(Boolean).join(' · ')),
         // 属于某本世界书时给一条能点回去的路。只显示名字，不显示磁盘上的
         // 那串 id——人不需要知道文件夹叫什么。
@@ -1368,6 +1395,10 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
             }, h(Icon, { name: 'book', size: 12 }), ` ${bookOf(data, worlds).name ?? bookOf(data, worlds).id}`),
       ),
     ),
+
+    memFlag === null
+      ? null
+      : h('div', { className: 'lc-meta' }, `这条是从你写过的记忆里认出来的，当时只记了半句。还差：${memFlag.missing.join('、')}。点「接着聊」就会专门问这几样。`),
 
     cov === undefined ? null : h('div', null,
       h('div', { className: 'lc-row' },
@@ -2670,6 +2701,117 @@ function TextImport({ onAnalyze }) {
       ? h('div', null, h(Btn, { tone: 'analyze', size: 'sm', icon: 'spark', onClick: () => onAnalyze?.() }, '让 AI 读一读'))
       : null,
   )
+}
+
+// ── 从记忆里认人 ──────────────────────────────────────────────────
+
+/**
+ * 记忆页。做三件事：认人 → 给人看一眼 → 把勾上的人落成材料。
+ *
+ * 为什么中间非要停一下给用户看：
+ * 记忆里关于一个人的话往往只有一两句，而且常混在别的事情里。
+ * 直接建卡会造出一排空卡，看着像成功、其实什么也不能用。
+ * 摆出来、标清楚每人缺什么，用户自己决定哪些值得现在做。
+ */
+function MemoryView({ onDone, onBack }) {
+  const [scan, setScan] = useState(null)
+  const [picked, setPicked] = useState(null) // null = 还没选过，等于全选
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const [msg, setMsg] = useState(null)
+
+  useEffect(() => {
+    let alive = true
+    call('memory.scan', {}).then((r) => {
+      if (alive !== true) return
+      if (r.ok !== true) { setErr(r.error ?? '没读出来'); return }
+      setScan(r)
+      // 默认全选：认出的人本来就不多，一个个点反而累
+      setPicked((r.people ?? []).map(peopleKey))
+    }).catch((e) => { if (alive === true) setErr(humanizeError(e)) })
+    return () => { alive = false }
+  }, [])
+
+  const people = scan?.people ?? []
+  const chosen = picked === null ? people.map(peopleKey) : picked
+
+  const importChosen = async () => {
+    setBusy(true); setErr(null); setMsg(null)
+    try {
+      const r = await call('memory.import', { people: chosen })
+      if (r.ok !== true) { setErr(r.error ?? '没导进来'); return }
+      setMsg({ tone: 'ok', text: `存好了。${r.count} 个人写进材料，${r.incomplete} 个还缺东西。` })
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
+  }
+
+  if (err !== null && scan === null) {
+    return h('div', { className: 'lc-pad lc-stack' }, h(Err, { text: err }), h(Btn, { onClick: onBack }, '回去'))
+  }
+  if (scan === null) {
+    return h('div', { className: 'lc-empty' }, h(Spinner), h('div', { className: 'lc-meta', style: { marginTop: 8 } }, '正在看你写过的记忆…'))
+  }
+  if (scan.found !== true) {
+    return h('div', { className: 'lc-pad lc-stack' },
+      h(Note, { tone: undefined, icon: 'warning' }, '这台电脑上没有找到记忆文件。'),
+      h('div', { className: 'lc-meta' }, '装了记忆功能、并且记过东西之后，这里会自动认出你身边的人。'),
+      h(Btn, { onClick: onBack }, '回去'),
+    )
+  }
+
+  return h('div', { className: 'lc-pad lc-stack' },
+    h('div', { className: 'lc-meta' },
+      `在 ${scan.files} 个记忆文件里，认出了 ${people.length} 个人。`),
+
+    people.length === 0
+      ? h(Note, { tone: undefined, icon: 'person' }, '记忆里没有提到具体的人。可以先「陪我聊聊」，聊过的内容会变成材料。')
+      : h('div', { className: 'lc-stack' },
+          people.map((p) => {
+            const key = peopleKey(p)
+            const on = chosen.includes(key)
+            return h('button', {
+              key,
+              type: 'button',
+              className: `lc-chip ${on ? 'on' : ''}`,
+              style: { display: 'block', width: '100%', textAlign: 'left', borderRadius: 10, padding: '9px 11px' },
+              onClick: () => setPicked(on ? chosen.filter((k) => k !== key) : [...chosen, key]),
+            },
+              h('div', { className: 'lc-row' },
+                h('span', { className: 'lc-grow', style: { fontWeight: 600 } }, p.name === '' ? p.kin : `${p.kin} · ${p.name}`),
+                // 红点只挂在「缺东西」的人身上。不缺点也标红，等于没标。
+                p.missing.length > 0
+                  ? h('span', {
+                      className: 'lc-tag err',
+                      title: `还缺：${p.missing.join('、')}`,
+                      'aria-label': `这条还不全，还缺${p.missing.join('、')}`,
+                    }, `！还缺 ${p.missing.length} 样`)
+                  : h(Tag, { tone: 'ok' }, '够写一张卡'),
+              ),
+              p.clues.length === 0 ? null : h('div', { className: 'lc-meta', style: { marginTop: 4 } },
+                p.clues[0].length > 60 ? `${p.clues[0].slice(0, 60)}…` : p.clues[0]),
+            )
+          }),
+        ),
+
+    people.length === 0 ? null : h('div', { className: 'lc-meta' },
+      '勾上的人会先变成一份材料，不会直接生成卡。你可以先看看 AI 从里面读出了什么，再决定采纳哪几条。'),
+
+    err === null ? null : h(Err, { text: err }),
+    msg === null ? null : h(Note, { tone: msg.tone, icon: 'check' }, msg.text),
+
+    h('div', { className: 'lc-row' },
+      people.length === 0
+        ? null
+        : h(Btn, { tone: 'primary', icon: 'check', onClick: importChosen, disabled: busy || chosen.length === 0 }, busy ? '正在存…' : `就这几个人（${chosen.length}）`),
+      msg === null ? null : h(Btn, { tone: 'analyze', icon: 'spark', onClick: () => onDone?.() }, '让 AI 读一读'),
+      h('div', { className: 'lc-grow' }),
+      h(Btn, { onClick: onBack }, '回去'),
+    ),
+  )
+}
+
+/** 一个人的唯一标识。同名不同关系要分开，所以关系词也算进去。 */
+function peopleKey(p) {
+  return p.name === '' || p.name === undefined ? String(p.kin) : `${p.kin}:${p.name}`
 }
 
 // ── 让 AI 读材料 ──────────────────────────────────────────────────
