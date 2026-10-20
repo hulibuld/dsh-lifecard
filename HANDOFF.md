@@ -7,7 +7,7 @@
 
 ## 一句话现状
 
-**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 **622 项**通过，对一个真实运行的 DSH 实例做的端到端验收 **14/14** 通过。**P0（上传 GitHub 前的准备）、P1（陈旧文档）、P2（六项功能扩展）全部做完。** 之后又做了三轮加固：数据层 20 处隐患、编码/路由层 20 处隐患、测试补到 622 项。
+**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 **651 项**通过，对一个真实运行的 DSH 实例做的端到端验收 **14/14** 通过。**P0（上传 GitHub 前的准备）、P1（陈旧文档）、P2（六项功能扩展）全部做完。** 之后又做了三轮加固：数据层 20 处隐患、编码/路由层 20 处隐患、测试补到 651 项。
 
 ---
 
@@ -57,15 +57,15 @@ LifeCard/
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `lib/client.js` | 2548 | **整个侧边栏界面**。纯手写，没有 React 依赖注入以外的框架 |
-| `lib/index.js` | 1346 | 宿主侧：32 条 HTTP 路由、调用模型、**注册访谈 skill**、路径越界闸、导出 consent 闸 |
-| `lib/store.js` | 1074 | 工作区、快照、墓碑 `redactions.jsonl`、提案与勾选旁路、头像、概念、doctor |
+| `lib/client.js` | 2605 | **整个侧边栏界面**。纯手写，没有 React 依赖注入以外的框架 |
+| `lib/index.js` | 1405 | 宿主侧：32 条 HTTP 路由、调用模型、**注册访谈 skill**、路径越界闸、导出 consent 闸 |
+| `lib/store.js` | 1116 | 工作区、快照、墓碑 `redactions.jsonl`、提案与勾选旁路、头像、概念、doctor |
 | `lib/core.js` | 946 | 零依赖：YAML 子集解析/序列化、卡片校验、覆盖率、**引文校验门** |
-| `lib/codec.js` | 761 | PNG tEXt/iTXt 读写、CCv2/CCv3/CHARX、双 chunk 导出、保真字段 |
+| `lib/codec.js` | 785 | PNG tEXt/iTXt 读写、CCv2/CCv3/CHARX、双 chunk 导出、保真字段 |
 | `lib/prompts.js` | 454 | 11 类关系 × 问题库、`buildAnalyzePrompt` |
 | `lib/score.js` | 329 | **纯本地**体检打分 0–100、字数估算、占位符与世界书健康度 |
 | `skills/lifecard-interview/SKILL.md` | 192 | **会随包安装的那份**访谈 skill |
-| `test/` | 12 个在 `all.mjs` 里 + `live.mjs`，另有 2 个工具 | 622 项断言 |
+| `test/` | 12 个在 `all.mjs` 里 + `live.mjs`，另有 2 个工具 | 651 项断言 |
 | `locale/{zh,en}.json` | — | 侧栏 tab 的标题与描述 |
 | `cordis.patch.yml` | — | 装进 profile 时插入的插件条目 |
 | `node_modules/@deepseek-ai/schemastery` | — | 软链，见下面坑 #2 |
@@ -79,10 +79,10 @@ LifeCard/
 ```bash
 cd .../LifeCard/plugin
 
-# 1. 全量单元测试：622 项
+# 1. 全量单元测试：651 项
 node test/all.mjs
-# → roundtrip 9 / codec 37 / store 121 / score 51 / json-extract 10 / prompt 154
-#   client-smoke 27 / skill-register 18 / routes 36 / hardening-routes 46
+# → roundtrip 9 / codec 52 / store 121 / score 51 / json-extract 10 / prompt 154
+#   client-smoke 27 / skill-register 18 / routes 50 / hardening-routes 46
 #   hardening-data 54 / render-all 59
 
 # 2. 对真实运行的 DSH 做端到端验收：14/14
@@ -92,7 +92,7 @@ node test/live.mjs "$DSH_GUI"          # $DSH_GUI = 运行时上下文里那个 
 node test/render-all.mjs
 ```
 
-**2026-10-20 11:20 的实测结果**：`all.mjs` 622 项全过；`live.mjs` 14/14 全过。
+**2026-10-20 11:20 的实测结果**：`all.mjs` 651 项全过；`live.mjs` 14/14 全过。
 
 live 那 14 项验的是：插件已激活 / 宿主有 llm / 建工作区 / 卡被列出 / 材料被列出 / 分析跑通 / 有可采纳条目 / 默认不勾选 / 每条都有引文 / 采纳成功 / 导出 PNG / 双 chunk 同源 / doctor 跑通 / 宿主段已写。
 
@@ -179,8 +179,8 @@ concept.get  concept.set
 ### P1 — 文档陈旧（✅ 已完成）
 | 位置 | 原来写的 | 现在是 |
 |---|---|---|
-| `README.md:27` | 「96 项测试全部通过」 | 622 项 |
-| `plugin/README.md:178` | `# 全部测试（96 项）` | 622 项 |
+| `README.md:27` | 「96 项测试全部通过」 | 651 项 |
+| `plugin/README.md:178` | `# 全部测试（96 项）` | 651 项 |
 | `plugin/README.md:29` | 侧栏会出现**人物档案** | **Life Cards** |
 
 `plugin/README.md` 的目录树与"三个入口"图已对着现在的界面重写（commit `43266e6`）。
@@ -252,7 +252,7 @@ concept.get  concept.set
 
 ```bash
 cd <仓库根>/plugin
-node test/all.mjs                                      # 期望 610 通过
+node test/all.mjs                                      # 期望 651 通过
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \
   "$DSH_GUI/api/dsh-lifecard/state.get" \
   -H 'content-type: application/json' -d '{}'          # 期望 200
