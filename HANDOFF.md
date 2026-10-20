@@ -7,7 +7,7 @@
 
 ## 一句话现状
 
-**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 **710 项**通过，对一个真实运行的 DSH 实例做的端到端验收 **14/14** 通过。**P0（上传 GitHub 前的准备）、P1（陈旧文档）、P2（六项功能扩展）全部做完。** 之后又做了四轮加固：数据层 20 处隐患、编码/路由层 20 处隐患、世界书导入与展示、测试补到 710 项。
+**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 **722 项**通过，对一个真实运行的 DSH 实例做的端到端验收 **14/14** 通过。**P0（上传 GitHub 前的准备）、P1（陈旧文档）、P2（六项功能扩展）全部做完。** 之后又做了四轮加固：数据层 20 处隐患、编码/路由层 20 处隐患、世界书导入与展示、测试补到 722 项。
 
 ---
 
@@ -65,7 +65,7 @@ LifeCard/
 | `lib/prompts.js` | 454 | 11 类关系 × 问题库、`buildAnalyzePrompt` |
 | `lib/score.js` | 329 | **纯本地**体检打分 0–100、字数估算、占位符与世界书健康度 |
 | `skills/lifecard-interview/SKILL.md` | 192 | **会随包安装的那份**访谈 skill |
-| `test/` | 12 个在 `all.mjs` 里 + `live.mjs`，另有 2 个工具 | 710 项断言 |
+| `test/` | 12 个在 `all.mjs` 里 + `live.mjs`，另有 2 个工具 | 722 项断言 |
 | `locale/{zh,en}.json` | — | 侧栏 tab 的标题与描述 |
 | `cordis.patch.yml` | — | 装进 profile 时插入的插件条目 |
 | `node_modules/@deepseek-ai/schemastery` | — | 软链，见下面坑 #2 |
@@ -79,20 +79,20 @@ LifeCard/
 ```bash
 cd .../LifeCard/plugin
 
-# 1. 全量单元测试：710 项
+# 1. 全量单元测试：722 项
 node test/all.mjs
 # → roundtrip 23 / codec 52 / store 121 / score 51 / json-extract 10 / prompt 154
 #   client-smoke 27 / skill-register 18 / routes 62 / hardening-routes 46
-#   hardening-data 54 / render-all 92
+#   hardening-data 54 / render-all 104
 
 # 2. 对真实运行的 DSH 做端到端验收：14/14
 node test/live.mjs "$DSH_GUI"          # $DSH_GUI = 运行时上下文里那个 GUI URL
 
-# 3. 界面文案自检（含"黑话零命中"）：70 项，已含在 all.mjs 里
+# 3. 界面文案自检（含"黑话零命中"）：104 项，已含在 all.mjs 里
 node test/render-all.mjs
 ```
 
-**2026-10-20 11:50 的实测结果**：`all.mjs` 710 项全过；`live.mjs` 14/14 全过。
+**2026-10-20 12:20 的实测结果**：`all.mjs` 722 项全过；`live.mjs` 14/14 全过。
 
 live 那 14 项验的是：插件已激活 / 宿主有 llm / 建工作区 / 卡被列出 / 材料被列出 / 分析跑通 / 有可采纳条目 / 默认不勾选 / 每条都有引文 / 采纳成功 / 导出 PNG / 双 chunk 同源 / doctor 跑通 / 宿主段已写。
 
@@ -180,8 +180,8 @@ concept.get  concept.set
 ### P1 — 文档陈旧（✅ 已完成）
 | 位置 | 原来写的 | 现在是 |
 |---|---|---|
-| `README.md:27` | 「96 项测试全部通过」 | 710 项 |
-| `plugin/README.md:178` | `# 全部测试（96 项）` | 710 项 |
+| `README.md:27` | 「96 项测试全部通过」 | 722 项 |
+| `plugin/README.md:178` | `# 全部测试（96 项）` | 722 项 |
 | `plugin/README.md:29` | 侧栏会出现**人物档案** | **Life Cards** |
 
 `plugin/README.md` 的目录树与"三个入口"图已对着现在的界面重写（commit `43266e6`）。
@@ -248,7 +248,7 @@ concept.get  concept.set
 
 **为什么世界书不进卡列表**：它没有覆盖度、不参与体检打分，混进卡列表会显示成"这张卡才写了 20%"。
 
-**测试**：`roundtrip` +10（条目解析）、`routes-test` +12（导入到显示的整条链路）、`render-all` +17（世界书列表行/详情/空/未取到、编辑表单的世界下拉、手写触发词、搜索联动、世界下拉不留空值、卡片能点回所属世界书）。合计 651 → **710**。新增断言用 `git show HEAD:plugin/lib/...` 的旧代码验过会红 10 项。
+**测试**：`roundtrip` +10（条目解析）、`routes-test` +12（导入到显示的整条链路）、`render-all` +17（世界书列表行/详情/空/未取到、编辑表单的世界下拉、手写触发词、搜索联动、世界下拉不留空值、卡片能点回所属世界书）。合计 651 → 710 → **722**。新增断言用 `git show HEAD:plugin/lib/...` 的旧代码验过会红 10 项。
 
 ### P3 — 还没做的（都需要人点头）
 
@@ -257,6 +257,23 @@ concept.get  concept.set
 3. **四份原始文档**（使用指南/策划书/策划书-第二部分）已被 SPEC.md 取代。保留作背景材料，还是归档到 `docs/archive/`？
 4. ~~**同一天对同一个人跑两次分析，第二次会覆盖第一次的提案与遗留记录**~~ → **已修（commit 见 `lib/store.js` 的 `freeProposalBase`）**。第一次仍用不带序号的老名字，撞上了才依次试 `-2`、`-3`；三个文件（`.md` / `.json` / `.checked.json`）一起占名，勾选不串台。`test/store-test.mjs` 第 14 组 12 项锁住，并用修复前的 `store.js` 验过会红 6 项。
 5. **本地 HTTP 端点没有 Origin/CSRF 校验**，且任何请求都能用 `body.workspace` 改当前库。这是宿主 `/api` 的暴露面，不是本插件能单独修的，建议在宿主侧做 Origin 白名单。
+
+### P2.8 — 界面上的「点了没反应」与小别扭（本轮修的）
+
+这一轮不是加功能，是**替用户去点**。做法：在 `test/render-all.mjs` 里把渲染树的
+`onClick` 真调一遍（`deepRender` 只走一遍、不展开组件，所以另写了一个 `expand()`
+把函数型节点就地展开成纯 DOM 树才能抓到 `<button>`），然后断言状态被改成了什么。
+这样「点了不跳」「跳了但还带着上一个人」不再只能靠人手点才发现。
+
+| 症状 | 真原因 | 修法 |
+|---|---|---|
+| 首页点「还等着你看的建议」没反应 | `onProposal(p.json)` 传的是文件路径，面板要的是一份取回来的建议 | 统一成 `showProposal(p)`，先 `proposal.get` 再定位到人 |
+| 分析页「看看读出了什么」白点 | 直接 `setProposal + setView(card)`，而那一页手上没有 `activeCard` | 同上，走同一个入口 |
+| 刚看完某人的卡，回首页点「整理材料 / 聊着建」，那页还选着刚才那个人 | `interviewFor` 从没被清过 | 新增 `go(next)`：进这两页前先 `setInterviewFor(null)` |
+| `card.get` 失败时把错误说明当卡塞进 `activeCard` | 路由失败时是「成功回话 + `ok:false`」，不抛错 | 两处都加 `if (detail?.ok !== true) throw`，失败时清空 |
+| 「更多工具」看不出能展开 | 箭头图标不跟着开合转 | 包一层 `span` 加 `rotate(90deg)` + 过渡 |
+
+**测试**：`render-all` 92 → **104**（首页「聊着建」「整理材料」点得动 / 跳对页 / 不再带着上一个人，共 6 项；箭头收起不转、展开转，共 2 项；加上此前积累）。新增断言用 `git show HEAD:plugin/lib/client.js` 验过会红 3 项。
 
 ---
 
@@ -277,7 +294,7 @@ concept.get  concept.set
 
 ```bash
 cd <仓库根>/plugin
-node test/all.mjs                                      # 期望 710 通过
+node test/all.mjs                                      # 期望 722 通过
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \
   "$DSH_GUI/api/dsh-lifecard/state.get" \
   -H 'content-type: application/json' -d '{}'          # 期望 200

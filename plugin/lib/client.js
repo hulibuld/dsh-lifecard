@@ -716,8 +716,13 @@ function LifeCardTab(props) {
     }
     try {
       const detail = await call('card.get', { path: target.path })
+      // card.get 找不到文件时是「成功回话 + ok:false」，不是抛错。不判这一下
+      // 就会把一份错误说明当成卡塞进去，下一页直接炸在 data 上。
+      if (detail?.ok !== true) throw new Error(detail?.error ?? '这张卡读不出来')
       setActiveCard(detail)
     } catch (e) {
+      // 取不到就先清空：留着上一张卡的话，下面摊开的清单会挂在别人的名字底下。
+      setActiveCard(null)
       setError(humanizeError(e))
     }
     setView(VIEWS.card)
@@ -734,13 +739,23 @@ function LifeCardTab(props) {
     }
   }, [showProposal])
 
+  // 首页那几个按钮是「从头开始」的意思：上一次打开的是谁，到这一页就作废。
+  // 不这样清，刚看完某人的卡再回首页点「整理 N 份材料」，那一页会默默
+  // 还选着刚才那个人。
+  const go = useCallback((next) => {
+    if (next === VIEWS.analyze || next === VIEWS.interview) setInterviewFor(null)
+    setView(next)
+  }, [])
+
   const openCard = useCallback(async (card) => {
     setBusy('card')
     try {
       const detail = await call('card.get', { path: card.path })
+      if (detail?.ok !== true) throw new Error(detail?.error ?? '这张卡读不出来')
       setActiveCard(detail)
       setView(VIEWS.card)
     } catch (e) {
+      setActiveCard(null)
       setError(humanizeError(e))
     } finally {
       setBusy('')
@@ -808,7 +823,7 @@ function LifeCardTab(props) {
         // 直接退回首页，用户点了没反应，还以为坏了。现在把清单单独摊开。
         return activeCard === null
           ? proposal === null
-            ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: setView, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+            ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
             : h('div', { className: 'lc-pad lc-stack' },
                 proposal.about === undefined || String(proposal.about).trim() === ''
                   ? null
@@ -850,7 +865,7 @@ function LifeCardTab(props) {
         })
       case VIEWS.world:
         return activeWorld === null
-          ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: setView, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+          ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
           : h(WorldView, {
               world: activeWorld,
               listing,
@@ -859,7 +874,7 @@ function LifeCardTab(props) {
       case VIEWS.doctor:
         return h(DoctorView, { report: doctor, onRun: async () => { const r = await call('doctor.run', {}); setDoctor(r); await refresh() } })
       default:
-        return h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: setView, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+        return h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
     }
   }
 
@@ -1053,7 +1068,7 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
       h('button', {
         className: 'lc-btn ghost sm', type: 'button', onClick: onMore,
         style: { width: '100%', justifyContent: 'flex-start' },
-      }, h(Icon, { name: showMore ? 'chevron' : 'chevron', size: 12 }), showMore ? '收起' : '更多工具'),
+      }, h('span', { style: { display: 'inline-flex', transform: showMore ? 'rotate(90deg)' : 'none', transition: 'transform .12s' } }, h(Icon, { name: 'chevron', size: 12 })), showMore ? '收起' : '更多工具'),
     ),
     showMore === true
       ? h('div', { className: 'lc-stack' },

@@ -266,6 +266,87 @@ const base = (view, extra = {}) => ({ 0: view, 1: STATE, 2: LISTING, 3: '', 4: n
 renderRoot('首页（有数据）', base('home'))
 renderRoot('首页（空）', base('home', { 2: { ok: true, cards: [], materials: [], proposals: [], worlds: [], errors: [] } }))
 renderRoot('首页（展开更多工具）', base('home', { 10: true }))
+
+// ── 点一下会怎样：首页那几个入口是「从头开始」的意思 ────────────────
+// 渲染树里的 onClick 是真的闭包，调它就能看到状态被改成了什么。
+// 以前没有这一层，所以「点了不跳」「跳了但还带着上一个人」这类错只能靠人点。
+//
+// 注意：deepRender 只「走」一遍，函数型节点留在原地没有被调用结果替换。
+// 想找真正的 <button> 得先把组件展开成一棵纯 DOM 树。
+function expand(node, depth = 0) {
+  if (node === null || node === undefined || depth > 45) return null
+  if (typeof node === 'string' || typeof node === 'number') return node
+  if (Array.isArray(node)) return node.map((n) => expand(n, depth + 1)).filter((n) => n !== null)
+  if (typeof node !== 'object') return null
+  if (typeof node.type === 'function') {
+    const savedStore = hookStore
+    const savedIndex = hookIndex
+    hookStore = []
+    hookIndex = 0
+    let out
+    try { out = node.type(node.props ?? {}) } finally { hookStore = savedStore; hookIndex = savedIndex }
+    return expand(out, depth + 1)
+  }
+  const kids = node.props?.children
+  return { type: node.type, props: node.props ?? {}, children: kids === undefined ? [] : expand(kids, depth + 1) }
+}
+const flatButtons = (tree, out = []) => {
+  if (tree === null || tree === undefined) return out
+  if (Array.isArray(tree)) { for (const n of tree) flatButtons(n, out); return out }
+  if (typeof tree !== 'object') return out
+  if (tree.type === 'button' && typeof tree.props?.onClick === 'function') out.push(tree)
+  flatButtons(tree.children, out)
+  return out
+}
+const textOf = (node) => {
+  if (node === null || node === undefined) return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(textOf).join('')
+  if (typeof node !== 'object') return ''
+  return textOf(node.children)
+}
+const clickByText = (tree, wanted) => {
+  const hit = flatButtons(expand(tree)).find((b) => textOf(b).includes(wanted))
+  if (hit === undefined) return false
+  hit.props.onClick()
+  return true
+}
+const hasRotate = (tree) => {
+  let found = false
+  const walk = (n) => {
+    if (n === null || n === undefined || found === true) return
+    if (Array.isArray(n)) { n.forEach(walk); return }
+    if (typeof n !== 'object') return
+    const tr = n.props?.style?.transform
+    if (typeof tr === 'string' && tr.includes('rotate(90deg)')) found = true
+    walk(n.children)
+  }
+  walk(expand(tree))
+  return found
+}
+
+{
+  // 刚看完「妈妈」的卡，回首页点「聊着建」——访谈页不能还开着妈妈。
+  const tree = renderRoot('首页（带着上一个人进访谈）', base('home', { 9: { id: 'mama', name: '妈妈' } }))
+  const clicked = clickByText(tree, '聊着建')
+  t('首页「聊着建」点得动', clicked === true)
+  t('点「聊着建」跳到访谈页', hookStore[0] === 'interview', String(hookStore[0]))
+  t('点「聊着建」不再带着上一个人', hookStore[9] === null, JSON.stringify(hookStore[9]))
+}
+{
+  const tree = renderRoot('首页（带着上一个人去整理材料）', base('home', { 9: { id: 'mama', name: '妈妈' } }))
+  const clicked = clickByText(tree, '份材料')
+  t('首页「整理材料」点得动', clicked === true)
+  t('点「整理材料」跳到分析页', hookStore[0] === 'analyze', String(hookStore[0]))
+  t('点「整理材料」不再带着上一个人', hookStore[9] === null, JSON.stringify(hookStore[9]))
+}
+{
+  // 「更多工具」的箭头要跟着开合转，否则看不出这是能展开的。
+  const closed = renderRoot('首页（更多工具收起）', base('home', { 10: false }))
+  t('收起时箭头不转', hasRotate(closed) === false)
+  const opened = renderRoot('首页（更多工具展开）', base('home', { 10: true }))
+  t('展开时箭头转过来', hasRotate(opened) === true)
+}
 renderRoot('卡片详情', base('card', { 6: CARD_DETAIL }))
 renderRoot('卡片详情＋建议面板', base('card', { 6: CARD_DETAIL, 7: PROPOSAL }))
 // 首页那条「还等着你看的建议」点进来时，那个人可能还没有卡。以前 activeCard
