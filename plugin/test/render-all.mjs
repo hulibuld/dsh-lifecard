@@ -376,6 +376,12 @@ if (seen.has('CardRow')) {
   renderOne('世界书列表行', seen.get('WorldRow'), { world: LISTING.worlds[0], onOpen: () => {} })
   renderOne('世界书详情', seen.get('WorldView'), { world: WORLD, listing: LISTING, onOpenCard: () => {}, onAnalyze: () => {} })
   renderOne('世界书详情（摘出来一条）', seen.get('WorldView'), { world: WORLD, listing: LISTING, onOpenCard: () => {}, onAnalyze: () => {} }, { 0: '北洋' })
+  // 人手工改过文本文件时，触发词可能写成 `keys: 北洋`（字符串）而不是数组。
+  // 这时界面上要说得出「北洋」，不能显示「没有触发词」。
+  renderOne('世界书详情（触发词手写成一串）', seen.get('WorldView'), {
+    world: { ...WORLD, entries: [{ uid: 9, keys: '手写的', content: '一样能搜到。', enabled: true }] },
+    listing: LISTING, onOpenCard: () => {}, onAnalyze: () => {},
+  }, { 0: '手写' })
 }
 
 // 遍历渲染完之后再核对：所有子组件都该被访问到过。
@@ -423,6 +429,7 @@ for (const [label, word] of [
   ['世界书分组', '世界书 · '],
   ['世界书条数', '条设定'],
   ['世界下拉的空选项', '不属于任何世界'],
+  ['手写的触发词也认', '「手写的」'],
 ]) {
   t(`出现了 ${label}`, all.includes(word), word)
 }

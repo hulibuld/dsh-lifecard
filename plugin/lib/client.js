@@ -1058,6 +1058,23 @@ function WorldRow({ world, onOpen }) {
  * 能搜、能看见哪些条目是关着的」，不做编辑——编辑世界书是另一件事，
  * 而且条目上有几十个 v0.1 不解释的字段，瞎改会把原设定弄坏。
  */
+/**
+ * 触发词在导入时永远写成数组，但人手工改文本文件时可能写成
+ * `keys: 北洋` 这种单个字符串。读的时候一律当数组看，不然搜索漏掉它、
+ * 界面上还会说「没有触发词」——两处都不报错，人只会觉得这本书坏了。
+ */
+function keysOf(entry) {
+  const raw = entry?.keys ?? entry?.key
+  if (Array.isArray(raw)) return raw.filter((k) => String(k ?? '').trim() !== '').map((k) => String(k))
+  if (typeof raw === 'string' && raw.trim() !== '') return [raw.trim()]
+  return []
+}
+
+function keysText(raw) {
+  if (Array.isArray(raw)) return raw.join(' ')
+  return typeof raw === 'string' ? raw : ''
+}
+
 function WorldView({ world, listing, onOpenCard, onAnalyze }) {
   const [q, setQ] = useState('')
   const entries = world?.entries ?? []
@@ -1065,10 +1082,7 @@ function WorldView({ world, listing, onOpenCard, onAnalyze }) {
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase()
     if (needle === '') return entries
-    return entries.filter((e) => {
-      const keys = Array.isArray(e.keys) ? e.keys.join(' ') : ''
-      return `${keys} ${String(e.content ?? '')} ${String(e.comment ?? '')}`.toLowerCase().includes(needle)
-    })
+    return entries.filter((e) => `${keysText(e.keys)} ${String(e.content ?? '')} ${String(e.comment ?? '')}`.toLowerCase().includes(needle))
   }, [entries, q])
   // 这本世界书底下的卡（worlds/<id>/cards/ 里的，或者 world 字段指向它的）
   const here = (listing?.cards ?? []).filter((c) => c.world === data.id)
@@ -1101,8 +1115,8 @@ function WorldView({ world, listing, onOpenCard, onAnalyze }) {
     filtered.map((e, i) => h('div', { key: String(e.uid ?? `e-${i}`), className: 'lc-sec' },
       h('div', { className: 'lc-row' },
         h('div', { className: 'st lc-grow' }, e.comment === undefined || e.comment === '' ? '（没写名字）' : String(e.comment)),
-        Array.isArray(e.keys) && e.keys.length > 0
-          ? h('span', { className: 'lc-meta' }, e.keys.map((k) => `「${k}」`).join(' '))
+        keysOf(e).length > 0
+          ? h('span', { className: 'lc-meta' }, keysOf(e).map((k) => `「${k}」`).join(' '))
           : h('span', { className: 'lc-meta' }, '没有触发词'),
         e.enabled === false ? h(Tag, { tone: 'warn' }, '关着') : null,
       ),
