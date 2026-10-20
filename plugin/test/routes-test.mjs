@@ -74,5 +74,70 @@ console.log('\n=== 3. 宿主暴露的接口一个都不重名 ===')
   t('全是小写点号命名', names.every((n) => /^[a-z][a-zA-Z]*(\.[a-z][a-zA-Z]*)+$/.test(n)), names.filter((n) => !/^[a-z][a-zA-Z]*(\.[a-z][a-zA-Z]*)+$/.test(n)))
 }
 
+console.log('\n=== 4. 导入世界书：条目一个不丢，字段不写错 ===')
+{
+  // 一份照着 ST 真实导出结构做的世界书。字段故意给满，因为这里要验的
+  // 就是「不理解的字段也不能丢」——丢了用户不会收到任何报错。
+  const book = {
+    name: '北洋往事',
+    description: '民国背景的世界设定集',
+    entries: {
+      3: {
+        uid: 3,
+        key: ['天津', '租界'],
+        keysecondary: ['一九二八'],
+        comment: '天津卫',
+        content: '天津九国租界，洋楼与贫民窟并排。',
+        order: 42,
+        disable: false,
+        probability: 100,
+        depth: 4,
+        selectiveLogic: 0,
+        extensions: { position: 4, exclude_recursion: false },
+      },
+      4: {
+        uid: 4,
+        key: ['码头'],
+        comment: '码头',
+        content: '码头上扛包的苦力按件计钱。',
+        order: 7,
+        disable: true,
+      },
+    },
+  }
+  const base64 = Buffer.from(JSON.stringify(book), 'utf8').toString('base64')
+  const imported = await table['import.cards']({ workspace: ws, files: [{ name: 'beiyang.json', base64 }] })
+  t('世界书导入成功', imported.ok === true && imported.imported === 1, JSON.stringify(imported).slice(0, 200))
+  const rec = imported.results?.[0] ?? {}
+  t('认出这是世界书而不是角色卡', rec.kind === 'worldinfo', rec.kind)
+  t('两条条目都在', rec.entries === 2, rec.entries)
+
+  const rel = rec.path
+  const card = await table['card.get']({ workspace: ws, path: rel })
+  t('世界书落成了 world.md', card.ok === true, card.ok)
+  const body = (card.sections ?? []).map((s) => s.body).join('\n')
+
+  // 两个以前写错的字段
+  t('顺序用了原来的 order，不是默认 100', body.includes('insertion_order: 42'), body.slice(0, 300))
+  t('第二条的顺序也对', body.includes('insertion_order: 7'))
+  t('启用的条目没被写成停用', /uid: 3[\s\S]*?enabled: true/.test(body), body.slice(0, 300))
+  t('停用的条目没被写成启用', /uid: 4[\s\S]*?enabled: false/.test(body))
+
+  // 原来完全丢掉的字段
+  t('uid 留下来了', body.includes('uid: 3') && body.includes('uid: 4'), body.slice(0, 200))
+  t('不理解的字段没丢（写进 rest）', body.includes('keysecondary') && body.includes('probability') && body.includes('depth'), body.slice(0, 400))
+
+  // 保真底线：原件要留一份
+  t('原件存进了 .lifecard/raw/', typeof rec.raw === 'string' && rec.raw.startsWith('.lifecard/raw/'), rec.raw)
+  const rawText = await fs.readFile(path.join(ws, rec.raw), 'utf8').catch(() => null)
+  t('原件内容能读回来', rawText !== null && rawText.includes('keysecondary'), rawText === null ? '读不到' : 'ok')
+  const rawJson = rawText === null ? null : JSON.parse(rawText)
+  t('原件是原样，不是加工过的', rawJson?.entries?.['3']?.keysecondary?.[0] === '一九二八', rawJson?.entries?.['3'])
+
+  // 工作区里要能被认出来
+  const doctor = await table['doctor.run']({ workspace: ws })
+  t('体检认得这本世界书', (doctor.counts?.worlds ?? 0) >= 1, doctor.counts)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

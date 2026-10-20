@@ -1133,39 +1133,98 @@ function buildApi(ctx, workspace, config) {
   }
 }
 
-/** 把材料写进 worlds/。 */
+/**
+ * 把世界书写进 worlds/<id>/world.md。
+ *
+ * 三件事要做对，它们是这个函数唯一的价值：
+ *
+ * 1. **原件必须留一份**。世界书条目上有几十个字段（`probability`、`depth`、
+ *    `selectiveLogic`、`extensions`…），v0.1 一个都不解释。按 SPEC §7.1
+ *    的保真规则，不理解的键不能丢——所以原始 JSON 原封不动抄进
+ *    `.lifecard/raw/`，将来要导出或改解释口径时还有东西对。
+ * 2. **条目本身不能丢**。以前写正文时只留五个字段，而且 `enabled` 那行
+ *    判的是原条目的 `entry.disable` 而不是归一化后的 `entry.enabled`，
+ *    于是每一条都被落成「停用」。不报错，用户只会发现导进来的世界书
+ *    全是关着的。
+ * 3. **正文是给人看的**。st 的 uid 要留着，否则人没法把这里的条目和
+ *    原文件对上。
+ */
 async function importWorldInfo(ws, json, fileName) {
   const id = core.safeId(String(json?.name ?? path.basename(fileName, path.extname(fileName))))
   const rel = path.posix.join('worlds', id, 'world.md')
   const entries = normalizeWorldEntries(json)
+
+  // 原件落地：保真的底线。写失败不算导入失败（用户还能看到条目），
+  // 但要如实告诉他原件没存上。
+  let rawRel
+  try {
+    const rawName = `${id}.worldinfo.json`
+    rawRel = path.posix.join('.lifecard/raw', rawName)
+    await fs.mkdir(path.join(ws, '.lifecard/raw'), { recursive: true })
+    await fs.writeFile(path.join(ws, rawRel), Buffer.from(JSON.stringify(json, null, 2), 'utf8'))
+  } catch {
+    rawRel = undefined
+  }
+
   const lines = []
   for (const entry of entries) {
-    lines.push(`- keys: [${(entry.keys ?? []).map((k) => JSON.stringify(k)).join(', ')}]`)
-    lines.push(`  content: ${JSON.stringify(entry.content ?? '').slice(0, 4000)}`)
+    lines.push(`- uid: ${entry.uid === undefined ? '-' : entry.uid}`)
+    lines.push(`  keys: [${(entry.keys ?? []).map((k) => JSON.stringify(k)).join(', ')}]`)
+    lines.push(`  content: ${JSON.stringify(entry.content ?? '')}`)
     if (entry.comment !== undefined) lines.push(`  comment: ${JSON.stringify(entry.comment)}`)
-    lines.push(`  insertion_order: ${Number(entry.insertion_order ?? 100)}`)
-    if (entry.enabled !== undefined) lines.push(`  enabled: ${entry.enabled === true}`)
+    lines.push(`  insertion_order: ${entry.insertion_order}`)
+    lines.push(`  enabled: ${entry.enabled}`)
+    // 不解释但也不丢：原样落一行，人看得出来这条还有别的设定。
+    if (entry.rest !== undefined) lines.push(`  rest: ${JSON.stringify(entry.rest)}`)
   }
-  const data = { lifecard: core.DATA_VERSION, id, kind: 'world', name: String(json?.name ?? id), genre: 'imported' }
-  const sections = [{ title: '世界书条目', body: lines.join('\n') }]
+  const data = {
+    lifecard: core.DATA_VERSION,
+    id,
+    kind: 'world',
+    name: String(json?.name ?? id),
+    genre: 'imported',
+    entry_count: entries.length,
+  }
+  if (rawRel !== undefined) data.source_file = rawRel
+  const sections = [{ title: '世界书条目', body: lines.length === 0 ? '（这本世界书里没有条目）' : lines.join('\n') }]
   await fs.mkdir(path.dirname(path.join(ws, rel)), { recursive: true })
   const written = await store.writeCard(ws, rel, data, sections, { force: true })
-  return { id, path: rel, entries: entries.length, written: written.ok }
+  return { id, path: rel, entries: entries.length, raw: rawRel, written: written.ok }
 }
 
-/** ST 的独立世界书 entries 可能是对象（uid 为键）或数组。统一成数组。 */
+/**
+ * ST 的独立世界书 entries 可能是对象（uid 为键）或数组。统一成数组。
+ *
+ * `enabled` 的三种来源按优先级：ST 的 `disable: true`（老字段）→ `enabled`
+ * （新字段）→ 默认启用。取第一个「说了话」的，不要用 `??` 串起来——
+ * `disable` 是 false 时也得算数（false 表示启用）。
+ */
 function normalizeWorldEntries(json) {
   const raw = json?.entries ?? json?.data?.entries ?? []
   const list = Array.isArray(raw)
     ? raw
     : Object.keys(raw).map((k) => raw[k]).filter((e) => e !== null && typeof e === 'object')
-  return list.map((e) => ({
-    keys: Array.isArray(e.key) ? e.key : Array.isArray(e.keys) ? e.keys : [],
-    content: String(e.content ?? ''),
-    comment: e.comment,
-    insertion_order: e.order ?? e.insertion_order,
-    enabled: e.disable === true ? false : e.enabled ?? true,
-  }))
+  return list.map((e) => {
+    const keys = Array.isArray(e.key) ? e.key : Array.isArray(e.keys) ? e.keys : []
+    const order = typeof e.insertion_order === 'number' ? e.insertion_order : (typeof e.order === 'number' ? e.order : 100)
+    let enabled = true
+    if (e.disable === true) enabled = false
+    else if (typeof e.enabled === 'boolean') enabled = e.enabled
+    else if (e.disable === false) enabled = true
+    // 除了已消化的五个字段，其余全留着（不解释，但不丢）
+    const known = new Set(['key', 'keys', 'content', 'comment', 'order', 'insertion_order', 'disable', 'enabled', 'uid'])
+    const rest = {}
+    for (const k of Object.keys(e)) if (!known.has(k)) rest[k] = e[k]
+    return {
+      uid: typeof e.uid === 'number' ? e.uid : undefined,
+      keys,
+      content: String(e.content ?? ''),
+      comment: e.comment,
+      insertion_order: order,
+      enabled,
+      rest: Object.keys(rest).length === 0 ? undefined : rest,
+    }
+  })
 }
 
 /** id 撞车时加 -2、-3。 */
