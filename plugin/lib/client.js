@@ -770,6 +770,7 @@ function LifeCardTab(props) {
           ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: setView, onMore: () => setShowMore(!showMore), showMore, onProposal: async (json) => { const p = await call('proposal.get', { json }); setProposal(p); setView(VIEWS.card) }, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
           : h(CardView, {
               card: activeCard,
+              worlds: listing?.worlds ?? [],
               proposal,
               setProposal,
               flash,
@@ -1122,7 +1123,7 @@ function WorldView({ world, listing, onOpenCard, onAnalyze }) {
 
 // ── 单张卡 ────────────────────────────────────────────────────────
 
-function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, onInterview, onAnalyze }) {
+function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, onInterview, onAnalyze, worlds }) {
   const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState('')
   const [err, setErr] = useState(null)
@@ -1173,6 +1174,7 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
   if (editing) {
     return h(CardForm, {
       card: { ...card, avatar: card?.avatar ?? null },
+      worlds: worlds ?? [],
       onCancel: () => setEditing(false),
       onSaved: async () => { setEditing(false); await onRefresh(); flash('存好了') },
     })
@@ -1502,7 +1504,7 @@ function AvatarPicker({ photo, name, onChange }) {
   )
 }
 
-function CardForm({ card, onCancel, onSaved }) {
+function CardForm({ card, onCancel, onSaved, worlds }) {
   const original = card?.data ?? {}
   const [data, setData] = useState(() => cloneData(original))
   // 头像跟卡分开存（assets/），但编辑时要一起看，所以这里挂一份临时副本。
@@ -1560,6 +1562,7 @@ function CardForm({ card, onCancel, onSaved }) {
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
   }
 
+  const worldChoices = Array.isArray(worlds) ? worlds : []
   const kind = String(data.kind ?? 'real')
   const isPerson = kind === 'real' || kind === 'hybrid' || kind === 'self' || kind === 'fictional'
 
@@ -1682,8 +1685,14 @@ function CardForm({ card, onCancel, onSaved }) {
     ),
     more === true
       ? h('div', { className: 'lc-fset' },
-          h(Field, { label: '属于哪个世界', hint: '写小说、建宇宙的时候才用。现实中的人就留空。' },
-            h('input', { className: 'lc-input', value: String(data.world ?? ''), onChange: (e) => set('world', e.target.value), placeholder: 'reality', spellCheck: false }),
+          h(Field, { label: '属于哪个世界', hint: worldChoices.length === 0 ? '写小说、建宇宙的时候才用。现实中的人就留空。' : '从你导入过的世界书里选一本。' },
+            worldChoices.length === 0
+              ? h('input', { className: 'lc-input', value: String(data.world ?? ''), onChange: (e) => set('world', e.target.value), placeholder: 'reality', spellCheck: false })
+              : h('select', { className: 'lc-select', value: String(data.world ?? ''), onChange: (e) => set('world', e.target.value) },
+                  h('option', { value: '' }, '不属于任何世界'),
+                  worldChoices.map((w) => h('option', { key: String(w.id), value: String(w.id) }, String(w.name ?? w.id))),
+                  worldChoices.some((w) => String(w.id) === String(data.world ?? '')) ? null : h('option', { value: String(data.world ?? '') }, String(data.world ?? '')),
+                ),
           ),
           h(Field, { label: '标签', hint: '用逗号分开。方便以后搜索。' },
             h('input', {

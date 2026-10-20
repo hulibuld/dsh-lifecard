@@ -313,6 +313,17 @@ if (seen.has('CardForm')) {
     onCancel: () => {}, onSaved: async () => {},
   })
   renderOne('编辑表单（含提案）', seen.get('CardForm'), { card: CARD_DETAIL, proposal: PROPOSAL, onCancel: () => {}, onSaved: async () => {} })
+  // 导进来过世界书时，「属于哪个世界」要从手填变成下拉——手填一个不存在的 id
+  // 会让这张卡从所有按世界分组的视图里消失（doctor 也会报 warn）。
+  // CardForm 的 hook 槽：0 data / 1 avatar / 2 avatarTouched / 3 sections / 4 busy / 5 err / 6 more
+  // 「属于哪个世界」在折叠区里，要推 more 才看得见。
+  renderOne('编辑表单（有世界书可选）', seen.get('CardForm'), {
+    card: CARD_DETAIL, worlds: LISTING.worlds, onCancel: () => {}, onSaved: async () => {},
+  }, { 6: true })
+  renderOne('新建表单（没有世界书）', seen.get('CardForm'), {
+    card: { path: 'cards/new.card.md', data: { lifecard: '0.1', id: 'new', kind: 'real', name: '' }, sections: [] },
+    worlds: [], onCancel: () => {}, onSaved: async () => {},
+  }, { 6: true })
 }
 
 if (seen.has('ProposalPanel')) {
@@ -411,6 +422,7 @@ for (const [label, word] of [
   ['概念入口', '你想让 TA 是什么样的人'],
   ['世界书分组', '世界书 · '],
   ['世界书条数', '条设定'],
+  ['世界下拉的空选项', '不属于任何世界'],
 ]) {
   t(`出现了 ${label}`, all.includes(word), word)
 }
