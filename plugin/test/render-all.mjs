@@ -268,6 +268,18 @@ renderRoot('首页（空）', base('home', { 2: { ok: true, cards: [], materials
 renderRoot('首页（展开更多工具）', base('home', { 10: true }))
 renderRoot('卡片详情', base('card', { 6: CARD_DETAIL }))
 renderRoot('卡片详情＋建议面板', base('card', { 6: CARD_DETAIL, 7: PROPOSAL }))
+// 首页那条「还等着你看的建议」点进来时，那个人可能还没有卡。以前 activeCard
+// 是 null 就直接退回首页，用户点了没反应。这时要能单独把清单摊开。
+{
+  const before = visibleText.length
+  renderRoot('建议清单（那个人还没有卡）', base('card', { 6: null, 7: PROPOSAL }))
+  const joined = visibleText.slice(before).join('|')
+  t('没有卡时建议清单照样摊得开', joined.includes('AI 从材料里读出来的东西'), joined.slice(0, 200))
+  t('没有卡时说清楚这个人还没卡', joined.includes('还没有卡'), joined.slice(0, 200))
+  // 没卡时点「采纳」只会得到「找不到这张卡」。按钮必须换成「去建这张卡」。
+  t('没有卡时不给死路按钮', !joined.includes('就用这 '), joined.slice(0, 200))
+  t('没有卡时给一条去建卡的路', joined.includes('去建这张卡'), joined.slice(0, 200))
+}
 // 归到某本世界书里的卡：详情页要能点回那本书。
 // 断言要看这一次渲染出来的文字，不能看全局的 visibleText——首页本来就
 // 列着「北京」，全局断言永远为真，等于没测。

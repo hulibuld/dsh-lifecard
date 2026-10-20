@@ -617,6 +617,8 @@ function LifeCardTab(props) {
   const [showMore, setShowMore] = useState(false)
   // 看一本世界书。世界书不是卡（不进卡列表，也不参与覆盖度），所以自己占一个状态。
   const [activeWorld, setActiveWorld] = useState(null)
+  // 从一份「这个人还没有卡」的建议跳去新建时，把名字带过去。
+  const [pendingAbout, setPendingAbout] = useState('')
   const mounted = useRef(true)
 
   useEffect(() => () => { mounted.current = false }, [])
@@ -697,6 +699,29 @@ function LifeCardTab(props) {
     }
   }, [])
 
+  // 点「还等着你看的建议」：能定位到人就先把那张卡打开，再把清单摊在下面——
+  // 只弹一份不知道会改到哪张卡的清单，比不给看还让人不安。
+  const openProposal = useCallback(async (json) => {
+    setError(null)
+    try {
+      const p = await call('proposal.get', { json })
+      if (p.ok !== true) { setError(p.error ?? '这份建议读不出来'); return }
+      const target = (listing?.cards ?? []).find((c) => String(c.id) === String(p.about))
+      if (target === undefined) {
+        setActiveCard(null)
+        setProposal(p)
+        setView(VIEWS.card)
+        return
+      }
+      const detail = await call('card.get', { path: target.path })
+      setActiveCard(detail)
+      setProposal(p)
+      setView(VIEWS.card)
+    } catch (e) {
+      setError(humanizeError(e))
+    }
+  }, [listing])
+
   const openCard = useCallback(async (card) => {
     setBusy('card')
     try {
@@ -766,8 +791,25 @@ function LifeCardTab(props) {
           onNeedMaterial: () => setView(VIEWS.import),
         })
       case VIEWS.card:
+        // 首页那条「还等着你看的建议」点进来时，如果这个人还没有卡（很正常：
+        // AI 是从材料里读出来的，卡可能还没建），activeCard 就是 null。以前这里
+        // 直接退回首页，用户点了没反应，还以为坏了。现在把清单单独摊开。
         return activeCard === null
-          ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: setView, onMore: () => setShowMore(!showMore), showMore, onProposal: async (json) => { const p = await call('proposal.get', { json }); setProposal(p); setView(VIEWS.card) }, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+          ? proposal === null
+            ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: setView, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+            : h('div', { className: 'lc-pad lc-stack' },
+                proposal.about === undefined || String(proposal.about).trim() === ''
+                  ? null
+                  : h('div', { className: 'lc-meta' }, `这些是 AI 从材料里读到的、关于「${String(proposal.about)}」的东西。`),
+                h(ProposalPanel, {
+                  proposal,
+                  applyBlocked: true,
+                  onBuildCard: () => { setPendingAbout(String(proposal.about ?? '')); setProposal(null); setView(VIEWS.newCard) },
+                  onClose: () => { setProposal(null); setView(VIEWS.home) },
+                  onApplied: async () => { setProposal(null); await refresh(); setView(VIEWS.home); flash('存进卡里了') },
+                }),
+                h(Btn, { block: true, onClick: () => { setProposal(null); setView(VIEWS.home) } }, '回列表'),
+              )
           : h(CardView, {
               card: activeCard,
               worlds: listing?.worlds ?? [],
@@ -783,6 +825,7 @@ function LifeCardTab(props) {
       case VIEWS.newCard:
         return h(NewCardView, {
           state,
+          presetName: pendingAbout,
           onCreate: async (data) => {
             const r = await call('card.save', { data, sections: [] })
             if (r.ok !== true) throw new Error(r.error ?? '没存上')
@@ -795,7 +838,7 @@ function LifeCardTab(props) {
         })
       case VIEWS.world:
         return activeWorld === null
-          ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: setView, onMore: () => setShowMore(!showMore), showMore, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+          ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: setView, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
           : h(WorldView, {
               world: activeWorld,
               listing,
@@ -804,7 +847,7 @@ function LifeCardTab(props) {
       case VIEWS.doctor:
         return h(DoctorView, { report: doctor, onRun: async () => { const r = await call('doctor.run', {}); setDoctor(r); await refresh() } })
       default:
-        return h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: setView, onMore: () => setShowMore(!showMore), showMore, onProposal: async (json) => { const p = await call('proposal.get', { json }); setProposal(p); setView(VIEWS.card) }, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+        return h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: setView, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
     }
   }
 
@@ -1058,22 +1101,15 @@ function WorldRow({ world, onOpen }) {
 
 // ── 一本世界书 ────────────────────────────────────────────────────
 
-/**
- * 一本世界书的详情。
- *
- * 条目本身是别人写好的设定集（酒馆世界书导进来的），这里只做「能读到、
- * 能搜、能看见哪些条目是关着的」，不做编辑——编辑世界书是另一件事，
- * 而且条目上有几十个 v0.1 不解释的字段，瞎改会把原设定弄坏。
- */
+// 现实世界的保留名字。`world` 是 real/fictional/hybrid 的必填字段，
+// 所以「不属于哪本书」不能写成空串——那会让这张卡变成缺字段的坏卡。
+const REALITY = 'reality'
+
 /**
  * 触发词在导入时永远写成数组，但人手工改文本文件时可能写成
  * `keys: 北洋` 这种单个字符串。读的时候一律当数组看，不然搜索漏掉它、
  * 界面上还会说「没有触发词」——两处都不报错，人只会觉得这本书坏了。
  */
-// 现实世界的保留名字。`world` 是 real/fictional/hybrid 的必填字段，
-// 所以「不属于哪本书」不能写成空串——那会让这张卡变成缺字段的坏卡。
-const REALITY = 'reality'
-
 function keysOf(entry) {
   const raw = entry?.keys ?? entry?.key
   if (Array.isArray(raw)) return raw.filter((k) => String(k ?? '').trim() !== '').map((k) => String(k))
@@ -1086,6 +1122,13 @@ function keysText(raw) {
   return typeof raw === 'string' ? raw : ''
 }
 
+/**
+ * 一本世界书的详情。
+ *
+ * 条目本身是别人写好的设定集（酒馆世界书导进来的），这里只做「能读到、
+ * 能搜、能看见哪些条目是关着的」，不做编辑——编辑世界书是另一件事，
+ * 而且条目上有几十个 v0.1 不解释的字段，瞎改会把原设定弄坏。
+ */
 function WorldView({ world, listing, onOpenCard }) {
   const [q, setQ] = useState('')
   const entries = world?.entries ?? []
@@ -1954,7 +1997,7 @@ function HistoryPanel({ card, onClose, onRestored }) {
   )
 }
 
-function ProposalPanel({ proposal, onClose, onApplied }) {
+function ProposalPanel({ proposal, onClose, onApplied, applyBlocked, onBuildCard }) {
   const [items, setItems] = useState(() => (proposal?.items ?? []).map((i) => ({ ...i })))
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
@@ -2011,11 +2054,21 @@ function ProposalPanel({ proposal, onClose, onApplied }) {
     (proposal.rejected ?? []).length > 0
       ? h(Note, { tone: 'warn', icon: 'warning' }, `有 ${proposal.rejected.length} 条在材料里找不到原话，已经丢掉了。`)
       : null,
-    h('div', { className: 'lc-row' },
-      h(Btn, { tone: 'primary', onClick: apply, disabled: busy || checked === 0, icon: 'check' }, checked === 0 ? '先勾选要的' : `就用这 ${checked} 条`),
-      h(Btn, { onClick: onClose, icon: 'x' }, '都不要'),
-      busy ? h(Spinner) : null,
-    ),
+    // 名下还没有卡时不给采纳按钮。硬给的话点下去只会得到「找不到这张卡」，
+    // 而用户刚刚才看完一整页建议——说清楚比给个坏按钮好。
+    applyBlocked === true
+      ? h('div', { className: 'lc-stack' },
+          h(Note, { tone: 'warn', icon: 'warning' }, `「${String(proposal.about ?? '这个人')}」还没有卡，这些建议暂时没地方放。先建一张，再回来勾。`),
+          h('div', { className: 'lc-row' },
+            h(Btn, { tone: 'primary', onClick: onBuildCard, icon: 'plus' }, '去建这张卡'),
+            h(Btn, { onClick: onClose, icon: 'x' }, '先放着'),
+          ),
+        )
+      : h('div', { className: 'lc-row' },
+          h(Btn, { tone: 'primary', onClick: apply, disabled: busy || checked === 0, icon: 'check' }, checked === 0 ? '先勾选要的' : `就用这 ${checked} 条`),
+          h(Btn, { onClick: onClose, icon: 'x' }, '都不要'),
+          busy ? h(Spinner) : null,
+        ),
   )
 }
 
@@ -2043,8 +2096,9 @@ function describeValue(item) {
 
 // ── 新建空卡 ──────────────────────────────────────────────────────
 
-function NewCardView({ state, onCreate }) {
-  const [name, setName] = useState('')
+function NewCardView({ state, onCreate, presetName }) {
+  // 从「这份建议的人还没有卡」过来时，名字已经知道了，别让人再打一遍。
+  const [name, setName] = useState(String(presetName ?? ''))
   const [kind, setKind] = useState('real')
   const [relation, setRelation] = useState('')
   const [busy, setBusy] = useState(false)
