@@ -3103,6 +3103,18 @@ function scoreSection(report, onOpenCard) {
 
 // ── 看工作 ────────────────────────────────────────────────────────
 
+/** 投递状态的中文说法。和宿主侧 jobs-store.js 那份是同一套，改的时候两边一起改。 */
+const TRACK_LABEL = {
+  evaluated: '看过了',
+  applied: '投了',
+  responded: '有回音',
+  interview: '面试中',
+  offer: '拿到 offer',
+  rejected: '被拒了',
+  discarded: '自己不去了',
+  skip: '不投',
+}
+
 /**
  * 「看工作」这一页。
  *
@@ -3125,6 +3137,13 @@ function JobsView({ onBack, flash }) {
   const [history, setHistory] = useState(null)
   const [net, setNet] = useState(null)
   const [netBusy, setNetBusy] = useState(false)
+  const [logged, setLogged] = useState(false)
+  const [showTracker, setShowTracker] = useState(false)
+  const [tracker, setTracker] = useState(null)
+  const [showStories, setShowStories] = useState(false)
+  const [stories, setStories] = useState(null)
+  const [newStoryTitle, setNewStoryTitle] = useState('')
+  const [newStoryBody, setNewStoryBody] = useState('')
 
   useEffect(() => {
     let alive = true
@@ -3140,6 +3159,14 @@ function JobsView({ onBack, flash }) {
     call('job.evaluations', {}).then((r) => {
       if (alive !== true) return
       if (r.ok === true) setHistory(r.items ?? [])
+    }).catch(() => {})
+    call('job.tracker.list', {}).then((r) => {
+      if (alive !== true) return
+      if (r.ok === true) setTracker(r.rows ?? [])
+    }).catch(() => {})
+    call('job.stories', {}).then((r) => {
+      if (alive !== true) return
+      if (r.ok === true) setStories(r.stories ?? [])
     }).catch(() => {})
     return () => { alive = false }
   }, [])
@@ -3245,6 +3272,21 @@ function JobsView({ onBack, flash }) {
 
     report === null ? null : h(JobReport, { report }),
 
+    // 看完这一份，顺手记一笔：投了还是没投。这一栏是给自己看的，
+    // 过一个月回来看「投了 20 家几家有回音」，答案从这里出。
+    report === null ? null : h('div', { className: 'lc-row', style: { marginTop: 8 } },
+      h(Btn, { size: 'sm', tone: 'primary', icon: 'check', disabled: logged, onClick: async () => {
+        const row = { company: report.company ?? company, role: report.role ?? '', status: 'applied', note: '' }
+        const r = await call('job.tracker.add', { row })
+        if (r.ok === true) { setLogged(true); flash('记上了') } else { setErr(r.error ?? '没记上') }
+      } }, logged ? '已经记过了' : '记一笔：我投了'),
+      h(Btn, { size: 'sm', ghost: true, icon: 'skip', disabled: logged, onClick: async () => {
+        const row = { company: report.company ?? company, role: report.role ?? '', status: 'skip', note: '' }
+        const r = await call('job.tracker.add', { row })
+        if (r.ok === true) { setLogged(true); flash('记上了') } else { setErr(r.error ?? '没记上') }
+      } }, logged ? '' : '不投，记一下'),
+    ),
+
     // 这一块是本插件跟通用求职工具唯一不一样的地方：求职工具不认识人。
     report === null ? null : h('div', { className: 'lc-stack', style: { marginTop: 10 } },
       h(Btn, { size: 'sm', icon: 'people', onClick: whoThere, disabled: netBusy }, netBusy ? '正在找…' : '我认识这家公司的人吗'),
@@ -3262,6 +3304,63 @@ function JobsView({ onBack, flash }) {
                 ),
             h('div', { className: 'lc-meta' }, '这是你档案里写着的原话。要不要去问，你自己定。'),
           ),
+    ),
+
+    // ── 我的投递 ──
+    h('div', { style: { marginTop: 18 } },
+      h('button', {
+        className: 'lc-btn ghost sm', type: 'button', onClick: () => setShowTracker(!showTracker),
+        style: { width: '100%', justifyContent: 'flex-start' },
+      },
+        h('span', { style: { display: 'inline-flex', transform: showTracker ? 'rotate(90deg)' : 'none', transition: 'transform .12s' } }, h(Icon, { name: 'chevron', size: 12 })),
+        '我的投递',
+        h('span', { className: 'lc-grow' }),
+        h(Tag, null, (tracker ?? []).length === 0 ? '还没记' : `${tracker.length} 条`),
+      ),
+      showTracker !== true ? null : h('div', { className: 'lc-stack', style: { marginTop: 8 } },
+        (tracker ?? []).length === 0
+          ? h('div', { className: 'lc-meta' }, '还没有记过。看完一份工作，点「记一笔：我投了」，这里就会有。')
+          : (tracker ?? []).map((row) => h('div', { key: `${row.company}-${row.role}-${row.date}`, className: 'lc-sec' },
+              h('div', { className: 'lc-row' },
+                h('span', { className: 'st lc-grow' }, `${row.company}${row.role === '' ? '' : ' · ' + row.role}`),
+                h(Tag, null, TRACK_LABEL[row.status] ?? row.status),
+              ),
+              h('div', { className: 'lc-meta' }, `${row.date}${row.note === '' ? '' : ' · ' + row.note}`),
+            )),
+        h('div', { className: 'lc-meta' }, '这张记录你能自己在文件夹里打开改，就在「我的投递」那张表里。'),
+      ),
+    ),
+
+    // ── 面试故事 ──
+    h('div', { style: { marginTop: 10 } },
+      h('button', {
+        className: 'lc-btn ghost sm', type: 'button', onClick: () => setShowStories(!showStories),
+        style: { width: '100%', justifyContent: 'flex-start' },
+      },
+        h('span', { style: { display: 'inline-flex', transform: showStories ? 'rotate(90deg)' : 'none', transition: 'transform .12s' } }, h(Icon, { name: 'chevron', size: 12 })),
+        '面试故事',
+        h('span', { className: 'lc-grow' }),
+        h(Tag, null, (stories ?? []).length === 0 ? '还没写' : `${stories.length} 段`),
+      ),
+      showStories !== true ? null : h('div', { className: 'lc-stack', style: { marginTop: 8 } },
+        h('div', { className: 'lc-meta' }, '面试官问「讲一次你解决难题的经历」，临时想是来不及的。平时把真事写下来，面试前翻一遍就够。'),
+        (stories ?? []).map((st) => h('div', { key: st.title, className: 'lc-sec' },
+          h('div', { className: 'st' }, st.title),
+          h('div', { className: 'sb', style: { whiteSpace: 'pre-wrap' } }, st.body),
+        )),
+        h(Field, { label: '再写一段', hint: '什么情况、你做了什么、结果怎样。三句话就够。' },
+          h('input', { className: 'lc-input', value: newStoryTitle, onChange: (e) => setNewStoryTitle(e.target.value), placeholder: '一次线上事故', spellCheck: false }),
+        ),
+        h('textarea', { className: 'lc-textarea', value: newStoryBody, onChange: (e) => setNewStoryBody(e.target.value), placeholder: '凌晨两点被告警叫起来…', spellCheck: false }),
+        h(Btn, { size: 'sm', icon: 'plus', disabled: newStoryTitle.trim() === '' || newStoryBody.trim() === '', onClick: async () => {
+          const r = await call('job.story.add', { story: { title: newStoryTitle.trim(), body: newStoryBody.trim() } })
+          if (r.ok !== true) { setErr(r.error ?? '没存上'); return }
+          setNewStoryTitle(''); setNewStoryBody('')
+          const again = await call('job.stories', {})
+          if (again.ok === true) setStories(again.stories ?? [])
+          flash('记下来了')
+        } }, '存下这段'),
+      ),
     ),
 
     (history ?? []).length === 0 ? null : h('div', null,

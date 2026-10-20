@@ -800,6 +800,42 @@ if (seen.has('CardRow')) {
   t('没人提到时说的是「没写下来」不是「没门路」', joined.includes('不代表你没门路'))
 }
 {
+  // 投递表：展开前只看到一个「我的投递」和条数；展开后才见行
+  const before = visibleText.length
+  renderOne('看工作（投递表收起）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, { 15: false, 16: [] })
+  const joined = visibleText.slice(before).join('|')
+  t('投递表默认收起但看得见入口', joined.includes('我的投递'))
+  t('没有记录时说「还没记」', joined.includes('还没记'))
+
+  const before2 = visibleText.length
+  renderOne('看工作（投递表展开）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
+    15: true,
+    16: [{ date: '2026-10-20', company: '某公司', role: '后端', status: 'applied', note: '内推' }],
+  })
+  const joined2 = visibleText.slice(before2).join('|')
+  t('展开后看得到公司', joined2.includes('某公司'))
+  t('状态说的是中文', joined2.includes('投了'))
+  t('备注也显示出来', joined2.includes('内推'))
+  t('说清了这张表能自己改', joined2.includes('自己在文件夹里打开改'))
+}
+{
+  // 面试故事：空的时候给入口，有内容时能读
+  const before = visibleText.length
+  renderOne('看工作（还没有故事）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, { 17: true, 18: [] })
+  const joined = visibleText.slice(before).join('|')
+  t('故事区说清了为什么要写', joined.includes('临时想是来不及的'))
+  t('故事区给了写法指引', joined.includes('什么情况'))
+
+  const before2 = visibleText.length
+  renderOne('看工作（有面试故事）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
+    17: true,
+    18: [{ title: '一次线上事故', body: '凌晨两点被告警叫起来。' }],
+  })
+  const joined2 = visibleText.slice(before2).join('|')
+  t('故事标题显示出来', joined2.includes('一次线上事故'))
+  t('故事正文显示出来', joined2.includes('凌晨两点'))
+}
+{
   const before = visibleText.length
   renderOne('求职报告（什么都没对上）', seen.get('JobReport'), {
     report: { company: '', role: '', blocked: [], matched: [], gaps: [], unclear: [], questions: [], warnings: [], dropped: [] },
