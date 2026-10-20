@@ -466,7 +466,17 @@ export async function listAll(root) {
         if (r.ok) systems.push({ path: rel, id: r.data?.id, name: r.data?.name, kind: 'system' })
       } else if (lower === 'world.md') {
         const r = await readCard(root, rel)
-        if (r.ok) worlds.push({ path: rel, id: r.data?.id, name: r.data?.name, genre: r.data?.genre, kind: 'world' })
+        if (r.ok) {
+          worlds.push({
+            path: rel,
+            id: r.data?.id,
+            name: r.data?.name,
+            genre: r.data?.genre,
+            kind: 'world',
+            // 列表上直接显示「几条」，省得为一本世界书再发一次请求。
+            entry_count: Number(r.data?.entry_count ?? core.parseWorldEntries(r.sections).length),
+          })
+        }
       } else if (isUnder(relDir, 'materials')) {
         const stat = await fs.stat(path.join(root, rel)).catch(() => null)
         materials.push({ path: rel, name: entry.name, size: stat?.size ?? 0, mtime: stat?.mtime?.toISOString?.() })

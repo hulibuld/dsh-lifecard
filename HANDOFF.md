@@ -7,7 +7,7 @@
 
 ## 一句话现状
 
-**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 **651 项**通过，对一个真实运行的 DSH 实例做的端到端验收 **14/14** 通过。**P0（上传 GitHub 前的准备）、P1（陈旧文档）、P2（六项功能扩展）全部做完。** 之后又做了三轮加固：数据层 20 处隐患、编码/路由层 20 处隐患、测试补到 651 项。
+**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 **681 项**通过，对一个真实运行的 DSH 实例做的端到端验收 **14/14** 通过。**P0（上传 GitHub 前的准备）、P1（陈旧文档）、P2（六项功能扩展）全部做完。** 之后又做了四轮加固：数据层 20 处隐患、编码/路由层 20 处隐患、世界书导入与展示、测试补到 681 项。
 
 ---
 
@@ -57,15 +57,15 @@ LifeCard/
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `lib/client.js` | 2605 | **整个侧边栏界面**。纯手写，没有 React 依赖注入以外的框架 |
-| `lib/index.js` | 1405 | 宿主侧：32 条 HTTP 路由、调用模型、**注册访谈 skill**、路径越界闸、导出 consent 闸 |
-| `lib/store.js` | 1116 | 工作区、快照、墓碑 `redactions.jsonl`、提案与勾选旁路、头像、概念、doctor |
-| `lib/core.js` | 946 | 零依赖：YAML 子集解析/序列化、卡片校验、覆盖率、**引文校验门** |
+| `lib/client.js` | 2743 | **整个侧边栏界面**。纯手写，没有 React 依赖注入以外的框架 |
+| `lib/index.js` | 1436 | 宿主侧：33 条 HTTP 路由、调用模型、**注册访谈 skill**、路径越界闸、导出 consent 闸 |
+| `lib/store.js` | 1126 | 工作区、快照、墓碑 `redactions.jsonl`、提案与勾选旁路、头像、概念、doctor |
+| `lib/core.js` | 996 | 零依赖：YAML 子集解析/序列化、卡片校验、覆盖率、**引文校验门** |
 | `lib/codec.js` | 785 | PNG tEXt/iTXt 读写、CCv2/CCv3/CHARX、双 chunk 导出、保真字段 |
 | `lib/prompts.js` | 454 | 11 类关系 × 问题库、`buildAnalyzePrompt` |
 | `lib/score.js` | 329 | **纯本地**体检打分 0–100、字数估算、占位符与世界书健康度 |
 | `skills/lifecard-interview/SKILL.md` | 192 | **会随包安装的那份**访谈 skill |
-| `test/` | 12 个在 `all.mjs` 里 + `live.mjs`，另有 2 个工具 | 651 项断言 |
+| `test/` | 12 个在 `all.mjs` 里 + `live.mjs`，另有 2 个工具 | 681 项断言 |
 | `locale/{zh,en}.json` | — | 侧栏 tab 的标题与描述 |
 | `cordis.patch.yml` | — | 装进 profile 时插入的插件条目 |
 | `node_modules/@deepseek-ai/schemastery` | — | 软链，见下面坑 #2 |
@@ -79,20 +79,20 @@ LifeCard/
 ```bash
 cd .../LifeCard/plugin
 
-# 1. 全量单元测试：651 项
+# 1. 全量单元测试：681 项
 node test/all.mjs
-# → roundtrip 9 / codec 52 / store 121 / score 51 / json-extract 10 / prompt 154
-#   client-smoke 27 / skill-register 18 / routes 50 / hardening-routes 46
-#   hardening-data 54 / render-all 59
+# → roundtrip 19 / codec 52 / store 121 / score 51 / json-extract 10 / prompt 154
+#   client-smoke 27 / skill-register 18 / routes 62 / hardening-routes 46
+#   hardening-data 54 / render-all 67
 
 # 2. 对真实运行的 DSH 做端到端验收：14/14
 node test/live.mjs "$DSH_GUI"          # $DSH_GUI = 运行时上下文里那个 GUI URL
 
-# 3. 界面文案自检（含"黑话零命中"）：59 项，已含在 all.mjs 里
+# 3. 界面文案自检（含"黑话零命中"）：67 项，已含在 all.mjs 里
 node test/render-all.mjs
 ```
 
-**2026-10-20 11:20 的实测结果**：`all.mjs` 651 项全过；`live.mjs` 14/14 全过。
+**2026-10-20 12:05 的实测结果**：`all.mjs` 681 项全过；`live.mjs` 14/14 全过。
 
 live 那 14 项验的是：插件已激活 / 宿主有 llm / 建工作区 / 卡被列出 / 材料被列出 / 分析跑通 / 有可采纳条目 / 默认不勾选 / 每条都有引文 / 采纳成功 / 导出 PNG / 双 chunk 同源 / doctor 跑通 / 宿主段已写。
 
@@ -118,11 +118,12 @@ live 那 14 项验的是：插件已激活 / 宿主有 llm / 建工作区 / 卡�
 - **端口每次重启都会变**（见过 49204 / 49192 / 53872）。不要写死，以运行时上下文给的 GUI URL 为准，或从 `ps aux | grep dsh-desktop-host` 里看 `--port`。
 - `POST /api/dsh-lifecard/state.get` **不需要 token 就能打**（其它 `/api/*` 路由要 401），所以外部脚本能验插件。
 
-完整的 32 条路由：
+完整的 33 条路由：
 
 ```
 state.get  workspace.init  workspace.inspect  workspace.list
 card.get  card.save  card.delete
+world.get
 card.history  card.version  card.restore
 avatar.set  avatar.remove  avatar.list
 import.cards  import.text  import.textFile
@@ -179,8 +180,8 @@ concept.get  concept.set
 ### P1 — 文档陈旧（✅ 已完成）
 | 位置 | 原来写的 | 现在是 |
 |---|---|---|
-| `README.md:27` | 「96 项测试全部通过」 | 651 项 |
-| `plugin/README.md:178` | `# 全部测试（96 项）` | 651 项 |
+| `README.md:27` | 「96 项测试全部通过」 | 681 项 |
+| `plugin/README.md:178` | `# 全部测试（96 项）` | 681 项 |
 | `plugin/README.md:29` | 侧栏会出现**人物档案** | **Life Cards** |
 
 `plugin/README.md` 的目录树与"三个入口"图已对着现在的界面重写（commit `43266e6`）。
@@ -198,7 +199,7 @@ concept.get  concept.set
 | 5 | 概念 → 生成 | `store.readConcept/writeConcept` + `concept.get/set` | 首页的「想要什么样的人」 |
 | 6 | 版本历史 | `store.listSnapshots/readSnapshot/restoreSnapshot` + `HistoryPanel` | 卡详情底部「以前的样子」 |
 
-### P2.5 — 三轮加固（不在原计划里，已做完）
+### P2.5 — 三轮加固（不在原计划里，已做完，连同 P2.7 共四轮）
 
 1. **数据层 20 处隐患**（commit `610dd73`）：引文门短引文/假行号/不指名材料被拒、墓碑残缺记录、路径越界读写、保留字段 id/lifecard 改不动、数组元素被摊平成一串、doctor 的 `unmarked` 恒为 null、`readBlock` 吞同级兄弟键、`latestAffect` 排序错。
 2. **编码/路由层 20 处隐患**（commit `8fb9072` 之后）：PNG tEXt 的 CRC 少算 chunk type、顶层未知键被挪进 `data`、裸 UTF-8 载荷读不出、压缩 iTXt 静默变空、latin1 解码静默坏中文、导出没有 SPEC §6 的 consent/lens/未成年闸、13 条吃路径的路由可越界、`export.card` 的底图路径来自卡内容（第二处越界）、`interview.plan` 的 limit 没夹紧。
@@ -224,6 +225,30 @@ concept.get  concept.set
 - `slots` 座位不存在时（老外壳、精简 profile）只少一个入口，**不能抛错**。`inject` 数组已加 `'slots'`。
 
 `test/client-smoke.mjs` 就此从 15 项加到 27 项，锁住这几点：`inject` 含 `slots`、两个座位都注册、`main.key === panellist.id`、图标能画且跟着 `size`、页面能渲染、缺 `slots` 时优雅退化。
+
+### P2.7 — 导进来的世界书在界面上看不见（本轮修的）
+
+**症状**：导入一本酒馆世界书（worldinfo），提示"导入完成：1 张成功"，然后首页什么都没有。用户合理判断是导入失败。
+
+**三条真实原因，都不报错**：
+
+| 哪一层 | 问题 | 后果 |
+|---|---|---|
+| 检测 | `codec.detectJsonKind` 把"带 name/description 的世界书"判成 V1 角色卡 | 条目全丢，卡里多一本空世界书 |
+| 落盘 | `enabled` 那行判的是 `entry.disable`（归一化后恒 undefined） | 每一条都写成"停用" |
+| 显示 | `workspace.list` 返回了 `worlds`，但 `HomeView` 从没用过它 | 数据到了前端，屏幕上没有入口 |
+
+**修法**：
+1. `plugin/lib/codec.js` 的 `detectJsonKind` 判定顺序改成 spec → 世界书 → V2/V3 → V1，并用 `V1_MARKERS` 区分"只有名字"的极简卡。
+2. `plugin/lib/index.js` 的 `importWorldInfo` 修 `enabled`、补 `uid`/`rest`/`entry_count`/`source_file`，原件抄进 `.lifecard/raw/<id>.worldinfo.json`。
+3. `plugin/lib/core.js` 新增 `parseWorldEntries(sections)`（按 `- ` 切段再逐段 parseYaml，坏段跳过、不连坐）。
+4. `plugin/lib/store.js` 的 `listAll` 给每本世界书带上 `entry_count`。
+5. `plugin/lib/index.js` 新增路由 `world.get`（按 path 或 id 读一本，返回解好的条目）。
+6. `plugin/lib/client.js` 新增 `WorldRow`（列表行）、`WorldView`（详情：条目正文、触发词、开关、搜索、用到它的卡）、`VIEWS.world`，并在 `HomeView` 增加"世界书 · N"分组；`doImport` 的提示改成分开报"N 张卡、M 本世界书"。
+
+**为什么世界书不进卡列表**：它没有覆盖度、不参与体检打分，混进卡列表会显示成"这张卡才写了 20%"。
+
+**测试**：`roundtrip` +10（条目解析）、`routes-test` +12（导入到显示的整条链路）、`render-all` +8（世界书列表行/详情/空/未取到）。合计 651 → **681**。新增断言用 `git show HEAD:plugin/lib/...` 的旧代码验过会红 10 项。
 
 ### P3 — 还没做的（都需要人点头）
 
@@ -252,7 +277,7 @@ concept.get  concept.set
 
 ```bash
 cd <仓库根>/plugin
-node test/all.mjs                                      # 期望 651 通过
+node test/all.mjs                                      # 期望 681 通过
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \
   "$DSH_GUI/api/dsh-lifecard/state.get" \
   -H 'content-type: application/json' -d '{}'          # 期望 200

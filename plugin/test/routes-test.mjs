@@ -137,6 +137,36 @@ console.log('\n=== 4. 导入世界书：条目一个不丢，字段不写错 ===
   // 工作区里要能被认出来
   const doctor = await table['doctor.run']({ workspace: ws })
   t('体检认得这本世界书', (doctor.counts?.worlds ?? 0) >= 1, doctor.counts)
+
+  // ── 导进来之后，界面上读得到吗 ──
+  // 这一段防的是「导入成功但用户在界面上什么都看不到」：数据落盘了，
+  // 列表里没有、点不进去，对用户来说就是导入失败了。
+  console.log('\n=== 5. 导进来的世界书，界面上读得到 ===')
+  const listing = await table['workspace.list']({ workspace: ws })
+  const listed = (listing.worlds ?? []).find((w) => w.id === '北洋往事') ?? (listing.worlds ?? [])[0] ?? {}
+  t('列表里有这本世界书', (listing.worlds ?? []).length >= 1, JSON.stringify(listing.worlds))
+  t('列表带上了条目数', listed.entry_count === 2, listed.entry_count)
+
+  // 用 typeof 兜一层：接口整个不存在时，后面每一条都该报 FAIL，
+  // 而不是这么早就 TypeError 崩掉、把剩下的断言全跳过。
+  const getWorld = typeof table['world.get'] === 'function' ? table['world.get'] : async () => ({ ok: false, error: '没有 world.get 这个接口' })
+  const detail = await getWorld({ workspace: ws, path: listed.path })
+  t('点得进去', detail.ok === true, JSON.stringify(detail).slice(0, 200))
+  t('条目解出来了', Array.isArray(detail.entries) && detail.entries.length === 2, detail.entries)
+  t('条目内容对得上', detail.entries?.[0]?.content === '天津九国租界，洋楼与贫民窟并排。', detail.entries?.[0])
+  t('触发词解出来了', JSON.stringify(detail.entries?.[0]?.keys) === JSON.stringify(['天津', '租界']), detail.entries?.[0]?.keys)
+  t('开关状态解出来了', detail.entries?.[0]?.enabled === true && detail.entries?.[1]?.enabled === false,
+    [detail.entries?.[0]?.enabled, detail.entries?.[1]?.enabled])
+  t('关着的那条内容也在', String(detail.entries?.[1]?.content ?? '').includes('扛包'), detail.entries?.[1])
+
+  const byId = await getWorld({ workspace: ws, id: '北洋往事' })
+  t('按 id 也点得进去', byId.ok === true && Array.isArray(byId.entries) && byId.entries.length === 2, byId.error)
+
+  const outside = await getWorld({ workspace: ws, path: '../../../etc/hosts' })
+  t('不许越界读文件', outside.ok === false, outside)
+
+  const notBook = await getWorld({ workspace: ws })
+  t('没说是哪一本就说清楚', notBook.ok === false && String(notBook.error ?? '').includes('哪一本'), notBook)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

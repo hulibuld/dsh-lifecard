@@ -130,7 +130,7 @@ const LISTING = {
     { id: 'sera', path: 'cards/sera.card.md', name: '塞拉菲娜', kind: 'fictional', coverage: 88, tags: ['小说'] },
     { id: 'world-1', path: 'cards/world-1.card.md', name: '北境', kind: 'world', coverage: 20, tags: [] },
   ],
-  worlds: [{ id: 'beijing', path: 'worlds/beijing.world.md', name: '北京', genre: '现实' }],
+  worlds: [{ id: 'beijing', path: 'worlds/beijing.world.md', name: '北京', genre: '现实', entry_count: 2 }],
   systems: [],
   relations: [],
   materials: [
@@ -170,6 +170,17 @@ const DOCTOR = {
       { id: 'sera', name: '塞拉菲娜', path: 'cards/sera.card.md', score: { score: 96, grade: '很好', tokens: 1400 } },
     ],
   },
+}
+
+const WORLD = {
+  ok: true,
+  path: 'worlds/beijing.world.md',
+  data: { lifecard: '0.1', id: 'beijing', kind: 'world', name: '北京', genre: '现实', entry_count: 2 },
+  sections: [{ title: '世界书条目', body: '' }],
+  entries: [
+    { uid: 3, keys: ['北洋', '一九二八'], content: '那一年下了很大的雪。', comment: '背景', insertion_order: 42, enabled: true },
+    { uid: 4, keys: [], content: '绿皮车，窗户能摇下来。', comment: '', insertion_order: 7, enabled: false },
+  ],
 }
 
 // ── 迷你渲染器 ────────────────────────────────────────────────────
@@ -265,6 +276,9 @@ renderRoot('让 AI 读材料', base('analyze'))
 renderRoot('让 AI 读材料（已有材料）', base('analyze', { 9: { id: 'mama', name: '妈妈' } }))
 renderRoot('陪他聊聊', base('interview'))
 renderRoot('陪他聊聊（从卡片进来）', base('interview', { 9: { id: 'mama', name: '妈妈', relationLabel: '母亲' } }))
+renderRoot('一本世界书', base('world', { 11: WORLD }))
+renderRoot('一本世界书（空的）', base('world', { 11: { ...WORLD, entries: [] } }))
+renderRoot('一本世界书（没拿到）', base('world'))
 renderRoot('检查一下', base('doctor', { 8: DOCTOR }))
 renderRoot('新建一张卡', base('newCard'))
 renderRoot('选个文件夹', base('home', { 1: { ...STATE, exists: false } }))
@@ -348,13 +362,16 @@ if (seen.has('CardRow')) {
   renderOne('列表行（干净）', seen.get('CardRow'), { card: LISTING.cards[0], onOpen: () => {} })
   renderOne('列表行（有错）', seen.get('CardRow'), { card: LISTING.cards[1], onOpen: () => {} })
   renderOne('列表行（世界）', seen.get('CardRow'), { card: LISTING.cards[3], onOpen: () => {} })
+  renderOne('世界书列表行', seen.get('WorldRow'), { world: LISTING.worlds[0], onOpen: () => {} })
+  renderOne('世界书详情', seen.get('WorldView'), { world: WORLD, listing: LISTING, onOpenCard: () => {}, onAnalyze: () => {} })
+  renderOne('世界书详情（摘出来一条）', seen.get('WorldView'), { world: WORLD, listing: LISTING, onOpenCard: () => {}, onAnalyze: () => {} }, { 0: '北洋' })
 }
 
 // 遍历渲染完之后再核对：所有子组件都该被访问到过。
 const missing = []
 for (const want of ['CardForm', 'ProposalPanel', 'HistoryPanel', 'BookEditor', 'AvatarPicker', 'CompetencyEditor', 'ListEditor', 'CardRow',
   'HomeView', 'CardView', 'ImportView', 'AnalyzeView', 'InterviewView', 'DoctorView',
-  'NewCardView', 'SetupView', 'Field', 'Action']) {
+  'NewCardView', 'SetupView', 'Field', 'Action', 'WorldRow', 'WorldView']) {
   if (!seen.has(want)) missing.push(want)
 }
 t('抓到了所有子组件', missing.length === 0, '缺：' + missing.join(', ') + '；实际：' + [...seen.keys()].join(', '))
@@ -392,6 +409,8 @@ for (const [label, word] of [
   ['补卡提示', '还能补的卡'],
   ['历史入口', '以前的样子'],
   ['概念入口', '你想让 TA 是什么样的人'],
+  ['世界书分组', '世界书 · '],
+  ['世界书条数', '条设定'],
 ]) {
   t(`出现了 ${label}`, all.includes(word), word)
 }

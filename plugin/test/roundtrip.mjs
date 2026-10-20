@@ -27,5 +27,40 @@ for (const c of cases) {
     if (!back.ok) console.log('    errors:', back.errors)
   }
 }
+// ── 世界书条目：一段段文本要能读回成一组对象 ───────────────────────
+// 条目不是 frontmatter（一本世界书可能几百条），落盘是 `- uid: 3` 这样的列表。
+// 按 `- ` 切开再逐条解析；解析坏了的那条跳过，别让整本世界书消失。
+console.log('\n=== 世界书条目 ===')
+{
+  const sections = [{ title: '世界书条目', body: [
+    '- uid: 3',
+    '  keys: ["北洋", "一九二八"]',
+    '  content: "那一年下了很大的雪。"',
+    '  comment: "背景"',
+    '  insertion_order: 42',
+    '  enabled: true',
+    '- uid: 4',
+    '  keys: []',
+    '  content: "绿皮车"',
+    '  insertion_order: 7',
+    '  enabled: false',
+  ].join('\n') }]
+  const list = C.parseWorldEntries(sections)
+  const check = (name, cond, extra) => { if (cond) { pass++; console.log('  PASS', name) } else { fail++; console.log('  FAIL', name, extra ?? '') } }
+  check('两条都解出来了', list.length === 2, JSON.stringify(list))
+  check('uid 是数字', list[0]?.uid === 3, list[0]?.uid)
+  check('触发词是数组', JSON.stringify(list[0]?.keys) === JSON.stringify(['北洋', '一九二八']), list[0]?.keys)
+  check('正文带中文', list[0]?.content === '那一年下了很大的雪。', list[0]?.content)
+  check('停用状态保住了', list[1]?.enabled === false, list[1]?.enabled)
+  check('空触发词不会变成空串', Array.isArray(list[1]?.keys) && list[1].keys.length === 0, list[1]?.keys)
+  check('没有这个标题就给空数组', C.parseWorldEntries([{ title: '自述', body: 'x' }]).length === 0)
+  check('正文为空也给空数组', C.parseWorldEntries([{ title: '世界书条目', body: '  ' }]).length === 0)
+  // 真实世界里正文可能被人手改过：条目前面多一行说明、或中间有空行。
+  // 这些都不该让后面的条目消失。
+  const messy = C.parseWorldEntries([{ title: '世界书条目', body: '这本是从别处导进来的。\n- uid: 1\n  content: "第一条"\n\n- uid: 2\n  content: "第二条"' }])
+  check('前言和空行不影响条目', messy.length === 2 && messy[1].content === '第二条', JSON.stringify(messy))
+  check('跳过不是条目的东西', messy.every((e) => typeof e === 'object' && e !== null), JSON.stringify(messy))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

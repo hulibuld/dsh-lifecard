@@ -466,6 +466,8 @@ const CSS = `
 .lc-sec { padding: 9px 11px; border-radius: 9px; background: var(--lc-panel); border: 1px solid var(--lc-line); }
 .lc-sec .st { font-size: 11.5px; font-weight: 650; color: var(--lc-muted); letter-spacing: .03em; margin-bottom: 3px; }
 .lc-sec .sb { white-space: pre-wrap; }
+/* 世界书条目：条数可能上百，正文给个上限，别让人滚到看不见底。 */
+.lc-sec .sb.lc-clamp { max-height: 220px; overflow-y: auto; }
 
 /* 分隔 */
 .lc-sep { height: 1px; background: var(--lc-line); margin: 10px 0; }
@@ -595,7 +597,7 @@ const SECTIONS_REL = [
 
 // ── 主界面 ────────────────────────────────────────────────────────
 
-const VIEWS = { home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard' }
+const VIEWS = { home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world' }
 
 /**
  * tab 组件。接收宿主给的 props（ctx / store / scope / tab / visible）。
@@ -613,6 +615,8 @@ function LifeCardTab(props) {
   const [doctor, setDoctor] = useState(null)
   const [interviewFor, setInterviewFor] = useState(null)
   const [showMore, setShowMore] = useState(false)
+  // 看一本世界书。世界书不是卡（不进卡列表，也不参与覆盖度），所以自己占一个状态。
+  const [activeWorld, setActiveWorld] = useState(null)
   const mounted = useRef(true)
 
   useEffect(() => () => { mounted.current = false }, [])
@@ -656,9 +660,17 @@ function LifeCardTab(props) {
       }
       const result = await call('import.cards', { files: payload })
       await refresh()
-      const ok = result.imported ?? 0
+      const results = Array.isArray(result.results) ? result.results : []
       const bad = result.failed ?? 0
-      flash(`导入完成：${ok} 张成功${bad > 0 ? `，${bad} 张没读进去` : ''}`, bad > 0 ? 'warn' : 'ok')
+      // 世界书和角色卡在磁盘上是两种东西，也去两个不同的地方。混成一句
+      // 「N 张成功」会让人去卡列表里找一本世界书，然后以为导入失败了。
+      const books = results.filter((r) => r.ok === true && r.kind === 'worldinfo').length
+      const people = (result.imported ?? 0) - books
+      const parts = []
+      if (people > 0) parts.push(`${people} 张卡`)
+      if (books > 0) parts.push(`${books} 本世界书`)
+      if (bad > 0) parts.push(`${bad} 个没读进去`)
+      flash(`导入完成：${parts.length === 0 ? '没有新东西' : parts.join('、')}`, bad > 0 ? 'warn' : 'ok')
       if (bad > 0) {
         setError(result.results.filter((r) => !r.ok).map((r) => `${r.name}：${r.error}`).join('\n'))
       }
@@ -669,6 +681,21 @@ function LifeCardTab(props) {
       setBusy('')
     }
   }, [flash, refresh])
+
+  const openWorld = useCallback(async (world) => {
+    setBusy('world')
+    setError(null)
+    try {
+      const detail = await call('world.get', { path: world.path })
+      if (detail.ok !== true) { setError(detail.error ?? '这本世界书读不出来'); return }
+      setActiveWorld(detail)
+      setView(VIEWS.world)
+    } catch (e) {
+      setError(humanizeError(e))
+    } finally {
+      setBusy('')
+    }
+  }, [])
 
   const openCard = useCallback(async (card) => {
     setBusy('card')
@@ -693,6 +720,7 @@ function LifeCardTab(props) {
       [VIEWS.doctor]: '检查一下',
       [VIEWS.setup]: '选个文件夹',
       [VIEWS.newCard]: '新建一张卡',
+      [VIEWS.world]: activeWorld?.data?.name ?? '这本世界书',
     }
     const canBack = view !== VIEWS.home && view !== VIEWS.setup
     return h('div', { className: 'lc-head' },
@@ -739,7 +767,7 @@ function LifeCardTab(props) {
         })
       case VIEWS.card:
         return activeCard === null
-          ? h(HomeView, { state, listing, onOpen: openCard, onNavigate: setView, onMore: () => setShowMore(!showMore), showMore, onProposal: async (json) => { const p = await call('proposal.get', { json }); setProposal(p); setView(VIEWS.card) }, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+          ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: setView, onMore: () => setShowMore(!showMore), showMore, onProposal: async (json) => { const p = await call('proposal.get', { json }); setProposal(p); setView(VIEWS.card) }, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
           : h(CardView, {
               card: activeCard,
               proposal,
@@ -763,10 +791,19 @@ function LifeCardTab(props) {
             flash('建好了，接着往下填')
           },
         })
+      case VIEWS.world:
+        return activeWorld === null
+          ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: setView, onMore: () => setShowMore(!showMore), showMore, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+          : h(WorldView, {
+              world: activeWorld,
+              listing,
+              onOpenCard: openCard,
+              onAnalyze: () => { setInterviewFor(null); setView(VIEWS.analyze) },
+            })
       case VIEWS.doctor:
         return h(DoctorView, { report: doctor, onRun: async () => { const r = await call('doctor.run', {}); setDoctor(r); await refresh() } })
       default:
-        return h(HomeView, { state, listing, onOpen: openCard, onNavigate: setView, onMore: () => setShowMore(!showMore), showMore, onProposal: async (json) => { const p = await call('proposal.get', { json }); setProposal(p); setView(VIEWS.card) }, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+        return h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: setView, onMore: () => setShowMore(!showMore), showMore, onProposal: async (json) => { const p = await call('proposal.get', { json }); setProposal(p); setView(VIEWS.card) }, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
     }
   }
 
@@ -835,7 +872,7 @@ function SetupView({ state, onDone }) {
 
 // ── 首页 ──────────────────────────────────────────────────────────
 
-function HomeView({ state, listing, onOpen, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore }) {
+function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore }) {
   const [q, setQ] = useState('')
   const cards = listing?.cards ?? []
   const filtered = useMemo(() => {
@@ -845,6 +882,9 @@ function HomeView({ state, listing, onOpen, onNavigate, onProposal, busy, onDoDo
   }, [cards, q])
   const proposals = listing?.proposals ?? []
   const materials = listing?.materials ?? []
+  // 世界书不是卡：它没有覆盖度、不参与体检打分，放在卡列表里会让人以为
+  // 「这张卡才写了 20%」。单独一段，点进去能读条目。
+  const worlds = listing?.worlds ?? []
   const byKind = useMemo(() => {
     const real = filtered.filter((c) => c.kind === 'real' || c.kind === 'self' || c.kind === 'hybrid')
     const fic = filtered.filter((c) => c.kind === 'fictional')
@@ -852,7 +892,7 @@ function HomeView({ state, listing, onOpen, onNavigate, onProposal, busy, onDoDo
     return { real, fic, other }
   }, [filtered])
 
-  if (cards.length === 0) {
+  if (cards.length === 0 && worlds.length === 0) {
     return h('div', { className: 'lc-pad lc-stack' },
       h('div', { className: 'lc-empty', style: { padding: '18px 8px 10px' } },
         h('div', { className: 'lc-empty-icon' }, h(Icon, { name: 'book', size: 22 })),
@@ -914,9 +954,16 @@ function HomeView({ state, listing, onOpen, onNavigate, onProposal, busy, onDoDo
         )
       : null,
 
-    q.trim() !== '' && filtered.length === 0
+    q.trim() !== '' && filtered.length === 0 && worlds.length === 0
       ? h('div', { className: 'lc-meta', style: { textAlign: 'center', padding: 12 } }, '没找到。换个词试试？')
       : null,
+
+    worlds.length === 0
+      ? null
+      : h('div', null,
+          h(GroupTitle, { tone: 'analyze', icon: 'book' }, `世界书 · ${worlds.length}`),
+          h('div', { className: 'lc-stack' }, worlds.map((w) => h(WorldRow, { key: w.path, world: w, onOpen: onOpenWorld }))),
+        ),
 
     proposals.length > 0
       ? h('div', null,
@@ -979,6 +1026,97 @@ function CardRow({ card, onOpen }) {
         ? h('div', { className: 'lc-wrap', style: { marginTop: 5 } }, card.tags.slice(0, 4).map((t) => h(Tag, { key: t }, t)))
         : null,
     ),
+  )
+}
+
+/** 世界书在列表里的一行。和卡不同：没有百分数，只报「几条」。 */
+function WorldRow({ world, onOpen }) {
+  const count = Number(world.entry_count ?? 0)
+  return h('button', { className: 'lc-card-item', onClick: () => onOpen(world), type: 'button' },
+    h(Avatar, { name: world.name, kind: 'world' }),
+    h('div', { className: 'lc-grow' },
+      h('div', { className: 'lc-row' },
+        h('span', { style: { fontWeight: 600, flex: '0 1 auto', overflow: 'hidden', textOverflow: 'ellipsis' } }, world.name),
+        h('span', { className: 'lc-grow' }),
+        h(Tag, null, '世界书'),
+      ),
+      h('div', { className: 'lc-meta', style: { marginTop: 3 } },
+        count === 0 ? '还没有条目' : `${count} 条设定`,
+        world.genre === undefined || world.genre === '' ? '' : ` · ${world.genre}`,
+      ),
+    ),
+  )
+}
+
+// ── 一本世界书 ────────────────────────────────────────────────────
+
+/**
+ * 一本世界书的详情。
+ *
+ * 条目本身是别人写好的设定集（酒馆世界书导进来的），这里只做「能读到、
+ * 能搜、能看见哪些条目是关着的」，不做编辑——编辑世界书是另一件事，
+ * 而且条目上有几十个 v0.1 不解释的字段，瞎改会把原设定弄坏。
+ */
+function WorldView({ world, listing, onOpenCard, onAnalyze }) {
+  const [q, setQ] = useState('')
+  const entries = world?.entries ?? []
+  const data = world?.data ?? {}
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase()
+    if (needle === '') return entries
+    return entries.filter((e) => {
+      const keys = Array.isArray(e.keys) ? e.keys.join(' ') : ''
+      return `${keys} ${String(e.content ?? '')} ${String(e.comment ?? '')}`.toLowerCase().includes(needle)
+    })
+  }, [entries, q])
+  // 这本世界书底下的卡（worlds/<id>/cards/ 里的，或者 world 字段指向它的）
+  const here = (listing?.cards ?? []).filter((c) => c.world === data.id)
+  const off = entries.filter((e) => e.enabled === false).length
+
+  return h('div', { className: 'lc-pad lc-stack' },
+    h('div', { className: 'lc-row' },
+      h(Avatar, { name: data.name, kind: 'world', big: true }),
+      h('div', { className: 'lc-grow' },
+        h('div', { className: 'lc-title' }, data.name ?? '这本世界书'),
+        h('div', { className: 'lc-meta' }, world?.path ?? ''),
+      ),
+    ),
+
+    h('div', { className: 'lc-row', style: { marginTop: 2 } },
+      h(Tag, null, `${entries.length} 条设定`),
+      off === 0 ? null : h(Tag, { tone: 'warn' }, `${off} 条关着`),
+      h('div', { className: 'lc-grow' }),
+      h(Btn, { size: 'sm', icon: 'spark', onClick: onAnalyze }, '整理材料'),
+    ),
+
+    entries.length === 0
+      ? h(Note, { tone: 'warn', icon: 'warning' }, '这本世界书里没有条目。可能是原文件本身是空的。')
+      : h('input', { className: 'lc-input', value: q, onChange: (e) => setQ(e.target.value), placeholder: '找找看…（触发词、内容都能搜）', spellCheck: false }),
+
+    filtered.length === 0 && entries.length > 0
+      ? h('div', { className: 'lc-meta', style: { textAlign: 'center', padding: 12 } }, '没找到。换个词试试？')
+      : null,
+
+    filtered.map((e, i) => h('div', { key: String(e.uid ?? `e-${i}`), className: 'lc-sec' },
+      h('div', { className: 'lc-row' },
+        h('div', { className: 'st lc-grow' }, e.comment === undefined || e.comment === '' ? '（没写名字）' : String(e.comment)),
+        Array.isArray(e.keys) && e.keys.length > 0
+          ? h('span', { className: 'lc-meta' }, e.keys.map((k) => `「${k}」`).join(' '))
+          : h('span', { className: 'lc-meta' }, '没有触发词'),
+        e.enabled === false ? h(Tag, { tone: 'warn' }, '关着') : null,
+      ),
+      h('div', { className: 'sb lc-clamp' }, String(e.content ?? '').trim() === '' ? '（这条是空的）' : String(e.content)),
+    )),
+
+    here.length === 0
+      ? null
+      : h('div', null,
+          h(GroupTitle, { icon: 'people' }, `用这本世界书的卡 · ${here.length}`),
+          h('div', { className: 'lc-stack' }, here.map((c) => h(CardRow, { key: c.path, card: c, onOpen: onOpenCard }))),
+        ),
+
+    h('div', { className: 'lc-meta', style: { marginTop: 6 } },
+      '这些设定是别人写好一起带过来的。要改的话，直接改那个文本文件，改完回来刷新一下就好。'),
   )
 }
 

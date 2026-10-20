@@ -540,6 +540,55 @@ export function sectionBody(sections, title) {
   return found === undefined ? '' : found.body
 }
 
+/**
+ * 把「世界书条目」小节读回成一组对象。
+ *
+ * 世界书落盘时正文长这样（`plugin/lib/index.js` 的 importWorldInfo 写的）：
+ *
+ * ```
+ * - uid: 3
+ *   keys: ["北洋", "一九二八"]
+ *   content: "那一年下了很大的雪。"
+ *   insertion_order: 42
+ *   enabled: true
+ * ```
+ *
+ * 要按 `- ` 先切成一条条，再逐条交给 parseYaml —— 整段一次性喂进去
+ * 会被当成一个 map，只有最后一条能留下来。解析失败的那条跳过而不是
+ * 让整本世界书消失（磁盘上还有一个字都没丢的原件，别在这里拦人）。
+ *
+ * @param {Array<{title: string, body: string}>} sections
+ * @returns {Array<object>}
+ */
+export function parseWorldEntries(sections) {
+  const body = sectionBody(sections, '世界书条目')
+  if (body.trim() === '') return []
+  const blocks = []
+  let cur = null
+  for (const line of body.split(/\r?\n/)) {
+    if (/^-\s/.test(line)) {
+      if (cur !== null) blocks.push(cur)
+      cur = [line.replace(/^-\s+/, '')]
+      continue
+    }
+    if (cur === null) continue
+    cur.push(line.replace(/^\s{2}/, ''))
+  }
+  if (cur !== null) blocks.push(cur)
+  const out = []
+  for (const block of blocks) {
+    let entry
+    try {
+      entry = parseYaml(block.join('\n'))
+    } catch {
+      continue
+    }
+    if (entry === null || typeof entry !== 'object') continue
+    out.push(entry)
+  }
+  return out
+}
+
 /** 把一张卡序列化回 Markdown。 */
 export function stringifyCard(data, sections) {
   const head = stringifyYaml(data)
@@ -931,6 +980,7 @@ export default {
   stringifyCard,
   splitSections,
   sectionBody,
+  parseWorldEntries,
   validateCard,
   coverage,
   collectSourceLevels,

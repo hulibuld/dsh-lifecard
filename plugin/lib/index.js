@@ -606,6 +606,37 @@ function buildApi(ctx, workspace, config) {
       return { ok: true, path: rel, data: card.data, sections: card.sections, text: card.text, validation, coverage: cov, avatar }
     },
 
+    /**
+     * 读一本世界书（含条目）。
+     *
+     * 条目在磁盘上是 `- uid: 3 / keys: [...] / content: "..."` 这样一段段文本，
+     * 不是 frontmatter —— 世界书的条目数量没有上限，塞进 frontmatter 会让
+     * 那份文件彻底没法当纯文本读。所以这里现解一遍给界面用。
+     */
+    'world.get': async (body) => {
+      const ws = await root(body)
+      let rel
+      if (typeof body?.path === 'string') {
+        const safe = insideWorkspace(ws, body.path)
+        if (safe.ok !== true) return { ok: false, error: safe.error }
+        rel = safe.rel
+      } else {
+        const id = String(body?.id ?? '')
+        if (id === '') return { ok: false, error: '没有说是哪一本' }
+        rel = path.posix.join('worlds', core.safeId(id), 'world.md')
+      }
+      const card = await store.readCard(ws, rel)
+      if (!card.ok) return card
+      return {
+        ok: true,
+        path: rel,
+        data: card.data,
+        sections: card.sections,
+        text: card.text,
+        entries: core.parseWorldEntries(card.sections),
+      }
+    },
+
     /** 存一张卡（新建或编辑）。 */
     'card.save': async (body) => {
       const ws = await root(body)
