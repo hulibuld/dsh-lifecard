@@ -139,13 +139,36 @@ function parseScalar(raw) {
     const out = {}
     if (body === '') return out
     for (const piece of splitFlow(body)) {
-      const at = piece.indexOf(':')
+      // 键名可能带引号（`{"probability":80}`），也可能本身含冒号
+      // （`{"a:b":1}`）。直接 indexOf(':') 会把引号留在键名上，
+      // 读回来的对象于是多出一层转义。用 findMapColon 找真正的分隔符。
+      const at = findFlowColon(piece)
       if (at < 0) continue
-      out[piece.slice(0, at).trim()] = parseScalar(piece.slice(at + 1))
+      out[parseKey(piece.slice(0, at))] = parseScalar(piece.slice(at + 1))
     }
     return out
   }
   return s
+}
+
+/**
+ * 找 flow 映射（`{...}`）里真正分隔键值的冒号。
+ *
+ * 与 `findMapColon` 的差别：这里允许冒号后面紧跟任何字符。`JSON.stringify`
+ * 产出的是 `{"probability":80}` 这种紧凑写法，冒号后面没有空格；而 `findMapColon`
+ * 要求空格、`{` 或 `[`，于是把它判成"没有分隔符"，整个 piece 被丢掉。
+ * 键名本身带引号，所以引号内的冒号（`{"a:b":1}`）要跳过。
+ */
+function findFlowColon(s) {
+  let inS = false
+  let inD = false
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s[i]
+    if (c === "'" && !inD) inS = !inS
+    else if (c === '"' && !inS) inD = !inD
+    else if (c === ':' && !inS && !inD) return i
+  }
+  return -1
 }
 
 /** 按逗号切 flow 列表，但忽略引号与嵌套括号里的逗号。 */

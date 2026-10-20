@@ -60,6 +60,20 @@ console.log('\n=== 世界书条目 ===')
   const messy = C.parseWorldEntries([{ title: '世界书条目', body: '这本是从别处导进来的。\n- uid: 1\n  content: "第一条"\n\n- uid: 2\n  content: "第二条"' }])
   check('前言和空行不影响条目', messy.length === 2 && messy[1].content === '第二条', JSON.stringify(messy))
   check('跳过不是条目的东西', messy.every((e) => typeof e === 'object' && e !== null), JSON.stringify(messy))
+
+  // `rest` 是导入时用 JSON.stringify 压成一行的（`{"probability":80}`，冒号后面
+  // 没有空格）。解析器一开始用找 frontmatter 冒号的那套规则，要求冒号后跟空格/
+  // `{`/`[`，于是整段被当成"没有分隔符"丢掉——条目看起来正常，但那几十个不认识
+  // 的字段全没了，而且不报错。
+  const rest = { probability: 80, extensions: { depth: 4 }, nested: { a: { b: [1, 2] } } }
+  const withRest = C.parseWorldEntries([{ title: '世界书条目', body: '- uid: 1\n  rest: ' + JSON.stringify(rest) }])
+  check('紧凑写法的 rest 读得回来', JSON.stringify(withRest[0]?.rest) === JSON.stringify(rest), JSON.stringify(withRest[0]?.rest))
+  check('rest 的键名不带引号', withRest[0]?.rest?.probability === 80, Object.keys(withRest[0]?.rest ?? {}).join(','))
+  const colonKey = C.parseWorldEntries([{ title: '世界书条目', body: '- uid: 2\n  rest: ' + JSON.stringify({ 'a:b': 1 }) }])
+  check('键名里带冒号也切得对', colonKey[0]?.rest?.['a:b'] === 1, JSON.stringify(colonKey[0]?.rest))
+  // 正文本身可能是 Markdown 列表，`- ` 开头的行不该被当成新条目
+  const listy = C.parseWorldEntries([{ title: '世界书条目', body: '- uid: 3\n  content: ' + JSON.stringify('- 第一项\n- 第二项') }])
+  check('正文里的列表不被切成两条', listy.length === 1 && listy[0].content === '- 第一项\n- 第二项', JSON.stringify(listy))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)
