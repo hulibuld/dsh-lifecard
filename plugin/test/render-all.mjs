@@ -845,6 +845,42 @@ if (seen.has('CardRow')) {
   t('空报告不显示「丢掉的」段', !joined.includes('丢掉的'))
 }
 
+// ── 照这份改简历 / 写封求职信 ──────────────────────────────────
+{
+  const REPORT = { company: '某公司', role: '后端工程师', blocked: [], matched: [], gaps: [], unclear: [], questions: [], warnings: [], dropped: [] }
+  const before = visibleText.length
+  // 槽位：20 written / 21 writing（都排在最后，前面是老槽位）
+  renderOne('看工作（写了简历，有对不上的数字）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
+    4: REPORT,
+    20: { kind: 'resume', markdown: '# 李四\n\n## 经历\n- 把接口耗时降了 40%', path: 'jobs/resumes/x.md', warning: '这版里有 1 个数字在你材料里找不到：40%。投之前自己核一遍。' },
+    23: null,
+  })
+  const joined = visibleText.slice(before).join('|')
+  t('简历区标题说人话', joined.includes('改好的简历'))
+  t('简历正文显示出来', joined.includes('把接口耗时降了'))
+  t('编的数字要当面提醒', joined.includes('在你材料里找不到'))
+  t('提醒说了怎么办', joined.includes('自己核一遍'))
+  t('给了存成文件的路', joined.includes('存成文件'))
+
+  const before2 = visibleText.length
+  renderOne('看工作（写了求职信）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
+    4: REPORT,
+    20: { kind: 'cover', markdown: '我做过一次交易系统重构。', path: null, warning: null },
+    23: null,
+  })
+  const joined2 = visibleText.slice(before2).join('|')
+  t('求职信区标题说人话', joined2.includes('写好的求职信'))
+  t('没有警告就不吓人', !joined2.includes('在你材料里找不到'))
+  t('没存盘就不说存哪儿了', !joined2.includes('也存了一份在工作文件夹里'))
+
+  // 没看过工作的时候，两个按钮都不该出现——不知道照谁改
+  const before3 = visibleText.length
+  renderOne('看工作（还没看过任何工作）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, { 4: null })
+  const joined3 = visibleText.slice(before3).join('|')
+  t('没看过工作就不给改简历', !joined3.includes('照这份改简历'))
+  t('没看过工作就不给写求职信', !joined3.includes('写封求职信'))
+}
+
 // 遍历渲染完之后再核对：所有子组件都该被访问到过。
 const missing = []
 for (const want of ['CardForm', 'ProposalPanel', 'HistoryPanel', 'BookEditor', 'AvatarPicker', 'CompetencyEditor', 'ListEditor', 'CardRow',

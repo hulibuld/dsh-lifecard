@@ -3143,6 +3143,10 @@ function JobsView({ onBack, flash }) {
   const [showStories, setShowStories] = useState(false)
   const [stories, setStories] = useState(null)
   const [newStoryTitle, setNewStoryTitle] = useState('')
+  // 新加的 hook 一律排在最后：前面那些槽位被 render-all 用数字引着，
+  // 插在中间会把所有既有断言推错一格。
+  const [written, setWritten] = useState(null) // {kind:'resume'|'cover', markdown, path, warning}
+  const [writing, setWriting] = useState(null) // 'resume' | 'cover' | null
   const [newStoryBody, setNewStoryBody] = useState('')
 
   useEffect(() => {
@@ -3195,6 +3199,19 @@ function JobsView({ onBack, flash }) {
     } finally {
       setBusy(false)
     }
+  }
+
+  // 写简历/求职信。两条路由都不许编数字和经历，所以结果里可能带一条
+  // 「这些数字在你材料里找不到」的警告——那条必须显示出来，不显示就等于默许。
+  const buildDoc = async (kind) => {
+    setWriting(kind); setErr(null)
+    try {
+      const r = await call(kind === 'resume' ? 'job.resume.build' : 'job.cover.build', {
+        jd, company: report?.company ?? company, role: report?.role ?? '',
+      })
+      if (r.ok !== true) { setErr(r.error ?? '没写出来'); return }
+      setWritten({ kind, markdown: String(r.markdown ?? ''), path: r.path ?? null, warning: r.warning ?? null })
+    } catch (e) { setErr(humanizeError(e)) } finally { setWriting(null) }
   }
 
   const whoThere = async () => {
@@ -3285,6 +3302,33 @@ function JobsView({ onBack, flash }) {
         const r = await call('job.tracker.add', { row })
         if (r.ok === true) { setLogged(true); flash('记上了') } else { setErr(r.error ?? '没记上') }
       } }, logged ? '' : '不投，记一下'),
+    ),
+
+    // 简历和求职信只在「看过一份工作」之后才给按钮：不知道照谁改，改了也没用。
+    report === null ? null : h('div', { style: { marginTop: 12 } },
+      h('div', { className: 'lc-meta', style: { marginBottom: 4 } },
+        '要不要照这一份，把已有的经历重排一遍？只用你写过的材料，不编新的。'),
+      h('div', { className: 'lc-row' },
+        h(Btn, { size: 'sm', icon: 'edit', disabled: writing !== null, onClick: () => buildDoc('resume') },
+          writing === 'resume' ? '正在写…' : '照这份改简历'),
+        h(Btn, { size: 'sm', icon: 'send', disabled: writing !== null, onClick: () => buildDoc('cover') },
+          writing === 'cover' ? '正在写…' : '写封求职信'),
+      ),
+    ),
+
+    written === null ? null : h('div', { className: 'lc-sec' },
+      h('div', { className: 'lc-row' },
+        h(GroupTitle, { icon: 'edit' }, written.kind === 'resume' ? '改好的简历' : '写好的求职信'),
+        h('div', { className: 'lc-grow' }),
+        h(Btn, { size: 'sm', ghost: true, icon: 'download', onClick: () => {
+          downloadText(written.markdown, `${written.kind === 'resume' ? '简历' : '求职信'}-${report?.company ?? company}.md`)
+        } }, '存成文件'),
+        h(Btn, { size: 'sm', ghost: true, icon: 'x', onClick: () => setWritten(null) }, '收起'),
+      ),
+      // 数字对不上是这里最要紧的提示：简历上编一个百分比，面试第一个问题就会问到它。
+      written.warning === null ? null : h(Note, { tone: 'warn', icon: 'warning' }, written.warning),
+      h('div', { style: { whiteSpace: 'pre-wrap', fontSize: 12.5, lineHeight: 1.65, marginTop: 6 } }, written.markdown),
+      written.path === null ? null : h('div', { className: 'lc-meta', style: { marginTop: 6 } }, '也存了一份在工作文件夹里，回头能找到。'),
     ),
 
     // 这一块是本插件跟通用求职工具唯一不一样的地方：求职工具不认识人。
