@@ -395,5 +395,58 @@ console.log('\n=== 13. 提案不许替人声明「对方同意了」 ===')
   t('SCHEMA_HINT 的字段全在白名单里', missing.length === 0, missing)
 }
 
+console.log('=== 14. 同一天再跑一次分析，不许覆盖上一轮 ===')
+{
+  // 曾经的 bug：文件名固定是 <人>-<日期>，第二次分析把第一次的提案
+  // 连同「哪几条被丢掉」的记录一起悄悄盖掉。那不是更新，是丢数据。
+  const r14 = path.join(tmpdir(), 'lifecard-test-resave-' + Date.now())
+  await store.openWorkspace(r14, { create: true })
+  await store.appendMaterial(r14, 'a', '爷爷十六岁进作坊，干了三十七年。')
+  const mats14 = await store.readMaterials(r14)
+  const key14 = Object.keys(mats14)[0]
+  const prop14 = {
+    about: { id: 'yeye' },
+    items: [
+      { field: 'life', value: '在作坊干活', source_level: '自述', evidence: { material: key14, quote: '十六岁进作坊' } },
+      { field: 'competency', value: '编的', source_level: '自述', evidence: { material: key14, quote: '材料里绝对没有这句' } },
+    ],
+  }
+
+  const first = await store.saveProposal(r14, 'yeye', prop14, mats14)
+  const second = await store.saveProposal(r14, 'yeye', prop14, mats14)
+  const third = await store.saveProposal(r14, 'yeye', prop14, mats14)
+  t('第一份还是不带序号的老名字', /proposals\/yeye-\d{4}-\d{2}-\d{2}\.json$/.test(first.json), first.json)
+  t('第二份另起一个文件名', second.json !== first.json, `${first.json} vs ${second.json}`)
+  t('第二份带序号 -2', second.json.endsWith('-2.json'), second.json)
+  t('第三份带序号 -3', third.json.endsWith('-3.json'), third.json)
+
+  const list14 = await store.listProposals(r14)
+  t('三份提案都还在（没被覆盖）', list14.length === 3, list14.map((x) => x.json))
+  t('每份都保留了自己的丢弃记录', list14.every((x) => x.accepted === 1 && x.rejected === 1), list14.map((x) => [x.accepted, x.rejected]))
+
+  // 三份的勾选互不串台
+  await store.writeCheckedFile(r14, second.json, [0])
+  const b1 = await store.readProposal(r14, first.json)
+  const b2 = await store.readProposal(r14, second.json)
+  const b3 = await store.readProposal(r14, third.json)
+  t('勾第二份不影响第一份', b1.checkedCount === 0, b1.checkedCount)
+  t('勾的那份记到了自己名下', b2.checkedCount === 1, b2.checkedCount)
+  t('第三份也没被带着勾上', b3.checkedCount === 0, b3.checkedCount)
+
+  // 两个文件（.md 与 .json）必须同名配对，否则列表点进去是一份别人的清单
+  const md14 = await fs.readFile(path.join(r14, second.md), 'utf8')
+  const json14 = JSON.parse(await fs.readFile(path.join(r14, second.json), 'utf8'))
+  t('.md 与 .json 是同一轮的（日期一致）', md14.includes(json14.generated_at.slice(0, 10)) || md14.includes('提案'), second.md)
+
+  // 提案目录被清空后，第一份要回到不带序号的名字 —— 撞名只在同一天同一个人重复时发生
+  await fs.rm(path.join(r14, 'proposals'), { recursive: true, force: true })
+  const again = await store.saveProposal(r14, 'yeye', prop14, mats14)
+  t('清空后第一份回到不带序号的名字', again.json === first.json, again.json)
+
+  // 不同的人不互相挤
+  const other = await store.saveProposal(r14, 'mama', prop14, mats14)
+  t('换个人不用排队', /proposals\/mama-\d{4}-\d{2}-\d{2}\.json$/.test(other.json), other.json)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

@@ -30,9 +30,11 @@
 dsh plugin --profile desktop add /path/to/LifeCard/plugin
 ```
 
-装完重启 DSH，侧栏会多一个 **Life Cards** 的标签页（就在侧栏的标签栏里，和别的标签并排）。
+装完**重启 DSH App**（桌面版的 profile 被它独占，改了文件也不会热更新，必须重启）。
 
-> 需要 `dsh-better-sidebar`（侧边栏底座）。本插件只往它上面注册一个 tab，不自造侧栏。
+重启后，**左边那排图标里会多一个 Life Cards**（一个打开的小本子）。点一下，中间主区域就是它。
+
+另外，如果你装了 `dsh-better-sidebar`（侧边栏底座），**右边那栏的「+ / 新标签页」列表里也会有一条 Life Cards**，可以把它开在右边长期看着。左边那个入口不依赖它——没装底座也照样能用，只是少了右边这个。
 
 ---
 
@@ -176,7 +178,7 @@ dsh plugin --profile desktop add /path/to/LifeCard/plugin
 ## 开发
 
 ```bash
-node test/all.mjs        # 全部测试（598 项）
+node test/all.mjs        # 全部测试（622 项）
 node test/roundtrip.mjs  # YAML ↔ Markdown 往返
 node test/codec-test.mjs # 酒馆卡编解码 + 双 chunk 同源
 node test/store-test.mjs # 文件层：墓碑、提案、引文门、采纳

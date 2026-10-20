@@ -7,7 +7,7 @@
 
 ## 一句话现状
 
-**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 **598 项**通过，对一个真实运行的 DSH 实例做的端到端验收 **14/14** 通过。**P0（上传 GitHub 前的准备）、P1（陈旧文档）、P2（六项功能扩展）全部做完。** 之后又做了三轮加固：数据层 20 处隐患、编码/路由层 20 处隐患、测试补到 598 项。
+**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 **622 项**通过，对一个真实运行的 DSH 实例做的端到端验收 **14/14** 通过。**P0（上传 GitHub 前的准备）、P1（陈旧文档）、P2（六项功能扩展）全部做完。** 之后又做了三轮加固：数据层 20 处隐患、编码/路由层 20 处隐患、测试补到 622 项。
 
 ---
 
@@ -65,7 +65,7 @@ LifeCard/
 | `lib/prompts.js` | 454 | 11 类关系 × 问题库、`buildAnalyzePrompt` |
 | `lib/score.js` | 329 | **纯本地**体检打分 0–100、字数估算、占位符与世界书健康度 |
 | `skills/lifecard-interview/SKILL.md` | 192 | **会随包安装的那份**访谈 skill |
-| `test/` | 12 个在 `all.mjs` 里 + `live.mjs`，另有 2 个工具 | 598 项断言 |
+| `test/` | 12 个在 `all.mjs` 里 + `live.mjs`，另有 2 个工具 | 622 项断言 |
 | `locale/{zh,en}.json` | — | 侧栏 tab 的标题与描述 |
 | `cordis.patch.yml` | — | 装进 profile 时插入的插件条目 |
 | `node_modules/@deepseek-ai/schemastery` | — | 软链，见下面坑 #2 |
@@ -79,33 +79,35 @@ LifeCard/
 ```bash
 cd .../LifeCard/plugin
 
-# 1. 全量单元测试：598 项
+# 1. 全量单元测试：622 项
 node test/all.mjs
-# → roundtrip 9 / codec 37 / store 109 / score 51 / json-extract 10 / prompt 154
-#   client-smoke 15 / skill-register 18 / routes 36 / hardening-routes 46
+# → roundtrip 9 / codec 37 / store 121 / score 51 / json-extract 10 / prompt 154
+#   client-smoke 27 / skill-register 18 / routes 36 / hardening-routes 46
 #   hardening-data 54 / render-all 59
 
 # 2. 对真实运行的 DSH 做端到端验收：14/14
-node test/live.mjs http://127.0.0.1:49192
+node test/live.mjs "$DSH_GUI"          # $DSH_GUI = 运行时上下文里那个 GUI URL
 
 # 3. 界面文案自检（含"黑话零命中"）：59 项，已含在 all.mjs 里
 node test/render-all.mjs
 ```
 
-**2026-10-20 07:30 的实测结果**：`all.mjs` 598 项全过；`live.mjs` 14/14 全过。
+**2026-10-20 11:20 的实测结果**：`all.mjs` 622 项全过；`live.mjs` 14/14 全过。
 
 live 那 14 项验的是：插件已激活 / 宿主有 llm / 建工作区 / 卡被列出 / 材料被列出 / 分析跑通 / 有可采纳条目 / 默认不勾选 / 每条都有引文 / 采纳成功 / 导出 PNG / 双 chunk 同源 / doctor 跑通 / 宿主段已写。
 
 **访谈 skill 确认可见**：本次会话注入的 skill 目录里已经有 `lifecard-interview`，描述是"引导式访谈，在对话里把一张人物卡问出来。用于「帮我建一张 XX 的卡」「继续上次那个访谈」「这张卡还缺什么」"。也就是说**用户现在在对话里说"帮我建一张我妈的卡"就会触发它**。这条不用再验了。
 
-> 界面是不是新的？客户端 bundle 文件 `lib/client.js` 最后修改 13:45，桌面 App 进程启动于 20:08，**进程比文件新，所以跑的就是重写后的界面**。
+> **界面是不是新的？** 桌面 App 进程启动之后改过的 `lib/client.js`，**必须重启 App 才进界面**（desktop profile 被 Electron 独占，没有热重载）。
+> 判断办法：比 `ps -o lstart= -p <App 进程 pid>` 与 `ls -l plugin/lib/client.js` 的时间。文件比进程新 → 界面上还是旧的。
+> 宿主侧（`index.js` / `store.js` / `score.js`）用同一个进程，所以同样要重启。这是排查"改了没效果"时的第一件事。
 
 ---
 
 ## 装在哪、怎么生效
 
 - 插件目录软链：`~/.dsh/profiles/desktop/node_modules/dsh-lifecard` → `.../LifeCard/plugin`
-- profile 补丁：`~/.dsh/profiles/desktop/cordis.patch.yml` 第 1546–1548 行
+- profile 补丁：`~/.dsh/profiles/desktop/cordis.patch.yml` 第 1602–1604 行（行号会随别的插件增删而变，用 `grep -n lifecard` 找）
   ```yaml
   - insert:
       - id: lifecard
@@ -113,7 +115,7 @@ live 那 14 项验的是：插件已激活 / 宿主有 llm / 建工作区 / 卡�
   ```
 - `schemastery` 软链：`~/.dsh/profiles/desktop/node_modules/@deepseek-ai/schemastery` 存在
 - **desktop profile 被 Electron 独占，改完必须重启 App 才生效，没有热重载。**
-- 当前桌面实例端口 **49192**（早先是 49204，会变，以运行时上下文给的 GUI URL 为准）。
+- **端口每次重启都会变**（见过 49204 / 49192 / 53872）。不要写死，以运行时上下文给的 GUI URL 为准，或从 `ps aux | grep dsh-desktop-host` 里看 `--port`。
 - `POST /api/dsh-lifecard/state.get` **不需要 token 就能打**（其它 `/api/*` 路由要 401），所以外部脚本能验插件。
 
 完整的 32 条路由：
@@ -177,8 +179,8 @@ concept.get  concept.set
 ### P1 — 文档陈旧（✅ 已完成）
 | 位置 | 原来写的 | 现在是 |
 |---|---|---|
-| `README.md:27` | 「96 项测试全部通过」 | 598 项 |
-| `plugin/README.md:178` | `# 全部测试（96 项）` | 598 项 |
+| `README.md:27` | 「96 项测试全部通过」 | 622 项 |
+| `plugin/README.md:178` | `# 全部测试（96 项）` | 622 项 |
 | `plugin/README.md:29` | 侧栏会出现**人物档案** | **Life Cards** |
 
 `plugin/README.md` 的目录树与"三个入口"图已对着现在的界面重写（commit `43266e6`）。
@@ -202,18 +204,34 @@ concept.get  concept.set
 2. **编码/路由层 20 处隐患**（commit `8fb9072` 之后）：PNG tEXt 的 CRC 少算 chunk type、顶层未知键被挪进 `data`、裸 UTF-8 载荷读不出、压缩 iTXt 静默变空、latin1 解码静默坏中文、导出没有 SPEC §6 的 consent/lens/未成年闸、13 条吃路径的路由可越界、`export.card` 的底图路径来自卡内容（第二处越界）、`interview.plan` 的 limit 没夹紧。
 3. **测试补齐**：`test/hardening-routes.mjs`（46 项）+ `test/hardening-data.mjs`（54 项）。这两个文件的用例**都用「修复前的代码」验过会红**，不是补个绿了事。
 
-### P3 — 还没做的（都需要人决定）
+### P2.6 — 「看不到插件」的排查与修复（commit `0ba07f9`）
 
-1. **`defaultWorkspace()` 返回 `homedir()/LifeCard`**（`lib/index.js` 顶部）。是否改成 `homedir()/Documents/Life Cards`？改的话用户已经 seed 过 `~/LifeCard`，要处理迁移。
-2. **顶层 `skills/lifecard-interview/SKILL.md` 与 `plugin/skills/` 里那份内容相同**（md5 `02e0a2a6daf930b669ed4d9c594d793e`）。只有 plugin 里那份会随包安装。建议删掉顶层那份，或标明"改内容必须同步两份"。
-3. **四份原始文档**（使用指南/策划书/策划书-第二部分）已被 SPEC.md 取代。保留作背景还是归档到 `docs/archive/`？
-4. **同一天对同一个人跑两次分析，第二次会覆盖第一次的提案与遗留记录**（`saveProposal` 的路径是 `proposals/<id>-<date>.md`，不带时间也不带序号）。修它要动 store 的路径契约，会牵动提案列表——**这是已知未修的一条**。
+**结论先行：插件一直是装好、在跑、测过的。** 用户说"没看到插件被加载出来"，查下来三条证据都指向"加载成功"：
+
+| 查什么 | 怎么查 | 结果 |
+|---|---|---|
+| 宿主半边 | `curl -X POST .../api/dsh-lifecard/state.get -d '{}'` | 200，返回 workspace 与 1 张示例卡 |
+| 插件激活状态 | `plugin_manager` 列 253 条里找 `include:lifecard` | `enabled:true`、`fiberPhase:"active"` |
+| 客户端 tab | `cordis_inspect_query` 的 client/Slots，看 `sidebar.right.pane.tab` 的 occupants | 有 `dsh-better-sidebar:lifecard`、`active:true` |
+
+**真正的原因**：入口太深。lifecard 只往 better-sidebar 注册了 tab，而 better-sidebar 把它投影到 **DSH 原生右侧栏的「+ / 新标签页」列表**里一个叫「Life Cards」的胶囊。左侧栏那排图标里没有它。对不熟悉右侧栏「+」的人，等于插件不存在。
+
+**修法**（`lib/client.js` 的 `apply()`）：同时往 `sidebar.panellist` 注册一个图标（`order: 35`）、往 `main` 注册配对的面板页，两边用同一个 id `lifecard` 配对 —— 这是 DSH 左侧栏图标的标准注册法（`task-board`、`skill-explorer`、`mnemon` 都是这么做的，`panellist` 的 `id` 必须等于 `main` 的 `key`，外壳靠这个把左侧图标和中间页面配起来）。右侧栏那个 tab 保留。
+
+三处细节，改动时别退回去：
+- `PanelIcon` 的 `size` 由外壳给（`SidebarPanelIconOwnerProps { size, active }`），要跟着走，不能写死。
+- `PanelPage` 自己撑满高度（`height:100%` + `flexDirection:column` + `minHeight:0`），否则里面那层滚不动。
+- `slots` 座位不存在时（老外壳、精简 profile）只少一个入口，**不能抛错**。`inject` 数组已加 `'slots'`。
+
+`test/client-smoke.mjs` 就此从 15 项加到 27 项，锁住这几点：`inject` 含 `slots`、两个座位都注册、`main.key === panellist.id`、图标能画且跟着 `size`、页面能渲染、缺 `slots` 时优雅退化。
+
+### P3 — 还没做的（都需要人点头）
+
+1. **`defaultWorkspace()` 返回 `homedir()/LifeCard`**（`lib/index.js:42-44`）。是否改成 `homedir()/Documents/Life Cards`？改的话用户已经 seed 过 `~/LifeCard`，要处理迁移或兼容。
+2. **顶层 `skills/lifecard-interview/SKILL.md` 与 `plugin/skills/lifecard-interview/SKILL.md` 内容完全相同**（md5 `02e0a2a6daf930b669ed4d9c594d793e`）。**只有 plugin 里那份会随包安装**。建议删掉顶层那份，或明确标成"设计稿，改内容必须同步两份"。
+3. **四份原始文档**（使用指南/策划书/策划书-第二部分）已被 SPEC.md 取代。保留作背景材料，还是归档到 `docs/archive/`？
+4. ~~**同一天对同一个人跑两次分析，第二次会覆盖第一次的提案与遗留记录**~~ → **已修（commit 见 `lib/store.js` 的 `freeProposalBase`）**。第一次仍用不带序号的老名字，撞上了才依次试 `-2`、`-3`；三个文件（`.md` / `.json` / `.checked.json`）一起占名，勾选不串台。`test/store-test.mjs` 第 14 组 12 项锁住，并用修复前的 `store.js` 验过会红 6 项。
 5. **本地 HTTP 端点没有 Origin/CSRF 校验**，且任何请求都能用 `body.workspace` 改当前库。这是宿主 `/api` 的暴露面，不是本插件能单独修的，建议在宿主侧做 Origin 白名单。
-
-### P3 — 待定的产品决定
-- **`defaultWorkspace()` 返回 `homedir()/LifeCard`**（`lib/index.js:42-44`）。是否改成 `homedir()/Documents/Life Cards`？改的话，注意用户已经 seed 过 `~/LifeCard`，要处理迁移或兼容。
-- 顶层 `skills/lifecard-interview/SKILL.md` 与 `plugin/skills/lifecard-interview/SKILL.md` 内容完全相同（md5 `02e0a2a6daf930b669ed4d9c594d793e`）。**只有 plugin 里那份会随包安装**。建议删掉顶层那份，或明确标成"设计稿，改内容必须同步两份"。
-- 四份原始文档（使用指南/策划书/策划书-第二部分）已被 SPEC.md 取代。是保留作背景材料，还是归档到 `docs/archive/`？
 
 ---
 
@@ -234,11 +252,11 @@ concept.get  concept.set
 
 ```bash
 cd <仓库根>/plugin
-node test/all.mjs                                      # 期望 598 通过
+node test/all.mjs                                      # 期望 610 通过
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \
-  http://127.0.0.1:49192/api/dsh-lifecard/state.get \
+  "$DSH_GUI/api/dsh-lifecard/state.get" \
   -H 'content-type: application/json' -d '{}'          # 期望 200
-node test/live.mjs http://127.0.0.1:49192              # 期望 14/14
+node test/live.mjs "$DSH_GUI"                          # 期望 14/14
 ```
 
 三条都绿，就可以直接从 P0 开始。有一条红，先修环境再说功能。

@@ -626,6 +626,45 @@ export async function removeAvatar(root, cardId) {
 // ── 提案 ──────────────────────────────────────────────────────────
 
 /**
+ * 给今天这份提案找一个还没被占用的文件名。
+ *
+ * 之前文件名固定是 `<人>-<日期>`，同一天对同一个人再点一次「分析」，
+ * 上一轮的提案就被静默覆盖了 —— 连带「哪几条因为找不到原话被丢掉」
+ * 的记录也一起没了。那不是「更新」，是丢数据。
+ *
+ * 现在第一次仍然用不带序号的名字（旧库、旧测试、脚本都不受影响），
+ * 撞上了才依次试 `-2`、`-3`。
+ *
+ * 三个文件一起占名：`.md`（给人勾）、`.json`（给机器读）、
+ * `.checked.json`（你在界面上勾了哪几条）。只要有一个在，就算这个名字被占了。
+ *
+ * @param {string} dir 提案目录的绝对路径
+ * @param {string} safe 已经消毒过的人名 id
+ * @param {string} date 本地日期 YYYY-MM-DD
+ * @returns {Promise<string>} 可用的文件基名（不含扩展名）
+ */
+async function freeProposalBase(dir, safe, date) {
+  const taken = async (base) => {
+    for (const name of [`${base}.md`, `${base}.json`, `${base}.checked.json`]) {
+      const hit = await fs.access(path.join(dir, name)).then(() => true).catch(() => false)
+      if (hit) return true
+    }
+    return false
+  }
+  for (let n = 1; n < 1000; n += 1) {
+    const base = n === 1 ? `${safe}-${date}` : `${safe}-${date}-${n}`
+    if (!(await taken(base))) return base
+  }
+  // 同一天一千份，不是正常使用。退化成带毫秒的名字，
+  // 宁可名字难看，也不能覆盖。
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*$/, '')
+  for (let n = 1; ; n += 1) {
+    const base = `${safe}-${date}-${stamp}${n === 1 ? '' : `-${n}`}`
+    if (!(await taken(base))) return base
+  }
+}
+
+/**
  * 存一份提案：Markdown（给人勾选）+ JSON（给机器读）。
  *
  * 关键：写盘前先过引文校验门。找不到原文的条目直接丢弃，
@@ -635,10 +674,13 @@ export async function saveProposal(root, aboutId, proposal, materials) {
   const gate = core.verifyProposal(proposal, materials)
   const date = localDate()
   const safe = core.safeId(aboutId)
-  const mdRel = path.posix.join('proposals', `${safe}-${date}.md`)
-  const jsonRel = path.posix.join('proposals', `${safe}-${date}.json`)
   const abs = (rel) => path.join(root, rel)
   await fs.mkdir(abs('proposals'), { recursive: true })
+
+  // 不覆盖上一轮：同一天同一个人的第二份提案会叫 `<人>-<日期>-2`。
+  const base = await freeProposalBase(abs('proposals'), safe, date)
+  const mdRel = path.posix.join('proposals', `${base}.md`)
+  const jsonRel = path.posix.join('proposals', `${base}.json`)
 
   const md = renderProposalMarkdown({ aboutId, date, gate, proposal })
   await fs.writeFile(abs(mdRel), md, 'utf8')
