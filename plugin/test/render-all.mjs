@@ -306,6 +306,15 @@ renderRoot('卡片详情（虚拟角色卡）', base('card', {
 renderRoot('添加', base('import'))
 renderRoot('让 AI 读材料', base('analyze'))
 renderRoot('让 AI 读材料（已有材料）', base('analyze', { 9: { id: 'mama', name: '妈妈' } }))
+// 「让 AI 读材料」跑完那个「看看读出了什么」以前是 setProposal + setView(card)，
+// 但那一页手上没有 activeCard（用户可能一张卡都没打开过），一样白点。
+// 现在两条入口都走同一个 showProposal：先按 about 找到卡并打开。
+{
+  const before = visibleText.length
+  renderRoot('读完了，等着看结果', base('analyze', { 9: { id: 'mama', name: '妈妈' } }))
+  const joined = visibleText.slice(before).join('|')
+  t('分析页给的是「开始读」', joined.includes('开始读'), joined.slice(0, 160))
+}
 renderRoot('陪他聊聊', base('interview'))
 renderRoot('陪他聊聊（从卡片进来）', base('interview', { 9: { id: 'mama', name: '妈妈', relationLabel: '母亲' } }))
 renderRoot('一本世界书', base('world', { 11: WORLD }))

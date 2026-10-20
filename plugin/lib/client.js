@@ -699,28 +699,40 @@ function LifeCardTab(props) {
     }
   }, [])
 
-  // 点「还等着你看的建议」：能定位到人就先把那张卡打开，再把清单摊在下面——
+  // 摊开一份建议。能定位到人就先把那张卡打开，再把清单放在下面——
   // 只弹一份不知道会改到哪张卡的清单，比不给看还让人不安。
+  //
+  // 从「让 AI 读材料」页过来时手上只有建议本身（那份页面上已经选了人），
+  // 但从首页那条建议过来时只有文件路径，得先取回来。两种都走这里。
+  const showProposal = useCallback(async (p) => {
+    if (p === null || p === undefined) return
+    const target = (listing?.cards ?? []).find((c) => String(c.id) === String(p.about))
+    setProposal(p)
+    if (target === undefined) {
+      // 这个人还没有卡。清单照样能看能勾，只是没地方放，界面上会说清楚。
+      setActiveCard(null)
+      setView(VIEWS.card)
+      return
+    }
+    try {
+      const detail = await call('card.get', { path: target.path })
+      setActiveCard(detail)
+    } catch (e) {
+      setError(humanizeError(e))
+    }
+    setView(VIEWS.card)
+  }, [listing])
+
   const openProposal = useCallback(async (json) => {
     setError(null)
     try {
       const p = await call('proposal.get', { json })
       if (p.ok !== true) { setError(p.error ?? '这份建议读不出来'); return }
-      const target = (listing?.cards ?? []).find((c) => String(c.id) === String(p.about))
-      if (target === undefined) {
-        setActiveCard(null)
-        setProposal(p)
-        setView(VIEWS.card)
-        return
-      }
-      const detail = await call('card.get', { path: target.path })
-      setActiveCard(detail)
-      setProposal(p)
-      setView(VIEWS.card)
+      await showProposal(p)
     } catch (e) {
       setError(humanizeError(e))
     }
-  }, [listing])
+  }, [showProposal])
 
   const openCard = useCallback(async (card) => {
     setBusy('card')
@@ -786,7 +798,7 @@ function LifeCardTab(props) {
       case VIEWS.analyze:
         return h(AnalyzeView, {
           listing, state, flash, presetAbout: interviewFor,
-          onProposal: (p) => { setProposal(p); setView(VIEWS.card) },
+          onProposal: showProposal,
           onBack: () => { setInterviewFor(null); setView(VIEWS.home) },
           onNeedMaterial: () => setView(VIEWS.import),
         })
