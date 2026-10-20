@@ -172,7 +172,7 @@ export function scoreLorebook(lorebook) {
       }
     }
     if (estimateTokens(content) > 400) {
-      findings.push({ level: 'warn', code: 'lore-too-long', field: `世界书 #${n + 1}`, message: `第 ${n + 1} 条世界书太长了（约 ${estimateTokens(content)} 个 token），会挤掉别的内容。`, fix: '拆成几条，或者删掉不重要的部分。' })
+      findings.push({ level: 'warn', code: 'lore-too-long', field: `世界书 #${n + 1}`, message: `第 ${n + 1} 条世界书太长了（约 ${estimateTokens(content)} 字），会挤掉别的内容。`, fix: '拆成几条，或者删掉不重要的部分。' })
     }
     // 触发词撞车的那条不算「可用」：它和前面那条抢同一个词，实际只会有一条生效
     if (!duplicated) usable += 1
@@ -231,10 +231,10 @@ export function scoreCard(card, options = {}) {
     findings.push({ level: 'warn', code: 'empty-card', field: '正文', message: '这张卡还只有名字，没有任何内容。', fix: '先补「自述」，一句话也行。' })
   } else if (tokens < 80) {
     lengthPoints = 8
-    findings.push({ level: 'tip', code: 'too-short', field: '正文', message: `内容偏少（约 ${tokens} 个 token），演起来会很单薄。`, fix: '补一段「性格」或一件具体的事。' })
+    findings.push({ level: 'tip', code: 'too-short', field: '正文', message: `内容偏少（约 ${tokens} 字），读起来会很单薄。`, fix: '补一段「性格」或一件具体的事。' })
   } else if (tokens > (options.tokenBudget ?? 3000)) {
     lengthPoints = 9
-    findings.push({ level: 'tip', code: 'too-long', field: '正文', message: `内容偏长（约 ${tokens} 个 token），会占掉很多对话空间。`, fix: '把重复的描述合并，或者拆成两张卡。' })
+    findings.push({ level: 'tip', code: 'too-long', field: '正文', message: `内容偏长（约 ${tokens} 字），会占掉很多对话的余地。`, fix: '把重复的描述合并，或者拆成两张卡。' })
   }
   total += lengthPoints
 

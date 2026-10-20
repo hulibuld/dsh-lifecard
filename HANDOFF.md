@@ -7,7 +7,7 @@
 
 ## 一句话现状
 
-**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 **741 项**通过，对一个真实运行的 DSH 实例做的端到端验收 **14/14** 通过。**P0（上传 GitHub 前的准备）、P1（陈旧文档）、P2（六项功能扩展）全部做完。** 之后又做了四轮加固：数据层 20 处隐患、编码/路由层 20 处隐患、世界书导入与展示、测试补到 741 项。
+**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 **759 项**通过，对一个真实运行的 DSH 实例做的端到端验收 **14/14** 通过。**P0（上传 GitHub 前的准备）、P1（陈旧文档）、P2（六项功能扩展）全部做完。** 之后又做了四轮加固：数据层 20 处隐患、编码/路由层 20 处隐患、世界书导入与展示、测试补到 759 项。
 
 ---
 
@@ -57,15 +57,15 @@ LifeCard/
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `lib/client.js` | 2743 | **整个侧边栏界面**。纯手写，没有 React 依赖注入以外的框架 |
+| `lib/client.js` | 2902 | **整个侧边栏界面**。纯手写，没有 React 依赖注入以外的框架 |
 | `lib/index.js` | 1436 | 宿主侧：33 条 HTTP 路由、调用模型、**注册访谈 skill**、路径越界闸、导出 consent 闸 |
 | `lib/store.js` | 1126 | 工作区、快照、墓碑 `redactions.jsonl`、提案与勾选旁路、头像、概念、doctor |
-| `lib/core.js` | 996 | 零依赖：YAML 子集解析/序列化、卡片校验、覆盖率、**引文校验门** |
+| `lib/core.js` | 1019 | 零依赖：YAML 子集解析/序列化、卡片校验、覆盖率、**引文校验门** |
 | `lib/codec.js` | 785 | PNG tEXt/iTXt 读写、CCv2/CCv3/CHARX、双 chunk 导出、保真字段 |
 | `lib/prompts.js` | 454 | 11 类关系 × 问题库、`buildAnalyzePrompt` |
 | `lib/score.js` | 329 | **纯本地**体检打分 0–100、字数估算、占位符与世界书健康度 |
 | `skills/lifecard-interview/SKILL.md` | 192 | **会随包安装的那份**访谈 skill |
-| `test/` | 12 个在 `all.mjs` 里 + `live.mjs`，另有 2 个工具 | 741 项断言 |
+| `test/` | 13 个在 `all.mjs` 里 + `live.mjs`，另有 `make-samples.mjs` | 759 项断言 |
 | `locale/{zh,en}.json` | — | 侧栏 tab 的标题与描述 |
 | `cordis.patch.yml` | — | 装进 profile 时插入的插件条目 |
 | `node_modules/@deepseek-ai/schemastery` | — | 软链，见下面坑 #2 |
@@ -79,20 +79,21 @@ LifeCard/
 ```bash
 cd .../LifeCard/plugin
 
-# 1. 全量单元测试：741 项
+# 1. 全量单元测试：759 项
 node test/all.mjs
 # → roundtrip 23 / codec 52 / store 121 / score 51 / json-extract 10 / prompt 154
-#   client-smoke 27 / skill-register 18 / routes 62 / hardening-routes 46
-#   hardening-data 54 / render-all 123
+#   client-smoke 27 / skill-register 18 / routes 63 / hardening-routes 46
+#   hardening-data 54 / render-all 128 / wording 12
 
 # 2. 对真实运行的 DSH 做端到端验收：14/14
 node test/live.mjs "$DSH_GUI"          # $DSH_GUI = 运行时上下文里那个 GUI URL
 
-# 3. 界面文案自检（含"黑话零命中"）：118 项，已含在 all.mjs 里
+# 3. 界面文案自检：黑话零命中（界面 128 项 + 后台回话 12 项，已含在 all.mjs 里）
 node test/render-all.mjs
+node test/wording-test.mjs
 ```
 
-**2026-10-20 12:20 的实测结果**：`all.mjs` 741 项全过；`live.mjs` 14/14 全过。
+**2026-10-20 12:45 的实测结果**：`all.mjs` 759 项全过；`live.mjs` 14/14 全过。
 
 live 那 14 项验的是：插件已激活 / 宿主有 llm / 建工作区 / 卡被列出 / 材料被列出 / 分析跑通 / 有可采纳条目 / 默认不勾选 / 每条都有引文 / 采纳成功 / 导出 PNG / 双 chunk 同源 / doctor 跑通 / 宿主段已写。
 
@@ -180,8 +181,8 @@ concept.get  concept.set
 ### P1 — 文档陈旧（✅ 已完成）
 | 位置 | 原来写的 | 现在是 |
 |---|---|---|
-| `README.md:27` | 「96 项测试全部通过」 | 741 项 |
-| `plugin/README.md:178` | `# 全部测试（96 项）` | 741 项 |
+| `README.md:27` | 「96 项测试全部通过」 | 759 项 |
+| `plugin/README.md:178` | `# 全部测试（96 项）` | 759 项 |
 | `plugin/README.md:29` | 侧栏会出现**人物档案** | **Life Cards** |
 
 `plugin/README.md` 的目录树与"三个入口"图已对着现在的界面重写（commit `43266e6`）。
@@ -248,7 +249,7 @@ concept.get  concept.set
 
 **为什么世界书不进卡列表**：它没有覆盖度、不参与体检打分，混进卡列表会显示成"这张卡才写了 20%"。
 
-**测试**：`roundtrip` +10（条目解析）、`routes-test` +12（导入到显示的整条链路）、`render-all` +17（世界书列表行/详情/空/未取到、编辑表单的世界下拉、手写触发词、搜索联动、世界下拉不留空值、卡片能点回所属世界书）。合计 651 → 710 → 722 → 725 → 736 → **741**。新增断言用 `git show HEAD:plugin/lib/...` 的旧代码验过会红 10 项。
+**测试**：`roundtrip` +10（条目解析）、`routes-test` +12（导入到显示的整条链路）、`render-all` +17（世界书列表行/详情/空/未取到、编辑表单的世界下拉、手写触发词、搜索联动、世界下拉不留空值、卡片能点回所属世界书）。合计 651 → 710 → 722 → 725 → 736 → 741 → **759**。新增断言用 `git show HEAD:plugin/lib/...` 的旧代码验过会红 10 项。
 
 ### P3 — 还没做的（都需要人点头）
 
@@ -277,6 +278,43 @@ concept.get  concept.set
 | 文件夹选错了就永远改不回来 | 「选文件夹」页只在没有工作区时才可达，进去也没有返回 | 「更多工具」里加「换个文件夹」；已选过时那一页可以退回来 |
 
 **测试**：`render-all` 92 → 104 → 107 → 118 → **123**（首页「聊着建」「整理材料」点得动 / 跳对页 / 不再带着上一个人，6 项；箭头收起不转、展开转，2 项；体检页「还能补的卡」点得动 / 落到那张卡 / 路径对，3 项）。新增断言用 `git show HEAD:plugin/lib/client.js` 验过会红 6 项。
+
+### P2.8 — 界面上看不见头像（本轮修的）
+
+`avatar.list`、`avatar.set` 早就有了，卡详情页和编辑表单也都能显示、能裁，
+但**首页的卡列表从没用过**：`HomeView` 只画首字方块。用户存了头像，回到
+首页却看不到，会以为没存上。
+
+修法三处：
+1. `refresh()` 里 `workspace.list` 之后追加一次 `avatar.list`，把整张头像表
+   挂到 `listing.avatars` 上（一张卡一次请求，列表会变慢，所以一次取回）。
+   取不到就整份当没有，不影响列表本身。
+2. `CardRow` / `WorldRow` 新增 `photo` 参数并转给 `Avatar`；三组卡列表与
+   世界书列表都传 `avatars[id]`。
+3. 世界书详情页的大头像也接上（`listing.avatars[data.id]`）。
+
+**测试**：`render-all` 123 → 128（列表行带头像时画 `<img>` 不画首字、首页
+整棵树里真有 `has-photo` 方块）。两条都用「去掉 `photo` 传参」验过会红。
+
+### P2.9 — 后台说的话里有技术黑话（本轮修的）
+
+`render-all.mjs` 那条「黑话零命中」只扫**客户端渲染出来的文字**。后台路由的
+`error` / `note` / `hint`、校验器的 `message`、打分器的 `fix` 是另一条路——
+它们藏在 `lib/*.js` 里，客户端断言永远看不见，但一样会摆到用户眼前。
+
+真实事故：用户点导出，界面弹出「这张卡的对象未满 18 岁（**birth_year: 2015**）…
+要留档请用「**导出 JSON**」」——一句中文里塞了字段名和格式名。
+
+这一轮把 20 多处扫干净，并新建 `test/wording-test.mjs`（12 项）把这条路堵上：
+它从 `lib/{index,store,core,score,codec}.js` 里抠出所有
+`error:` / `message:` / `note:` / `hint:` / `fix:` / `reason:` 和
+`add('warn'|'error', …)` 的中文字面量，用与 `render-all` 同一套词表扫。
+`${...}` 里的插值先剥掉再扫（那是代码不是文案，字段名叫 lifecard 不该算黑话）。
+
+改过的几处举例：`materials/ 里没有材料` → 「还没有材料。先加一段文字，或者做一次访谈」；
+`提案 JSON 读不了` → 「这份建议的文件读不了」；`所有模型路由都失败了：provider/model…`
+→ 「AI 试了几次都没回上话」（原始详情挪到 `details` 字段，界面不显示）；
+`约 N 个 token` → 「约 N 字」。
 
 **顺手加的测试工具**（`test/render-all.mjs` 里）：`expand(node)` 把函数型节点就地展开成纯 DOM 树——`deepRender` 只「走」一遍不替换节点，直接用 `collectButtons` 抓不到 `<button>`；`h0(name, props)` 从 `seen` 里按组件名渲染一个；`clickByText(tree, '文字')` 找到含该文字的按钮并真的调它的 `onClick`。
 

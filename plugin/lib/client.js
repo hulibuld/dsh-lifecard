@@ -637,6 +637,12 @@ function LifeCardTab(props) {
       setState(st)
       if (st.exists) {
         const list = await call('workspace.list', {})
+        // 头像存在 assets/ 里，不在卡文件里，所以列表本身不带。
+        // 一次全取回来（一张卡一次请求的话列表会很慢）；取不到不影响列表。
+        try {
+          const av = await call('avatar.list', {})
+          if (av?.ok === true && av.avatars !== null && typeof av.avatars === 'object') list.avatars = av.avatars
+        } catch { /* 没头像或取不到，就都显示首字方块 */ }
         if (mounted.current) setListing(list)
       }
     } catch (e) {
@@ -674,7 +680,7 @@ function LifeCardTab(props) {
       if (bad > 0) parts.push(`${bad} 个没读进去`)
       flash(`导入完成：${parts.length === 0 ? '没有新东西' : parts.join('、')}`, bad > 0 ? 'warn' : 'ok')
       if (bad > 0) {
-        setError(result.results.filter((r) => !r.ok).map((r) => `${r.name}：${r.error}`).join('\n'))
+        setError(result.results.filter((r) => !r.ok).map((r) => `${r.name}：${humanizeError(r.error)}`).join('\n'))
       }
       setView(VIEWS.home)
     } catch (e) {
@@ -955,6 +961,7 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
   }, [cards, q])
   const proposals = listing?.proposals ?? []
   const materials = listing?.materials ?? []
+  const avatars = listing?.avatars ?? {}
   // 世界书不是卡：它没有覆盖度、不参与体检打分，放在卡列表里会让人以为
   // 「这张卡才写了 20%」。单独一段，点进去能读条目。
   const allWorlds = listing?.worlds ?? []
@@ -1016,21 +1023,21 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
     byKind.real.length > 0
       ? h('div', null,
           h(GroupTitle, { icon: 'people' }, `认识的人 · ${byKind.real.length}`),
-          h('div', { className: 'lc-stack' }, byKind.real.map((c) => h(CardRow, { key: c.path, card: c, onOpen }))),
+          h('div', { className: 'lc-stack' }, byKind.real.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id] }))),
         )
       : null,
 
     byKind.fic.length > 0
       ? h('div', null,
           h(GroupTitle, { tone: 'interview', icon: 'book' }, `虚构角色 · ${byKind.fic.length}`),
-          h('div', { className: 'lc-stack' }, byKind.fic.map((c) => h(CardRow, { key: c.path, card: c, onOpen }))),
+          h('div', { className: 'lc-stack' }, byKind.fic.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id] }))),
         )
       : null,
 
     byKind.other.length > 0
       ? h('div', null,
           h(GroupTitle, { tone: 'analyze', icon: 'list' }, `其他 · ${byKind.other.length}`),
-          h('div', { className: 'lc-stack' }, byKind.other.map((c) => h(CardRow, { key: c.path, card: c, onOpen }))),
+          h('div', { className: 'lc-stack' }, byKind.other.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id] }))),
         )
       : null,
 
@@ -1042,7 +1049,7 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
       ? null
       : h('div', null,
           h(GroupTitle, { tone: 'analyze', icon: 'book' }, `世界书 · ${worlds.length}`),
-          h('div', { className: 'lc-stack' }, worlds.map((w) => h(WorldRow, { key: w.path, world: w, onOpen: onOpenWorld }))),
+          h('div', { className: 'lc-stack' }, worlds.map((w) => h(WorldRow, { key: w.path, world: w, onOpen: onOpenWorld, photo: avatars[w.id] }))),
         ),
 
     proposals.length > 0
@@ -1092,9 +1099,9 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
   )
 }
 
-function CardRow({ card, onOpen }) {
+function CardRow({ card, onOpen, photo }) {
   return h('button', { className: 'lc-card-item', onClick: () => onOpen(card), type: 'button' },
-    h(Avatar, { name: card.name, kind: card.kind }),
+    h(Avatar, { name: card.name, kind: card.kind, photo }),
     h('div', { className: 'lc-grow' },
       h('div', { className: 'lc-row' },
         h('span', { style: { fontWeight: 600, flex: '0 1 auto', overflow: 'hidden', textOverflow: 'ellipsis' } }, card.name),
@@ -1116,10 +1123,10 @@ function CardRow({ card, onOpen }) {
 }
 
 /** 世界书在列表里的一行。和卡不同：没有百分数，只报「几条」。 */
-function WorldRow({ world, onOpen }) {
+function WorldRow({ world, onOpen, photo }) {
   const count = Number(world.entry_count ?? 0)
   return h('button', { className: 'lc-card-item', onClick: () => onOpen(world), type: 'button' },
-    h(Avatar, { name: world.name, kind: 'world' }),
+    h(Avatar, { name: world.name, kind: 'world', photo }),
     h('div', { className: 'lc-grow' },
       h('div', { className: 'lc-row' },
         h('span', { style: { fontWeight: 600, flex: '0 1 auto', overflow: 'hidden', textOverflow: 'ellipsis' } }, world.name),
@@ -1179,7 +1186,7 @@ function WorldView({ world, listing, onOpenCard }) {
 
   return h('div', { className: 'lc-pad lc-stack' },
     h('div', { className: 'lc-row' },
-      h(Avatar, { name: data.name, kind: 'world', big: true }),
+      h(Avatar, { name: data.name, kind: 'world', big: true, photo: (listing?.avatars ?? {})[data.id] ?? null }),
       h('div', { className: 'lc-grow' },
         h('div', { className: 'lc-title' }, data.name ?? '这本世界书'),
         h('div', { className: 'lc-meta' }, '一本设定集：写一个地方、一段时间里的规矩和人物'),

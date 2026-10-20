@@ -510,14 +510,14 @@ export function parseCard(text) {
   const fence = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/
   const m = fence.exec(src)
   if (m === null) {
-    errors.push('没有 frontmatter（文件开头应有 `---`）')
+    errors.push('文件开头少了那两行 `---` 分隔线，读不出卡片信息')
     return { data: {}, sections: splitSections(src), rawBody: src, ok: false, errors }
   }
   let data = {}
   try {
     data = parseYaml(m[1])
   } catch (error) {
-    errors.push(`frontmatter 解析失败：${String(error?.message ?? error)}`)
+    errors.push('文件开头那段格式不对，读不出来')
   }
   const rawBody = src.slice(m[0].length)
   return { data, sections: splitSections(rawBody), rawBody, ok: errors.length === 0, errors }
@@ -647,7 +647,7 @@ export function validateCard(data, options = {}) {
   }
 
   if (typeof data?.lifecard === 'string' && data.lifecard !== DATA_VERSION) {
-    add('warn', `lifecard 版本是 ${data.lifecard}，本插件读 ${DATA_VERSION}（会按当前版本处理）`, 'lifecard')
+    add('warn', `这张卡的格式版本是 ${String(data.lifecard)}，本插件读的是 ${DATA_VERSION}（会按当前版本处理）`, 'lifecard')
   }
   if (data?.lifecard === undefined) add('error', '缺少 lifecard 版本字段（应为 "0.1"）', 'lifecard')
 
@@ -909,7 +909,7 @@ export function verifyProposal(proposal, materials) {
     // SPEC §8.1 第 2 条：field 必须在 schema 里存在。不校验的话，模型编一个
     // 字段名（或者 "__proto__"）也能进清单、被勾选、写进卡，闸门就形同虚设。
     if (!PROPOSAL_FIELDS.includes(item.field.trim())) {
-      rejected.push({ item, reason: `field "${item.field}" 不在 schema 里` })
+      rejected.push({ item, reason: `"${item.field}" 不是这张卡认识的字段` })
       continue
     }
     if (item.source_level !== undefined && !SOURCE_LEVELS.includes(String(item.source_level))) {

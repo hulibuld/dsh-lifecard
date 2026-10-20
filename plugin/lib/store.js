@@ -834,7 +834,7 @@ export async function readProposal(root, jsonRel) {
   try {
     record = JSON.parse(await fs.readFile(abs(jsonRel), 'utf8'))
   } catch {
-    return { ok: false, error: '提案 JSON 读不了' }
+    return { ok: false, error: '这份建议的文件读不了，可能被改坏了。' }
   }
   const mdRel = jsonRel.replace(/\.json$/, '.md')
   let md = ''

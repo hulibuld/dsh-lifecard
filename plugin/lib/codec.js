@@ -237,18 +237,18 @@ function parseTextPayload(raw) {
   // 明显是 JSON 的，直接按原文解（省掉一次无意义的 base64 尝试，也避免误判）。
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
     const json = JSON.parse(trimmed.startsWith('\uFEFF') ? trimmed.slice(1) : trimmed)
-    if (json === null || typeof json !== 'object') throw new Error('PNG 里的卡数据不是 JSON 对象')
+    if (json === null || typeof json !== 'object') throw new Error('图片里的卡数据读不出来')
     return json
   }
   const decoded = base64DecodeUtf8(text)
   const candidate = decoded.trim()
   if (candidate.startsWith('{') || candidate.startsWith('[')) {
     const json = JSON.parse(candidate.startsWith('\uFEFF') ? candidate.slice(1) : candidate)
-    if (json === null || typeof json !== 'object') throw new Error('PNG 里的卡数据不是 JSON 对象')
+    if (json === null || typeof json !== 'object') throw new Error('图片里的卡数据读不出来')
     return json
   }
   // 两条路都不像 JSON：按规范那条报错，错误信息指向真正的毛病。
-  throw new Error('PNG 的文本块里不是卡 JSON（既不是 base64 编码的 JSON，也不是裸 JSON）')
+  throw new Error('图片里没有找到卡的内容')
 }
 
 function utf8ToBase64(s) {
@@ -507,7 +507,7 @@ export async function extractCard(bytes, fileName = '') {
   if (lower.endsWith('.charx') || lower.endsWith('.zip') || (bytes.length > 4 && bytes[0] === 0x50 && bytes[1] === 0x4b)) {
     const files = await unzip(bytes)
     const cardName = Object.keys(files).find((n) => n === 'card.json') ?? Object.keys(files).find((n) => n.endsWith('/card.json'))
-    if (cardName === undefined) throw new Error('这个 zip 里没有 card.json，不是 CHARX 卡')
+    if (cardName === undefined) throw new Error('这个压缩包里没有卡的内容')
     const json = JSON.parse(Buffer.from(files[cardName]).toString('utf8'))
     return { json, kind: detectJsonKind(json), source: 'charx', rawFiles: files }
   }
@@ -517,7 +517,7 @@ export async function extractCard(bytes, fileName = '') {
   try {
     json = JSON.parse(text)
   } catch {
-    throw new Error('文件既不是 PNG、不是 zip，也不是合法 JSON')
+    throw new Error('这个文件读不出内容，可能不是角色卡')
   }
   return { json, kind: detectJsonKind(json), source: 'json' }
 }

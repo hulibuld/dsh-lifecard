@@ -79,7 +79,7 @@ async function readBody(req, limit = 64 * 1024 * 1024) {
   try {
     return JSON.parse(text)
   } catch {
-    throw new Error('请求体不是合法 JSON')
+    throw new Error('发过去的请求格式不对，重新试一次')
   }
 }
 
@@ -176,7 +176,7 @@ function exportBlockedBy(data, format) {
       if (age < 18) {
         return {
           code: 'minor-no-png',
-          message: '这张卡的对象未满 18 岁（birth_year: ' + String(by) + '），不能导出 PNG——它是最容易被随手转发的格式。要留档请用「导出 JSON」。',
+          message: '这张卡的对象未满 18 岁（出生年 ' + String(by) + '），不能存成图片——图片是最容易被随手转发的格式。要留档请用「存成数据文件」。',
         }
       }
     }
@@ -204,14 +204,14 @@ function exportBlockedBy(data, format) {
 async function callModel(ctx, input) {
   const llm = ctx.get?.('llm')
   if (llm === undefined || llm === null) {
-    return { ok: false, error: '当前宿主没有可用的 llm 服务。可以改用「手工建卡」——直接改卡的正文，效果一样。' }
+    return { ok: false, error: '这台机器上暂时没有可用的 AI。你可以在卡片里直接手写，效果一样。' }
   }
   if (typeof llm.stream !== 'function') {
-    return { ok: false, error: 'llm 服务没有 stream() 方法（宿主版本可能不匹配）' }
+    return { ok: false, error: '软件版本对不上，AI 用不了。可以先在卡片里直接手写。' }
   }
   const route = await resolveRoute(llm, input.model)
   if (route.provider === undefined) {
-    return { ok: false, error: route.error ?? '宿主里没有已注册的模型 provider，无法分析。可以改用「手工建卡」。' }
+    return { ok: false, error: route.error ?? '这台机器上还没有配好能用的 AI。你可以在卡片里直接手写，效果一样。' }
   }
   // 注意 messages 的 content 必须是**内容块数组**，不能是裸字符串：
   // 传字符串时报 `content.some is not a function`（适配器在入口就假定它是数组）。
@@ -239,9 +239,9 @@ async function callModel(ctx, input) {
   }
   return {
     ok: false,
-    error: `所有模型路由都失败了：${attempts.join('；')}`,
+    error: 'AI 试了几次都没回上话。可以过一会儿再试，或者在卡片里直接手写。',
     attempts,
-    hint: '可以在插件配置里写 defaultAnalysisModel: "provider/model" 指定一个确定能用的。',
+    details: attempts,
   }
 }
 
@@ -339,7 +339,7 @@ async function resolveRoute(llm, explicit) {
       // 这个 provider 的模型清单拿不到，试下一个
     }
   }
-  return { error: providers.length === 0 ? '宿主没有注册任何模型 provider' : '找到了 provider 但拿不到任何模型 id；请在插件配置里写 defaultAnalysisModel: "provider/model"' }
+  return { error: '这台机器上还没有配好能用的 AI。你可以在卡片里直接手写，效果一样。' }
 }
 
 /**
@@ -547,7 +547,7 @@ function buildApi(ctx, workspace, config) {
     /** 只校验路径（选文件夹后先看一眼是不是已有的库）。 */
     'workspace.inspect': async (body) => {
       const target = typeof body?.path === 'string' ? path.resolve(body.path) : ''
-      if (target === '') return { ok: false, error: '没给路径' }
+      if (target === '') return { ok: false, error: '没有说是哪个位置。' }
       const exists = await fs.stat(target).then((s) => s.isDirectory()).catch(() => false)
       if (!exists) return { ok: true, path: target, exists: false, isLifeCard: false }
       const isLifeCard = await fs.stat(path.join(target, 'lifecard.config.json')).then(() => true).catch(() => false)
@@ -641,9 +641,9 @@ function buildApi(ctx, workspace, config) {
     'card.save': async (body) => {
       const ws = await root(body)
       const data = body?.data
-      if (data === null || typeof data !== 'object') return { ok: false, error: '没有 data' }
+      if (data === null || typeof data !== 'object') return { ok: false, error: '没收到卡片内容，重新试一次。' }
       const id = core.safeId(data.id ?? data.name ?? '')
-      if (id === '') return { ok: false, error: '缺少 id 或 name' }
+      if (id === '') return { ok: false, error: '这张卡还没有名字，先给它起一个。' }
       data.id = id
       data.lifecard = core.DATA_VERSION
       let rel
@@ -664,7 +664,7 @@ function buildApi(ctx, workspace, config) {
       const safe = insideWorkspace(ws, body?.path)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
-      if (!rel.endsWith('.card.md')) return { ok: false, error: '路径不合法' }
+      if (!rel.endsWith('.card.md')) return { ok: false, error: '这个位置不是一张卡。' }
       return store.listSnapshots(ws, rel)
     },
 
@@ -674,7 +674,7 @@ function buildApi(ctx, workspace, config) {
       const safe = insideWorkspace(ws, body?.path)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
-      if (!rel.endsWith('.card.md')) return { ok: false, error: '路径不合法' }
+      if (!rel.endsWith('.card.md')) return { ok: false, error: '这个位置不是一张卡。' }
       return store.readSnapshot(ws, rel, body?.stamp)
     },
 
@@ -684,7 +684,7 @@ function buildApi(ctx, workspace, config) {
       const safe = insideWorkspace(ws, body?.path)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
-      if (!rel.endsWith('.card.md')) return { ok: false, error: '路径不合法' }
+      if (!rel.endsWith('.card.md')) return { ok: false, error: '这个位置不是一张卡。' }
       const old = await store.readSnapshot(ws, rel, body?.stamp)
       if (old.ok !== true) return old
       const written = await store.writeCard(ws, rel, old.data, old.sections, { force: true })
@@ -698,18 +698,18 @@ function buildApi(ctx, workspace, config) {
       const safe = insideWorkspace(ws, body?.path)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
-      if (!rel.endsWith('.card.md')) return { ok: false, error: '路径不合法' }
+      if (!rel.endsWith('.card.md')) return { ok: false, error: '这个位置不是一张卡。' }
       const card = await store.readCard(ws, rel)
       if (!card.ok) return card
       await store.appendRedaction(ws, { path: rel, sha256: store.sha256(card.text), reason: String(body?.reason ?? '用户删除') })
-      return { ok: true, path: rel, note: '已记墓碑：读取与导出都不会再出现它；磁盘上的原文仍在 .lifecard/snapshots 里，可审计但不可用。' }
+      return { ok: true, path: rel, note: '已经删掉了：它不会再出现在列表、导出和 AI 的眼里。磁盘上的原文我们还留着，方便你反悔。' }
     },
 
     /** 导入酒馆卡（PNG / JSON / CHARX）。body.files 是 [{name, base64}]。 */
     'import.cards': async (body) => {
       const ws = await root(body)
       const files = Array.isArray(body?.files) ? body.files : []
-      if (files.length === 0) return { ok: false, error: '没有文件' }
+      if (files.length === 0) return { ok: false, error: '没有选文件。' }
       const results = []
       for (const file of files) {
         const fileName = String(file?.name ?? 'card')
@@ -723,7 +723,7 @@ function buildApi(ctx, workspace, config) {
             continue
           }
           if (!['v1', 'v2', 'v3'].includes(extracted.kind)) {
-            throw new Error(`认不出这张卡的格式（detect: ${extracted.kind}）`)
+            throw new Error('这个文件不像角色卡，也不像世界书。')
           }
           const life = codec.ccToLifeCard(extracted.json, { importedFrom: fileName })
           // id：优先用卡里的 name 收成 slug；重名时加后缀
@@ -768,8 +768,8 @@ function buildApi(ctx, workspace, config) {
       const ws = await root(body)
       const about = String(body?.about ?? '').trim()
       const content = String(body?.content ?? '')
-      if (content.trim() === '') return { ok: false, error: '文本是空的' }
-      if (about === '') return { ok: false, error: '要说明这段材料是关于谁的（about）' }
+      if (content.trim() === '') return { ok: false, error: '文本是空的，先写一点。' }
+      if (about === '') return { ok: false, error: '先说说这段材料是关于谁的。' }
       const name = String(body?.name ?? about)
       const saved = await store.appendMaterial(ws, name, content.trim())
       return { ok: true, ...saved, about, chars: content.trim().length }
@@ -779,13 +779,13 @@ function buildApi(ctx, workspace, config) {
     'import.textFile': async (body) => {
       const ws = await root(body)
       const filePath = String(body?.path ?? '').trim()
-      if (filePath === '') return { ok: false, error: '没给文件路径' }
+      if (filePath === '') return { ok: false, error: '没有选文件。' }
       const abs = path.resolve(filePath.replace(/^~(?=\/|$)/, homedir()))
       let text
       try {
         text = await fs.readFile(abs, 'utf8')
       } catch (error) {
-        return { ok: false, error: `读不了这个文件：${String(error?.message ?? error)}` }
+        return { ok: false, error: '这个文件读不了。可能它不是纯文本，或者已经被移走了。' }
       }
       if (text.trim() === '') return { ok: false, error: '文件是空的' }
       const about = String(body?.about ?? path.basename(abs, path.extname(abs))).trim()
@@ -886,7 +886,7 @@ function buildApi(ctx, workspace, config) {
       const ws = await root(body)
       const about = String(body?.about ?? '')
       const content = String(body?.content ?? '')
-      if (content.trim() === '') return { ok: false, error: '内容为空' }
+      if (content.trim() === '') return { ok: false, error: '内容是空的，先写一点。' }
       const name = String(body?.name ?? about ?? 'material')
       const block = body?.meta === undefined ? content : `${content}\n\n\`\`\`\n${body.meta}\n\`\`\``
       const saved = await store.appendMaterial(ws, name, block)
@@ -933,7 +933,7 @@ function buildApi(ctx, workspace, config) {
       if (aboutId === '') return { ok: false, error: '没指定要分析谁' }
       const materials = await store.readMaterials(ws)
       const names = Object.keys(materials)
-      if (names.length === 0) return { ok: false, error: 'materials/ 里没有材料，先加一段文本或做一次访谈' }
+      if (names.length === 0) return { ok: false, error: '还没有材料。先加一段文字，或者做一次访谈，AI 才有东西可读。' }
       const chosen = Array.isArray(body?.materials) && body.materials.length > 0
         ? Object.fromEntries(Object.entries(materials).filter(([k]) => body.materials.includes(k) || body.materials.includes(path.basename(k))))
         : materials
@@ -975,10 +975,10 @@ function buildApi(ctx, workspace, config) {
       if (proposal === undefined) {
         return {
           ok: false,
-          error: `模型没有返回可解析的 JSON（试了 ${tried.length} 次）`,
+          error: `AI 这次没给出能用的结果（试了 ${tried.length} 次）`,
           attempts: tried,
           raw: String(called.text ?? '').slice(0, 2000),
-          hint: '可以把材料拆短一点再试，或者在插件配置里换一个 defaultAnalysisModel。',
+          hint: '可以把材料拆短一点再试一次。',
         }
       }
       const saved = await store.saveProposal(ws, aboutId, proposal, chosen)
@@ -1006,7 +1006,7 @@ function buildApi(ctx, workspace, config) {
       const safe = insideWorkspace(ws, body?.json)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
-      if (!rel.endsWith('.json')) return { ok: false, error: '路径不合法' }
+      if (!rel.endsWith('.json')) return { ok: false, error: '这个位置不是一份建议。' }
       const read = await store.readProposal(ws, rel)
       if (!read.ok) return read
       return { ok: true, json: rel, md: read.mdRel, about: read.record?.about?.id, items: read.items, checked: read.checkedCount, rejected: read.record?.rejected ?? [] }
@@ -1018,7 +1018,7 @@ function buildApi(ctx, workspace, config) {
       const safe = insideWorkspace(ws, body?.json)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
-      if (!rel.endsWith('.json') || rel.endsWith('.checked.json')) return { ok: false, error: '路径不合法' }
+      if (!rel.endsWith('.json') || rel.endsWith('.checked.json')) return { ok: false, error: '这个位置不是一份建议。' }
       // 界面传 checked（下标数组）时以它为准，先落盘再采纳——
       // 否则界面上勾的东西只活在内存里，读回 MD 会当成一条都没勾。
       const checked = Array.isArray(body?.checked) ? body.checked : undefined
@@ -1031,8 +1031,8 @@ function buildApi(ctx, workspace, config) {
       const safe = insideWorkspace(ws, body?.json)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
-      if (!rel.endsWith('.json') || rel.endsWith('.checked.json')) return { ok: false, error: '路径不合法' }
-      if (!Array.isArray(body?.checked)) return { ok: false, error: '缺少勾选内容' }
+      if (!rel.endsWith('.json') || rel.endsWith('.checked.json')) return { ok: false, error: '这个位置不是一份建议。' }
+      if (!Array.isArray(body?.checked)) return { ok: false, error: '没有收到你勾选的条目。' }
       const written = await store.writeCheckedFile(ws, rel, body.checked)
       return { ok: true, checked: written.checked }
     },
@@ -1129,7 +1129,7 @@ function buildApi(ctx, workspace, config) {
       const questionId = String(body?.q ?? '')
       const answer = String(body?.answer ?? '')
       const status = String(body?.status ?? 'answered')
-      if (aboutId === '' || questionId === '') return { ok: false, error: '缺少 about 或 q' }
+      if (aboutId === '' || questionId === '') return { ok: false, error: '这一条访谈记录不完整，跳过就好。' }
       const date = new Date().toISOString().slice(0, 10)
       const materialName = `${date}-${core.safeId(aboutId)}访谈`
       let saved = null

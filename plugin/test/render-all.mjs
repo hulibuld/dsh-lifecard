@@ -139,6 +139,8 @@ const LISTING = {
   ],
   errors: [],
   proposals: [{ json: 'proposals/p1.json', about: '妈妈', accepted: 5, rejected: 2 }],
+  // 头像单独取：存在 assets/ 里，不在卡文件里，所以是列表额外带回来的一张表。
+  avatars: { mama: 'iVBORw0KGgo=' },
 }
 
 const STATE = {
@@ -298,6 +300,14 @@ function expand(node, depth = 0) {
   }
   const kids = node.props?.children
   return { type: node.type, props: node.props ?? {}, children: kids === undefined ? [] : expand(kids, depth + 1) }
+}
+/** 数一棵纯 DOM 树里有几个「带照片的头像方块」。 */
+function countPhotos(tree) {
+  if (tree === null || tree === undefined) return 0
+  if (Array.isArray(tree)) return tree.reduce((acc, n) => acc + countPhotos(n), 0)
+  if (typeof tree !== 'object') return 0
+  const own = tree.type === 'div' && String(tree.props?.className ?? '').includes('has-photo') ? 1 : 0
+  return own + countPhotos(tree.children)
 }
 const flatButtons = (tree, out = []) => {
   if (tree === null || tree === undefined) return out
@@ -621,6 +631,33 @@ if (seen.has('CardRow')) {
   renderOne('列表行（有错）', seen.get('CardRow'), { card: LISTING.cards[1], onOpen: () => {} })
   renderOne('列表行（世界）', seen.get('CardRow'), { card: LISTING.cards[3], onOpen: () => {} })
   renderOne('世界书列表行', seen.get('WorldRow'), { world: LISTING.worlds[0], onOpen: () => {} })
+  // 列表里的头像：头像存在 assets/ 里、不在卡文件里，所以是列表额外带回来的。
+  // 这条断言锁住「带回来了要真的画出来」——之前 avatar.list 早就存在，
+  // 但列表从来没用过它，用户看到的永远是首字方块。
+  const withPhotoRaw = renderOne('列表行（有头像）', seen.get('CardRow'), {
+    card: LISTING.cards[0], onOpen: () => {}, photo: 'iVBORw0KGgo=',
+  })
+  // CardRow 内部还有 Avatar 这个函数组件，得先就地展开才看得到真正的 <img>。
+  const withPhoto = expand(withPhotoRaw)
+  const photoImg = (function find(node) {
+    if (node === null || node === undefined) return null
+    if (Array.isArray(node)) { for (const n of node) { const hit = find(n); if (hit !== null) return hit } return null }
+    if (typeof node !== 'object') return null
+    if (node.type === 'img') return node
+    return find(node.children)
+  })(withPhoto)
+  t('列表行有头像时画出的是图片', photoImg !== null && String(photoImg.props?.src ?? '').includes('base64'))
+  // 光「单独渲染 CardRow 能画头像」不够——列表得真的把 foto 传下来。
+  // 首页整棵树里有几个 has-photo 方块，就说明有几行拿到了头像。
+  const homeTree = expand(renderRoot('首页（带头像）', base('home')))
+  t('首页整棵树里真的画出了头像', countPhotos(homeTree) >= 1, countPhotos(homeTree))
+  t('列表行有头像时不再画首字', (function find(node) {
+    if (node === null || node === undefined) return false
+    if (Array.isArray(node)) return node.some(find)
+    if (typeof node !== 'object') return false
+    if (node.type === 'div' && String(node.props?.className ?? '').includes('has-photo')) return true
+    return find(node.children)
+  })(withPhoto))
   renderOne('世界书详情', seen.get('WorldView'), { world: WORLD, listing: LISTING, onOpenCard: () => {} })
   renderOne('世界书详情（摘出来一条）', seen.get('WorldView'), { world: WORLD, listing: LISTING, onOpenCard: () => {} }, { 0: '北洋' })
   // 这里曾经有个「整理材料」按钮，点了跳去「让 AI 读你写的材料」，可那一页
