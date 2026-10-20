@@ -176,6 +176,7 @@ function Icon({ name, size = 16 }) {
     case 'trash': return h('svg', common, h('path', { d: 'M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13' }))
     case 'list': return h('svg', common, h('path', { d: 'M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01' }))
     case 'history': return h('svg', common, h('path', { d: 'M4 12a8 8 0 1 0 2.5-5.8' }), h('path', { d: 'M4 4.5V10h5.5' }), h('path', { d: 'M12 8v4.5l3 2' }))
+    case 'briefcase': return h('svg', common, h('rect', { x: 3, y: 7.5, width: 18, height: 12, rx: 2 }), h('path', { d: 'M9 7.5V6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v1.5' }), h('path', { d: 'M3 12.5h18' }))
     default: return h('svg', common, h('circle', { cx: 12, cy: 12, r: 8 }))
   }
 }
@@ -647,7 +648,7 @@ const SECTIONS_REL = [
 
 // ── 主界面 ────────────────────────────────────────────────────────
 
-const VIEWS = { home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory' }
+const VIEWS = { home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs' }
 
 /**
  * tab 组件。接收宿主给的 props（ctx / store / scope / tab / visible）。
@@ -829,6 +830,7 @@ function LifeCardTab(props) {
       [VIEWS.setup]: '选个文件夹',
       [VIEWS.newCard]: '新建一张卡',
       [VIEWS.world]: activeWorld?.data?.name ?? '这本世界书',
+      [VIEWS.jobs]: '看工作',
     }
     // 「选个文件夹」页一般不该有返回按钮（还没地方可回），
     // 但已经选过文件夹、是从首页主动进来换的时候要能退回去。
@@ -933,6 +935,8 @@ function LifeCardTab(props) {
             })
       case VIEWS.doctor:
         return h(DoctorView, { report: doctor, onOpenCard: openCard, onRun: async () => { const r = await call('doctor.run', {}); setDoctor(r); await refresh() } })
+      case VIEWS.jobs:
+        return h(JobsView, { onBack: () => setView(VIEWS.home), flash })
       default:
         return h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
     }
@@ -1069,6 +1073,7 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
       h(Btn, { tone: 'interview', size: 'sm', icon: 'chat', onClick: () => onNavigate(VIEWS.interview) }, '聊着建'),
       h(Btn, { tone: 'import', size: 'sm', icon: 'import', onClick: () => onNavigate(VIEWS.import) }, '导入'),
       h(Btn, { tone: 'analyze', size: 'sm', icon: 'person', onClick: () => onNavigate(VIEWS.memory), title: '从你写过的记忆里认出身边的人' }, '从记忆里认人'),
+      h(Btn, { tone: 'primary', size: 'sm', icon: 'briefcase', onClick: () => onNavigate(VIEWS.jobs), title: '贴一份招聘说明，看看该不该投' }, '看工作'),
       h('div', { className: 'lc-grow' }),
       materials.length === 0 ? null : h(Btn, { tone: 'analyze', size: 'sm', icon: 'spark', onClick: () => onNavigate(VIEWS.analyze) }, `整理 ${materials.length} 份材料`),
     ),
@@ -3093,6 +3098,219 @@ function scoreSection(report, onOpenCard) {
               ))),
           h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '点一下就能去补。补一条也算。'),
         ),
+  )
+}
+
+// ── 看工作 ────────────────────────────────────────────────────────
+
+/**
+ * 「看工作」这一页。
+ *
+ * 只有一件事：把一份招聘说明贴进来，换回一张「哪里会卡住你」的清单。
+ * 刻意没有的东西：批量投递、自动发信、岗位推荐流。这三样都会让人
+ * 投得更多、想得更少，而这个页面存在的理由是相反的。
+ */
+function JobsView({ onBack, flash }) {
+  const [jd, setJd] = useState('')
+  const [company, setCompany] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const [report, setReport] = useState(null)
+  const [profile, setProfile] = useState(null)
+  const [profileFound, setProfileFound] = useState(true)
+  const [showProfile, setShowProfile] = useState(false)
+  const [draftRoles, setDraftRoles] = useState(null)
+  const [draftPay, setDraftPay] = useState(null)
+  const [draftNo, setDraftNo] = useState(null)
+  const [history, setHistory] = useState(null)
+
+  useEffect(() => {
+    let alive = true
+    call('job.profile.get', {}).then((r) => {
+      if (alive !== true) return
+      if (r.ok === true) {
+        setProfile(r.profile ?? null)
+        // 「我自己」那张卡还没建时，写求职设置会失败。提前说清楚，
+        // 而不是等用户填完三栏点「存一下」才告诉他没地方存。
+        setProfileFound(r.found !== false)
+      }
+    }).catch(() => {})
+    call('job.evaluations', {}).then((r) => {
+      if (alive !== true) return
+      if (r.ok === true) setHistory(r.items ?? [])
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+
+  const saveProfile = async () => {
+    const patch = {}
+    if (draftRoles !== null) patch.target_roles = draftRoles
+    if (draftPay !== null) patch.compensation = draftPay
+    if (draftNo !== null) patch.dealbreakers = draftNo.split(/[、,，\n]/).map((s) => s.trim()).filter((s) => s !== '')
+    const r = await call('job.profile.set', { profile: patch })
+    if (r.ok !== true) { setErr(r.error ?? '没存上'); return }
+    setProfile(r.profile ?? null)
+    setDraftRoles(null); setDraftPay(null); setDraftNo(null)
+    flash('存好了')
+  }
+
+  const run = async () => {
+    setBusy(true); setErr(null); setReport(null)
+    try {
+      const r = await call('job.evaluate', { jd, company })
+      if (r.ok !== true) { setErr(r.error ?? '没读出来'); return }
+      setReport(r)
+      call('job.evaluations', {}).then((h2) => { if (h2.ok === true) setHistory(h2.items ?? []) }).catch(() => {})
+    } catch (e) {
+      setErr(humanizeError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const shownRoles = draftRoles !== null ? draftRoles : (profile?.target_roles ?? '')
+  const shownPay = draftPay !== null ? draftPay : (profile?.compensation ?? '')
+  const shownNo = draftNo !== null ? draftNo : (Array.isArray(profile?.dealbreakers) ? profile.dealbreakers.join('、') : '')
+
+  return h('div', { className: 'lc-pad lc-stack' },
+    h('div', { className: 'lc-meta' },
+      '把一份招聘说明整段贴进来。它会告诉你：哪些要求你真的对得上，哪些是门就关着的，哪些只是你还没写进材料。'),
+
+    // 求职设置默认收起：第一次来的人应该先看到输入框，不是先填三个表
+    h('div', null,
+      h('button', {
+        className: 'lc-btn ghost sm', type: 'button', onClick: () => setShowProfile(!showProfile),
+        style: { width: '100%', justifyContent: 'flex-start' },
+      },
+        h('span', { style: { display: 'inline-flex', transform: showProfile ? 'rotate(90deg)' : 'none', transition: 'transform .12s' } }, h(Icon, { name: 'chevron', size: 12 })),
+        '你想找什么样的工作',
+        h('span', { className: 'lc-grow' }),
+        h(Tag, null, profile === null ? '没写' : '已写'),
+      ),
+      showProfile !== true ? null : h('div', { className: 'lc-stack', style: { marginTop: 8 } },
+        profileFound === false
+          ? h(Note, { tone: 'warn', icon: 'warning' }, '还没有「我自己」那张卡，这里填的东西没地方存。先去建一张，或者先跳过——不留这些也能看工作。')
+          : null,
+        h(Field, { label: '想做什么', hint: '写方向就行：「后端」「新媒体运营」。' },
+          h('input', { className: 'lc-input', value: shownRoles, onChange: (e) => setDraftRoles(e.target.value), placeholder: '后端开发', spellCheck: false }),
+        ),
+        h(Field, { label: '期望薪资', hint: '可以不填。填了它会帮你对照招聘说明里的数字。' },
+          h('input', { className: 'lc-input', value: shownPay, onChange: (e) => setDraftPay(e.target.value), placeholder: '40-60K', spellCheck: false }),
+        ),
+        h(Field, { label: '不能接受什么', hint: '用「、」隔开。写了这条就是硬规矩——招聘说明里出现了，别的都不用看了。' },
+          h('input', { className: 'lc-input', value: shownNo, onChange: (e) => setDraftNo(e.target.value), placeholder: '长期加班、频繁出差', spellCheck: false }),
+        ),
+        h('div', { className: 'lc-row' },
+          h(Btn, { size: 'sm', tone: 'primary', onClick: saveProfile, disabled: profileFound === false || (draftRoles === null && draftPay === null && draftNo === null) }, '存一下'),
+          h('div', { className: 'lc-grow' }),
+          profile === null ? h('span', { className: 'lc-meta' }, '还没写') : h('span', { className: 'lc-meta' }, '会存到「我自己」那张卡上'),
+        ),
+      ),
+    ),
+
+    h(Field, { label: '公司（可以不填）' },
+      h('input', { className: 'lc-input', value: company, onChange: (e) => setCompany(e.target.value), placeholder: '某公司', spellCheck: false }),
+    ),
+
+    h(Field, { label: '招聘说明', hint: '整段复制过来，包括职责和要求。越完整越准。' },
+      h('textarea', {
+        className: 'lc-textarea',
+        value: jd,
+        onChange: (e) => setJd(e.target.value),
+        placeholder: '把招聘要求整段贴在这里…',
+        spellCheck: false,
+        style: { minHeight: 150 },
+      }),
+    ),
+
+    err === null ? null : h(Err, { text: err }),
+
+    h(Btn, { tone: 'primary', big: true, block: true, icon: 'briefcase', onClick: run, disabled: busy }, busy ? '正在读…' : '看看这份工作'),
+
+    report === null ? null : h(JobReport, { report }),
+
+    (history ?? []).length === 0 ? null : h('div', null,
+      h(GroupTitle, { icon: 'history' }, `以前看过的 · ${history.length}`),
+      h('div', { className: 'lc-stack' }, history.slice(0, 8).map((it) => h('div', { key: it.path, className: 'lc-card-item', style: { cursor: 'default' } },
+        h('div', { className: 'lc-avatar', style: { background: 'var(--lc-primary-soft)', color: 'var(--lc-primary)' } }, h(Icon, { name: 'briefcase', size: 14 })),
+        h('div', { className: 'lc-grow' },
+          h('div', { style: { fontWeight: 600 } }, `${it.company === '' ? '没写公司' : it.company}${it.role === '' ? '' : ' · ' + it.role}`),
+          h('div', { className: 'lc-meta' }, it.date),
+        ),
+      ))),
+    ),
+
+    h('div', { style: { marginTop: 10 } }, h(Btn, { ghost: true, size: 'sm', icon: 'back', onClick: onBack }, '回去')),
+  )
+}
+
+/** 一份评估报告。分段顺序与后台 renderReport 一致：先说不好的。 */
+function JobReport({ report }) {
+  const blocked = report.blocked ?? []
+  const matched = report.matched ?? []
+  const unclear = report.unclear ?? []
+  const gaps = report.gaps ?? []
+  const deal = report.dealbreakers ?? []
+  const soft = gaps.filter((g) => g.importance !== 'critical' && g.importance !== 'high')
+
+  return h('div', { className: 'lc-stack', style: { marginTop: 14 } },
+    h('div', { className: 'lc-row' },
+      h('h3', { style: { margin: 0, flex: '1 1 auto' } }, [report.company, report.role].filter((s) => String(s ?? '').trim() !== '').join(' · ') || '这份工作'),
+      h(Tag, null, `${matched.length} 条对得上`),
+    ),
+
+    deal.length === 0 ? null : h(Note, { tone: 'err', icon: 'warning' },
+      h('div', null, '你写过不能接受这个：'),
+      h('div', { style: { marginTop: 4, fontWeight: 600 } }, deal.map((d) => d.word).join('、')),
+      h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '招聘说明里就这么写着。别的都合适也不用往下看了。'),
+    ),
+
+    blocked.length === 0 ? null : h('div', null,
+      h(GroupTitle, { tone: 'err', icon: 'warning' }, `硬要求没对上 · ${blocked.length}`),
+      h('div', { className: 'lc-stack' }, blocked.map((r) => h('div', { key: r.index, className: 'lc-sec' },
+        h('div', { className: 'st' }, r.requirement),
+        h('div', { className: 'sb' }, `招聘说明：「${r.jd_quote}」`),
+        h('div', { className: 'lc-meta', style: { marginTop: 4 } }, r.proof === '' ? '你的材料里没有对应的事。' : `你的材料里：${r.proof}`),
+      ))),
+      h('div', { className: 'lc-meta' }, '这几条不是「差一点」，是门就关着。'),
+    ),
+
+    matched.length === 0 ? null : h('div', null,
+      h(GroupTitle, { tone: 'ok', icon: 'check' }, `拿得出来的 · ${matched.length}`),
+      h('div', { className: 'lc-stack' }, matched.map((r) => h('div', { key: r.index, className: 'lc-sec' },
+        h('div', { className: 'st' }, r.requirement),
+        h('div', { className: 'sb' }, `你的材料：「${r.proof}」`),
+      ))),
+    ),
+
+    soft.length === 0 ? null : h('div', null,
+      h(GroupTitle, { icon: 'list' }, `够不上但不致命 · ${soft.length}`),
+      h('div', { className: 'lc-wrap' }, soft.map((r) => h(Tag, { key: r.index }, r.requirement))),
+    ),
+
+    unclear.length === 0 ? null : h('div', null,
+      h(GroupTitle, { tone: 'analyze', icon: 'person' }, `材料里看不出来 · ${unclear.length}`),
+      h('div', { className: 'lc-meta' }, '这些不是没有，是你没写过。可以在面试里问，也可以先补进材料。'),
+      h('div', { className: 'lc-wrap', style: { marginTop: 6 } }, unclear.map((r) => h(Tag, { key: r.index }, r.requirement))),
+    ),
+
+    (report.questions ?? []).length === 0 ? null : h('div', null,
+      h(GroupTitle, { icon: 'chat' }, '面试前该问清楚'),
+      h('div', { className: 'lc-stack' }, report.questions.map((q, i) => h('div', { key: i, className: 'lc-meta' }, `· ${q}`))),
+    ),
+
+    (report.warnings ?? []).length === 0 ? null : h(Note, { tone: 'warn', icon: 'warning' },
+      h('div', null, '这份招聘说明有几个地方不对劲，不是说不能投，是让你知道它是这么写的。'),
+      h('div', { className: 'lc-stack', style: { marginTop: 6 } }, report.warnings.map((w, i) => h('div', { key: i, className: 'lc-meta' }, `· ${w}`))),
+    ),
+
+    (report.dropped ?? []).length === 0 ? null : h('div', null,
+      h(GroupTitle, { icon: 'trash' }, `丢掉的 · ${report.dropped.length}`),
+      h('div', { className: 'lc-meta' }, '这些是 AI 说了但找不到原文的，已经扔了。它们可能是对的，但没法证明。'),
+      h('div', { className: 'lc-stack', style: { marginTop: 6 } }, report.dropped.slice(0, 12).map((d, i) => h('div', { key: i, className: 'lc-meta' }, `· ${d}`))),
+    ),
+
+    report.path === undefined ? null : h('div', { className: 'lc-meta' }, '已经存下来了，下次进来能在「以前看过的」里找到。'),
   )
 }
 

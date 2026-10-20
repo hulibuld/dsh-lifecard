@@ -286,6 +286,7 @@ renderRoot('首页（有数据）', base('home'))
 renderRoot('首页（空）', base('home', { 2: { ok: true, cards: [], materials: [], proposals: [], worlds: [], errors: [] } }))
 renderRoot('首页（展开更多工具）', base('home', { 10: true }))
 renderRoot('记忆（从首页进来）', base('memory'))
+renderRoot('看工作（从首页进来）', base('jobs'))
 
 // ── 点一下会怎样：首页那几个入口是「从头开始」的意思 ────────────────
 // 渲染树里的 onClick 是真的闭包，调它就能看到状态被改成了什么。
@@ -719,11 +720,70 @@ if (seen.has('CardRow')) {
   }, { 0: '手写' })
 }
 
+// ── 看工作 ──────────────────────────────────────────────────────
+// 求职页最容易犯的错是「报喜不报忧」：把匹配的列一堆，把挡住的藏在最后。
+// 这里的断言按屏幕上出现的先后顺序核对。
+{
+  const before = visibleText.length
+  renderRoot('看工作（空表单）', base('jobs'))
+  const joined = visibleText.slice(before).join('|')
+  t('求职页有招聘说明输入框', joined.includes('招聘说明'), joined.slice(0, 200))
+  t('求职页说清了要贴整段', joined.includes('整段'))
+  t('求职页的按钮说的是看工作', joined.includes('看看这份工作'))
+  t('求职设置默认收起', joined.includes('你想找什么样的工作'))
+  t('求职页不出现投递按钮', !joined.includes('一键投递') && !joined.includes('自动投递'))
+}
+{
+  const REPORT = {
+    company: '某公司',
+    role: '后端工程师',
+    path: 'jobs/evaluations/2026-10-20-某公司-后端工程师.md',
+    dealbreakers: [{ word: '加班', line: '能适应高强度加班节奏。' }],
+    blocked: [{ index: 0, requirement: '5 年以上 Java 开发经验', importance: 'critical', jd_quote: '5 年以上 Java 开发经验', proof: '', verdict: 'gap' }],
+    matched: [{ index: 1, requirement: '后端开发', proof: '我做过后端开发', verdict: 'match' }],
+    gaps: [{ index: 0, requirement: '5 年以上 Java 开发经验', importance: 'critical' }, { index: 2, requirement: '分布式经验', importance: 'medium' }],
+    unclear: [{ index: 3, requirement: '带过团队' }],
+    questions: ['团队现在多少人？'],
+    warnings: ['招聘说明里有一句像在给程序下命令的话。'],
+    dropped: ['「会 Go」的引文在招聘说明里找不到，丢了。'],
+  }
+  // 报告组件只有「读过一份 JD」之后才出现在树上，所以要先把 JobsView
+  // 推到有报告的那一格，让它把 JobReport 交给 seen。
+  renderOne('看工作（已经读过一份）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, { 4: REPORT })
+  const before = visibleText.length
+  const tree = renderOne('求职报告（有挡住的也有对得上的）', seen.get('JobReport'), { report: REPORT })
+  const joined = visibleText.slice(before).join('|')
+  t('报告页渲染出来了', tree !== null)
+  t('报告里有不能接受那条', joined.includes('你写过不能接受这个'))
+  t('报告里有挡住的', joined.includes('硬要求没对上'))
+  t('报告里有对得上的', joined.includes('拿得出来的'))
+  t('报告里有看不出来的', joined.includes('材料里看不出来'))
+  t('报告里有该问的问题', joined.includes('面试前该问清楚'))
+  t('报告里有丢掉的那段', joined.includes('丢掉的'))
+  t('报告页不出现「投」这种诱导', !joined.includes('建议投递'))
+
+  // 顺序：一票否决在最前，其次挡住，最后才是对得上的
+  const iDeal = joined.indexOf('你写过不能接受这个')
+  const iBlock = joined.indexOf('硬要求没对上')
+  const iMatch = joined.indexOf('拿得出来的')
+  t('一票否决排在挡住之前', iDeal >= 0 && iDeal < iBlock)
+  t('挡住排在对得上之前', iBlock >= 0 && iBlock < iMatch)
+}
+{
+  const before = visibleText.length
+  renderOne('求职报告（什么都没对上）', seen.get('JobReport'), {
+    report: { company: '', role: '', blocked: [], matched: [], gaps: [], unclear: [], questions: [], warnings: [], dropped: [] },
+  })
+  const joined = visibleText.slice(before).join('|')
+  t('空报告不崩且说得出是「这份工作」', joined.includes('这份工作'))
+  t('空报告不显示「丢掉的」段', !joined.includes('丢掉的'))
+}
+
 // 遍历渲染完之后再核对：所有子组件都该被访问到过。
 const missing = []
 for (const want of ['CardForm', 'ProposalPanel', 'HistoryPanel', 'BookEditor', 'AvatarPicker', 'CompetencyEditor', 'ListEditor', 'CardRow',
   'HomeView', 'CardView', 'ImportView', 'AnalyzeView', 'InterviewView', 'DoctorView',
-  'NewCardView', 'SetupView', 'Field', 'Action', 'WorldRow', 'WorldView', 'MemoryView']) {
+  'NewCardView', 'SetupView', 'Field', 'Action', 'WorldRow', 'WorldView', 'MemoryView', 'JobsView']) {
   if (!seen.has(want)) missing.push(want)
 }
 t('抓到了所有子组件', missing.length === 0, '缺：' + missing.join(', ') + '；实际：' + [...seen.keys()].join(', '))

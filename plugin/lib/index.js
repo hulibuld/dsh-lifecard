@@ -21,6 +21,8 @@ import * as prompts from './prompts.js'
 
 import * as score from './score.js'
 import * as memory from './memory.js'
+import * as jobs from './jobs.js'
+import * as jobsStore from './jobs-store.js'
 export const name = 'dsh-lifecard'
 
 /** 需要宿主提供的服务。缺 webServer 就什么都不做（明确失败胜过静默半死）。 */
@@ -926,6 +928,315 @@ function buildApi(ctx, workspace, config) {
       const saved = await store.writeConcept(ws, body?.concept ?? null)
       if (saved.ok !== true) return saved
       return { ok: true, concept: saved.concept }
+    },
+
+    // ── 求职 ────────────────────────────────────────────────────
+    //
+    // 「看一份招聘说明」是这个插件唯一会替你判断的事。它不问要不要投、
+    // 也不投——只把这份招聘说明拆成「它要什么」，再拿你自己的材料逐条对，
+    // 对不上的地方老实说对不上。每个结论都挂着两处原文，缺一个就丢。
+
+    /** 求职：读自己的求职设置。 */
+    'job.profile.get': async (body) => {
+      const ws = await root(body)
+      return await jobsStore.readJobProfile(store, ws)
+    },
+
+    /** 求职：写求职设置（想找的方向、期望薪资、不能接受什么）。 */
+    'job.profile.set': async (body) => {
+      const ws = await root(body)
+      const saved = await jobsStore.writeJobProfile(store, ws, body?.profile ?? {})
+      if (saved.ok !== true) return saved
+      return { ok: true, profile: saved.profile }
+    },
+
+    /**
+     * 求职：看一份招聘说明。
+     *
+     * 两遍走：第一遍只读 JD，第二遍才读材料。中间各自过一遍闸门。
+     * 第一遍如果什么都读不出来（太短、不是招聘说明），直接停——
+     * 让它硬编一份「岗位要求」出来比报错坏得多。
+     */
+    'job.evaluate': async (body) => {
+      const ws = await root(body)
+      const raw = String(body?.jd ?? '')
+      if (raw.trim() === '') return { ok: false, error: '还没贴招聘说明。把整段招聘内容贴进来说。' }
+      const tooShort = jobs.judgeTooShort(raw)
+      if (tooShort !== null) return { ok: false, error: tooShort }
+
+      // 招聘贴是外部输入，先剥掉像在给程序下命令的句子
+      const guard = jobs.guardPosting(raw)
+      const jd = guard.cleaned === '' ? raw.trim() : guard.cleaned
+
+      const model = typeof body?.model === 'string' && body.model !== '' ? body.model : (config?.defaultAnalysisModel ?? undefined)
+      const system = '你是一个只做判断、不做鼓励的助手。你的每条结论都会被程序拿回原文逐字核对，对不上的会被丢掉。'
+      const attempts = Math.max(1, Math.min(3, Number(body?.attempts ?? 2)))
+      const tried = []
+
+      // 第一遍：只读 JD
+      const jdPrompt = jobs.buildJdPassPrompt({ jd, company: body?.company, role: body?.role })
+      let pass1 = null
+      let firstCall = null
+      for (let n = 0; n < attempts; n += 1) {
+        const user = n === 0 ? jdPrompt : `${jdPrompt}\n\n（上一次的输出没法解析。请只输出 JSON，不要解释文字。）`
+        firstCall = await callModel(ctx, { system, user, model })
+        if (!firstCall.ok) { tried.push({ pass: 1, attempt: n + 1, kind: 'model-error', error: firstCall.error }); continue }
+        const parsed = extractJson(firstCall.text)
+        if (parsed === undefined) { tried.push({ pass: 1, attempt: n + 1, kind: 'unparsable' }); continue }
+        pass1 = parsed
+        break
+      }
+      if (pass1 === null) {
+        return {
+          ok: false,
+          error: firstCall === null || firstCall.ok ? 'AI 这次没给出能用的结果。' : (firstCall.error ?? '调用模型失败'),
+          attempts: tried,
+          hint: '也可以不用 AI：自己把这条招聘说明读一遍，把「缺了就免谈」的几条挑出来，直接对照你的材料。',
+        }
+      }
+      const jdCheck = jobs.checkJdPass(pass1, jd)
+      if (!jdCheck.ok) {
+        return {
+          ok: false,
+          error: '这份招聘说明读不出明确的岗位要求，可能内容太笼统。',
+          dropped: jdCheck.reasons,
+          hint: '把职责和要求那几段一起贴进来会更准。',
+        }
+      }
+
+      // 第二遍：读材料逐条对
+      const materials = await store.readMaterials(ws)
+      const profileRes = await jobsStore.readJobProfile(store, ws)
+      const profile = profileRes.ok === true ? profileRes.profile : null
+      const matchPrompt = jobs.buildMatchPassPrompt({
+        jd,
+        pass1: { requirements: jdCheck.requirements },
+        materials,
+        selfCard: profile,
+      })
+      let pass2 = null
+      let secondCall = null
+      for (let n = 0; n < attempts; n += 1) {
+        const user = n === 0 ? matchPrompt : `${matchPrompt}\n\n（上一次的输出没法解析。请只输出 JSON，不要解释文字。）`
+        secondCall = await callModel(ctx, { system, user, model })
+        if (!secondCall.ok) { tried.push({ pass: 2, attempt: n + 1, kind: 'model-error', error: secondCall.error }); continue }
+        const parsed = extractJson(secondCall.text)
+        if (parsed === undefined) { tried.push({ pass: 2, attempt: n + 1, kind: 'unparsable' }); continue }
+        pass2 = parsed
+        break
+      }
+      if (pass2 === null) {
+        return {
+          ok: false,
+          error: '第二遍读材料时 AI 没给出能用的结果。',
+          attempts: tried,
+          requirements: jdCheck.requirements,
+          hint: '可以再试一次；或者照着上面这些要求，自己对着材料看一遍。',
+        }
+      }
+
+      const matchCheck = jobs.checkMatchPass(pass2, { requirements: jdCheck.requirements }, materials)
+
+      // 一票否决优先于一切。用户自己写的不接受，是这个插件唯一无条件执行的规则。
+      const dealbreakers = jobs.checkDealbreakers(
+        Array.isArray(profile?.dealbreakers) ? profile.dealbreakers : [],
+        jd,
+      )
+
+      const result = {
+        ok: true,
+        company: String(pass1.company ?? body?.company ?? '').trim(),
+        role: String(pass1.role ?? body?.role ?? '').trim(),
+        signals: pass1.signals ?? {},
+        rows: matchCheck.rows,
+        matched: matchCheck.matched,
+        gaps: matchCheck.gaps,
+        unclear: matchCheck.unclear,
+        blocked: matchCheck.blocked,
+        strengths: matchCheck.strengths,
+        blockers: matchCheck.blockers,
+        questions: matchCheck.questions,
+        dealbreakers,
+        warnings: guard.warnings,
+        dropped: [...jdCheck.reasons, ...matchCheck.reasons],
+        materialsUsed: Object.keys(materials),
+        attempts: tried,
+      }
+      result.markdown = jobs.renderReport(result)
+      const saved = await jobsStore.saveEvaluation(ws, result, { markdown: result.markdown })
+      if (saved.ok === true) {
+        result.path = saved.path
+        result.markdown = `${result.markdown}\n\n---\n\n存成了 \`${saved.path}\`。`
+      }
+      return result
+    },
+
+    /** 求职：以前看过的评估。 */
+    'job.evaluations': async (body) => {
+      const ws = await root(body)
+      return await jobsStore.listEvaluations(ws)
+    },
+
+    /** 求职：读一份评估。 */
+    'job.evaluation.get': async (body) => {
+      const ws = await root(body)
+      return await jobsStore.readEvaluation(ws, body?.path)
+    },
+
+    /** 求职：投递记录。 */
+    'job.tracker.list': async (body) => {
+      const ws = await root(body)
+      return await jobsStore.readTracker(ws)
+    },
+
+    /** 求职：记一笔投递。只记事实，不替你投。 */
+    'job.tracker.add': async (body) => {
+      const ws = await root(body)
+      return await jobsStore.addApplication(ws, body?.row ?? {})
+    },
+
+    /** 求职：改投递状态。 */
+    'job.tracker.update': async (body) => {
+      const ws = await root(body)
+      return await jobsStore.updateApplication(ws, { company: body?.company, role: body?.role }, body?.patch ?? {})
+    },
+
+    /**
+     * 求职：面试故事。
+     *
+     * 这里的 AI 只做一件事：把材料里已经有的经历整理成「面试能讲的一段」。
+     * 每个故事都必须挂得住原文——讲面试用编的故事，是当场被问穿的那种代价。
+     */
+    'job.stories': async (body) => {
+      const ws = await root(body)
+      return await jobsStore.readStories(ws)
+    },
+
+    'job.story.add': async (body) => {
+      const ws = await root(body)
+      return await jobsStore.addStory(ws, body?.story ?? {})
+    },
+
+    /** 求职：草稿（简历 / 求职信）。 */
+    'job.drafts': async (body) => {
+      const ws = await root(body)
+      return await jobsStore.listDrafts(ws, body?.kind === 'cover' ? 'cover' : 'resume')
+    },
+
+    'job.draft.get': async (body) => {
+      const ws = await root(body)
+      return await jobsStore.readDraft(ws, body?.path)
+    },
+
+    /**
+     * 求职：照这份招聘说明改一版简历。
+     *
+     * **不许新造事实**：这一版只是把材料里已有的经历换个说法、按 JD 的顺序排。
+     * 每一个数字都要能在材料里找到同一个数字——找不到就整段不写，
+     * 而不是猜一个「大概 30%」。
+     */
+    'job.resume.build': async (body) => {
+      const ws = await root(body)
+      const jd = String(body?.jd ?? '').trim()
+      if (jd === '') return { ok: false, error: '要照哪份招聘说明改？先把招聘内容贴进来。' }
+      const materials = await store.readMaterials(ws)
+      if (Object.keys(materials).length === 0) {
+        return { ok: false, error: '还没有材料。先写几段自己的经历，改简历才有东西可改。' }
+      }
+      const profileRes = await jobsStore.readJobProfile(store, ws)
+      const profile = profileRes.ok === true ? profileRes.profile : null
+      const system = '你是一个只重写措辞、不发明事实的简历编辑。你写出的每个数字都必须能在给定材料里找到同一个数字。'
+      const matBlock = Object.entries(materials).map(([n, b]) => `### ${n}\n${b}`).join('\n\n')
+      const prompt = [
+        '按下面这份招聘说明，把这个人已有的经历重排成一版简历。',
+        '',
+        '## 招聘说明',
+        '```',
+        jobs.guardPosting(jd).cleaned,
+        '```',
+        '',
+        '## 他的材料（**这是唯一的事实来源**）',
+        matBlock,
+        '',
+        '## 写法',
+        '- 顺序按招聘说明看重什么来排，最相关的经历放前面。',
+        '- 每条经历一到两行，开头写做了什么，结尾写结果。',
+        '- **数字只能用材料里出现过的数字。** 材料没写数字，就写「明显改善」这种能站住的话，不要编一个百分比。',
+        '- 材料里没有的经历、公司、项目，一律不许加。',
+        '- 不写自我评价、不写「本人性格开朗」这种。',
+        '',
+        '## 输出格式',
+        '直接输出 Markdown 简历，不要解释，不要代码块包起来。第一行是名字。',
+        '',
+        profile === null || profile.target_roles === undefined ? '' : `（这个人想做的方向：${profile.target_roles}）`,
+      ].filter((s) => s !== '').join('\n')
+      const called = await callModel(ctx, { system, user: prompt, model: typeof body?.model === 'string' && body.model !== '' ? body.model : undefined })
+      if (!called.ok) return { ok: false, error: called.error }
+      const text = String(called.text ?? '').trim()
+      if (text === '') return { ok: false, error: 'AI 没写出东西来。' }
+      // 每个数字都要能在材料里找到同一个数字
+      const numbers = [...new Set((text.match(/\d+(?:\.\d+)?%?/g) ?? []))]
+      const matText = Object.values(materials).join('\n')
+      const invented = numbers.filter((n) => !matText.includes(n))
+      const saved = await jobsStore.saveDraft(ws, 'resume', String(profile?.target_roles ?? body?.company ?? '简历'), text)
+      return {
+        ok: true,
+        markdown: text,
+        path: saved.ok === true ? saved.path : null,
+        unsupportedNumbers: invented,
+        warning: invented.length === 0
+          ? null
+          : `这版里有 ${invented.length} 个数字在你材料里找不到：${invented.slice(0, 8).join('、')}。投之前自己核一遍，拿不出处的最好删掉。`,
+      }
+    },
+
+    /**
+     * 求职：写一封求职信。
+     *
+     * 和简历同一条硬规矩：**不许编事**。求职信最容易写成空话，
+     * 所以要求它必须从材料里挑一件具体的事讲，讲不出来就不写。
+     */
+    'job.cover.build': async (body) => {
+      const ws = await root(body)
+      const jd = String(body?.jd ?? '').trim()
+      if (jd === '') return { ok: false, error: '要写给哪家？先把招聘内容贴进来。' }
+      const materials = await store.readMaterials(ws)
+      if (Object.keys(materials).length === 0) {
+        return { ok: false, error: '还没有材料。先写几段自己的经历，写出来的信才不像模板。' }
+      }
+      const profileRes = await jobsStore.readJobProfile(store, ws)
+      const profile = profileRes.ok === true ? profileRes.profile : null
+      const matBlock = Object.entries(materials).map(([n, b]) => `### ${n}\n${b}`).join('\n\n')
+      const system = '你是一个只讲真事、不写空话的求职信代笔。写不出具体的事时你会老实说写不出来。'
+      const prompt = [
+        '给下面这家公司写一封求职信。',
+        '',
+        '## 招聘说明',
+        '```',
+        jobs.guardPosting(jd).cleaned,
+        '```',
+        '',
+        '## 他的材料（唯一的事实来源）',
+        matBlock,
+        '',
+        '## 写法',
+        '- 三百字以内。招聘的人一天看几十封，长了没人读。',
+        '- 正文必须讲**材料里的一件具体的事**，把那件事讲清楚，比夸自己十句有用。',
+        '- 不许写「贵公司平台广阔」这类谁都能说的话。',
+        '- 材料里没有的经历不要提。',
+        '- 结尾写清楚你想做什么、怎么联系。',
+        '',
+        '## 输出格式',
+        '直接输出 Markdown 正文，不要代码块。开头不要「尊敬的 HR」这种套话。',
+        '',
+        profile === null || profile.target_roles === undefined ? '' : `（这个人想做的方向：${profile.target_roles}）`,
+      ].filter((s) => s !== '').join('\n')
+      const called = await callModel(ctx, { system, user: prompt, model: typeof body?.model === 'string' && body.model !== '' ? body.model : undefined })
+      if (!called.ok) return { ok: false, error: called.error }
+      const text = String(called.text ?? '').trim()
+      if (text === '') return { ok: false, error: 'AI 没写出东西来。' }
+      const saved = await jobsStore.saveDraft(ws, 'cover', String(body?.company ?? '求职信'), text)
+      return { ok: true, markdown: text, path: saved.ok === true ? saved.path : null }
     },
 
     /**

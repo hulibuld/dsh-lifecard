@@ -28,6 +28,8 @@ const SKELETON = [
   'story/chapters',
   'story/state/snapshots',
   'assets',
+  'jobs',
+  'jobs/evaluations',
   '.lifecard/raw',
   '.lifecard/snapshots',
 ]

@@ -1,0 +1,367 @@
+/**
+ * LifeCard jobs/store —— 求职那几张表怎么落到磁盘上。
+ *
+ * 全部是纯文本：
+ *   jobs/evaluations/<日期>-<公司>-<岗位>.md   一次评估的报告
+ *   jobs/applications.md                       投递追踪表
+ *   jobs/story-bank.md                         面试用的故事银行
+ *   jobs/resumes/<日期>-<公司>.md              定制简历草稿
+ *   jobs/covers/<日期>-<公司>.md               求职信草稿
+ *
+ * 为什么坚持 Markdown 而不是 JSON：这些东西用户要能自己打开改、能 git diff、
+ * 能直接复制粘贴到招聘网站。做成 JSON 就锁在软件里了，软件一坏全没了。
+ */
+
+import { promises as fs } from 'node:fs'
+import path from 'node:path'
+
+/** 投递状态。封闭枚举——自由字符串会让追踪表三个月后没法统计。 */
+export const STATUSES = ['evaluated', 'applied', 'responded', 'interview', 'offer', 'rejected', 'discarded', 'skip']
+
+/** 状态的中文说法。界面只说中文，不出现 applied 这种词。 */
+export const STATUS_LABEL = {
+  evaluated: '看过了',
+  applied: '投了',
+  responded: '有回音',
+  interview: '面试中',
+  offer: '拿到 offer',
+  rejected: '被拒了',
+  discarded: '自己不去了',
+  skip: '不投',
+}
+
+const APPLICATIONS = 'jobs/applications.md'
+const STORY_BANK = 'jobs/story-bank.md'
+
+/**
+ * 文件名的安全化。中文要留着（用户看得懂），只去掉路径分隔符和奇怪字符。
+ */
+export function safeName(raw, fallback = 'x') {
+  const s = String(raw ?? '')
+    .trim()
+    .replace(/[\\/:*?"<>|\n\r\t]/g, '')
+    .replace(/\s+/g, '-')
+    .slice(0, 60)
+  return s === '' ? fallback : s
+}
+
+function localDate(now = new Date()) {
+  const d = new Date(now.getTime() - now.getTimezoneOffset() * 60_000)
+  return d.toISOString().slice(0, 10)
+}
+
+/** 落一个文件，自动建目录。路径必须落在工作区里。 */
+async function writeInside(root, rel, body) {
+  const base = path.resolve(root)
+  const abs = path.resolve(base, rel)
+  if (abs !== base && !abs.startsWith(base + path.sep)) {
+    return { ok: false, error: '路径在工作区外面，拒绝访问' }
+  }
+  await fs.mkdir(path.dirname(abs), { recursive: true })
+  await fs.writeFile(abs, body, 'utf8')
+  return { ok: true, path: rel }
+}
+
+async function readInside(root, rel) {
+  const base = path.resolve(root)
+  const abs = path.resolve(base, rel)
+  if (abs !== base && !abs.startsWith(base + path.sep)) return null
+  try { return await fs.readFile(abs, 'utf8') } catch { return null }
+}
+
+/**
+ * 存一次评估。同名不覆盖——同一天看同一个岗位两次是很正常的
+ * （改完简历再看一遍），第二次要能看见第一次的结论。
+ *
+ * @returns {Promise<{ok: boolean, path?: string, error?: string}>}
+ */
+export async function saveEvaluation(root, result, meta = {}) {
+  const date = localDate()
+  const company = safeName(result?.company, '没写公司')
+  const role = safeName(result?.role, '没写岗位')
+  const dir = 'jobs/evaluations'
+
+  let rel = ''
+  for (let n = 1; n <= 999; n += 1) {
+    const suffix = n === 1 ? '' : `-${n}`
+    const candidate = path.posix.join(dir, `${date}-${company}-${role}${suffix}.md`)
+    if ((await readInside(root, candidate)) === null) { rel = candidate; break }
+  }
+  // 一天看过一千个同名岗位是不可能的，真撞上就用时间戳
+  if (rel === '') rel = path.posix.join(dir, `${date}-${company}-${role}-${Date.now()}.md`)
+
+  const body = typeof meta.markdown === 'string' ? meta.markdown : ''
+  const saved = await writeInside(root, rel, body)
+  if (!saved.ok) return saved
+  return { ok: true, path: rel }
+}
+
+/**
+ * 列所有评估。按文件名倒序（日期在最前面，所以等于按时间倒序）。
+ */
+export async function listEvaluations(root) {
+  const dir = 'jobs/evaluations'
+  const base = path.resolve(root)
+  const abs = path.resolve(base, dir)
+  if (!abs.startsWith(base)) return { ok: true, items: [] }
+  let names = []
+  try { names = await fs.readdir(abs) } catch { return { ok: true, items: [] } }
+  const items = []
+  for (const name of names.filter((n) => n.endsWith('.md')).sort().reverse()) {
+    const rel = path.posix.join(dir, name)
+    const stat = await fs.stat(path.join(root, rel)).catch(() => null)
+    // 文件名是 `<日期>-<公司>-<岗位>[-序号].md`，拆回来给界面用
+    const stem = name.replace(/\.md$/, '')
+    const m = /^(\d{4}-\d{2}-\d{2})-(.+)$/.exec(stem)
+    const rest = m === null ? stem : m[2]
+    const parts = rest.split('-')
+    items.push({
+      path: rel,
+      date: m === null ? '' : m[1],
+      company: parts[0] ?? '',
+      role: parts.slice(1).join('-') || '',
+      bytes: stat === null ? 0 : stat.size,
+      when: stat === null ? '' : stat.mtime.toISOString(),
+    })
+  }
+  return { ok: true, items }
+}
+
+/** 读一份评估报告。 */
+export async function readEvaluation(root, rel) {
+  if (!String(rel ?? '').startsWith('jobs/evaluations/')) {
+    return { ok: false, error: '这不是一份评估报告。' }
+  }
+  const body = await readInside(root, rel)
+  if (body === null) return { ok: false, error: '找不到这份报告。' }
+  return { ok: true, path: rel, markdown: body }
+}
+
+/**
+ * 存一份简历或求职信草稿。`kind` 是 'resume' 或 'cover'。
+ */
+export async function saveDraft(root, kind, company, body) {
+  const dir = kind === 'cover' ? 'jobs/covers' : 'jobs/resumes'
+  const date = localDate()
+  const name = safeName(company, '没写公司')
+  let rel = ''
+  for (let n = 1; n <= 999; n += 1) {
+    const suffix = n === 1 ? '' : `-${n}`
+    const candidate = path.posix.join(dir, `${date}-${name}${suffix}.md`)
+    if ((await readInside(root, candidate)) === null) { rel = candidate; break }
+  }
+  if (rel === '') rel = path.posix.join(dir, `${date}-${name}-${Date.now()}.md`)
+  return writeInside(root, rel, body)
+}
+
+export async function listDrafts(root, kind) {
+  const dir = kind === 'cover' ? 'jobs/covers' : 'jobs/resumes'
+  const base = path.resolve(root)
+  const abs = path.resolve(base, dir)
+  if (!abs.startsWith(base)) return { ok: true, items: [] }
+  let names = []
+  try { names = await fs.readdir(abs) } catch { return { ok: true, items: [] } }
+  const items = []
+  for (const name of names.filter((n) => n.endsWith('.md')).sort().reverse()) {
+    const rel = path.posix.join(dir, name)
+    const stat = await fs.stat(path.join(root, rel)).catch(() => null)
+    items.push({ path: rel, name: name.replace(/\.md$/, ''), bytes: stat === null ? 0 : stat.size, when: stat === null ? '' : stat.mtime.toISOString() })
+  }
+  return { ok: true, items }
+}
+
+export async function readDraft(root, rel) {
+  if (!String(rel ?? '').startsWith('jobs/resumes/') && !String(rel ?? '').startsWith('jobs/covers/')) {
+    return { ok: false, error: '这不是一份草稿。' }
+  }
+  const body = await readInside(root, rel)
+  if (body === null) return { ok: false, error: '找不到这份草稿。' }
+  return { ok: true, path: rel, markdown: body }
+}
+
+// ── 投递追踪表 ──────────────────────────────────────────────────────
+
+const TRACKER_HEADER = [
+  '# 投递记录',
+  '',
+  '> 这张表只记事实：什么时候、投了哪家、后来怎样。',
+  '> 它不会替你投任何东西——投递永远是你自己动手。',
+  '',
+  '| 日期 | 公司 | 岗位 | 状态 | 备注 |',
+  '| --- | --- | --- | --- | --- |',
+].join('\n')
+
+/**
+ * 读追踪表。空表（或文件不存在）返回空数组 + 表头准备好写。
+ *
+ * 用 Markdown 表格而不是 JSON：用户要能自己在编辑器里加一行。
+ */
+export async function readTracker(root) {
+  const body = await readInside(root, APPLICATIONS)
+  if (body === null) return { ok: true, rows: [], exists: false }
+  const rows = []
+  for (const line of body.split('\n')) {
+    const t = line.trim()
+    if (!t.startsWith('|') || !t.endsWith('|')) continue
+    const cells = t.slice(1, -1).split('|').map((c) => c.trim())
+    if (cells.length < 4) continue
+    // 跳过表头与分隔行
+    if (cells[0] === '日期' || /^-+$/.test(cells[0])) continue
+    rows.push({
+      date: cells[0] ?? '',
+      company: cells[1] ?? '',
+      role: cells[2] ?? '',
+      status: cells[3] ?? '',
+      note: cells.slice(4).join(' ') ?? '',
+    })
+  }
+  return { ok: true, rows, exists: true }
+}
+
+function renderTracker(rows) {
+  const body = rows.map((r) => `| ${r.date} | ${r.company} | ${r.role} | ${r.status} | ${r.note} |`).join('\n')
+  return `${TRACKER_HEADER}\n${body}\n`
+}
+
+/**
+ * 加一行投递记录。
+ *
+ * `status` 走封闭枚举。用户想写「等消息」这种自由文本，就写进备注，
+ * 状态本身必须是一个能统计的值——三个月后回头看「投了 20 家几家有回音」
+ * 才有答案。
+ */
+export async function addApplication(root, row) {
+  const status = String(row?.status ?? 'applied')
+  if (!STATUSES.includes(status)) {
+    return { ok: false, error: `「${status}」不是一个能记的状态。` }
+  }
+  const current = await readTracker(root)
+  const rows = [...current.rows, {
+    date: String(row?.date ?? '').trim() === '' ? localDate() : String(row.date).trim(),
+    company: String(row?.company ?? '').trim(),
+    role: String(row?.role ?? '').trim(),
+    status,
+    note: String(row?.note ?? '').trim(),
+  }]
+  if (rows[rows.length - 1].company === '') return { ok: false, error: '至少写一下是哪家公司。' }
+  const saved = await writeInside(root, APPLICATIONS, renderTracker(rows))
+  if (!saved.ok) return saved
+  return { ok: true, count: rows.length }
+}
+
+/**
+ * 改一行。按「公司 + 岗位」找，不按下标——
+ * 用户手改过文件之后下标就对不上了，而公司名是稳定的。
+ */
+export async function updateApplication(root, target, patch) {
+  const current = await readTracker(root)
+  const company = String(target?.company ?? '').trim()
+  const role = String(target?.role ?? '').trim()
+  const at = current.rows.findIndex((r) => r.company === company && (role === '' || r.role === role))
+  if (at < 0) return { ok: false, error: '没找到这条记录。' }
+  const next = { ...current.rows[at] }
+  if (patch?.status !== undefined) {
+    const status = String(patch.status)
+    if (!STATUSES.includes(status)) return { ok: false, error: `「${status}」不是一个能记的状态。` }
+    next.status = status
+  }
+  if (patch?.note !== undefined) next.note = String(patch.note)
+  if (patch?.date !== undefined) next.date = String(patch.date)
+  const rows = [...current.rows]
+  rows[at] = next
+  const saved = await writeInside(root, APPLICATIONS, renderTracker(rows))
+  if (!saved.ok) return saved
+  return { ok: true, row: next }
+}
+
+// ── 故事银行 ────────────────────────────────────────────────────────
+
+const STORY_HEADER = [
+  '# 面试故事',
+  '',
+  '> 面试官问「讲一次你解决难题的经历」，临时想是来不及的。',
+  '> 平时把真事写下来，面试前翻一遍就够。',
+  '',
+  '> 每一条都从你自己的材料里来，不编。',
+  '',
+].join('\n')
+
+/**
+ * 读故事银行。每条是 `### 标题` 开头的一段。
+ *
+ * 没有要求用户按 STAR 填——那是给人看的框架，不是必须的格式。
+ * 只要求三件事：什么情况、你做了什么、结果怎样。
+ */
+export async function readStories(root) {
+  const body = await readInside(root, STORY_BANK)
+  if (body === null) return { ok: true, stories: [], exists: false }
+  const stories = []
+  const chunks = body.split(/^### /m).slice(1)
+  for (const chunk of chunks) {
+    const lines = chunk.split('\n')
+    const title = (lines[0] ?? '').trim()
+    if (title === '') continue
+    stories.push({ title, body: lines.slice(1).join('\n').trim() })
+  }
+  return { ok: true, stories, exists: true }
+}
+
+export async function addStory(root, story) {
+  const title = String(story?.title ?? '').trim()
+  if (title === '') return { ok: false, error: '给这段经历起个名字。' }
+  const body = String(story?.body ?? '').trim()
+  if (body === '') return { ok: false, error: '写一下发生了什么、你做了什么。' }
+  const current = await readInside(root, STORY_BANK)
+  const head = current === null ? STORY_HEADER : current.replace(/\s*$/, '\n\n')
+  const saved = await writeInside(root, STORY_BANK, `${head}### ${title}\n\n${body}\n`)
+  if (!saved.ok) return saved
+  return { ok: true }
+}
+
+// ── 求职设置（在自己那张卡上）──────────────────────────────────────
+
+/**
+ * 读自己的求职设置。存在 `self` 卡的 `job:` 字段上——
+ * 「我想找什么样的工作」是关于我自己的事实，属于这张卡。
+ *
+ * 全空的字段不返回，让界面能用 `??` 判断「填过没有」。
+ */
+export async function readJobProfile(store, root) {
+  const list = await store.listAll(root)
+  const self = (list.cards ?? []).find((c) => c.kind === 'self')
+  if (self === undefined) return { ok: true, found: false, profile: null }
+  const card = await store.readCard(root, self.path)
+  if (card.ok !== true) return { ok: true, found: false, profile: null }
+  const job = card.data?.job
+  if (job === null || typeof job !== 'object') return { ok: true, found: true, profile: null }
+  return { ok: true, found: true, profile: job, path: self.path }
+}
+
+/**
+ * 写求职设置。只覆盖传进来的键，不整块替换——
+ * 用户在界面上只改了薪资，不该把「不能接受的事」清空。
+ */
+export async function writeJobProfile(store, root, patch) {
+  const list = await store.listAll(root)
+  const self = (list.cards ?? []).find((c) => c.kind === 'self')
+  if (self === undefined) {
+    return { ok: false, error: '还没有「我自己」这张卡。先在侧栏建一张，求职设置会存到它上面。' }
+  }
+  const card = await store.readCard(root, self.path)
+  if (card.ok !== true) return { ok: false, error: '读不到「我自己」这张卡。' }
+  const data = { ...card.data }
+  const before = data.job === null || typeof data.job !== 'object' ? {} : data.job
+  const next = { ...before }
+  for (const [k, v] of Object.entries(patch ?? {})) {
+    if (v === null || v === undefined || (typeof v === 'string' && v.trim() === '') || (Array.isArray(v) && v.length === 0)) {
+      delete next[k]
+    } else {
+      next[k] = v
+    }
+  }
+  if (Object.keys(next).length === 0) delete data.job
+  else data.job = next
+  const written = await store.writeCard(root, self.path, data, card.sections ?? [])
+  if (written.ok !== true) return written
+  return { ok: true, profile: Object.keys(next).length === 0 ? null : next }
+}

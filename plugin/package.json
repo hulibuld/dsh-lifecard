@@ -25,7 +25,9 @@
     "skills/**/SKILL.md",
     "cordis.patch.yml",
     "locale/*.json",
-    "icon.svg"
+    "icon.svg",
+    "lib/jobs.js",
+    "lib/jobs-store.js"
   ],
   "dsh": {
     "bundle": {
