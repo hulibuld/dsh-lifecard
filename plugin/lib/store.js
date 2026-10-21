@@ -683,8 +683,9 @@ function isUnder(relDir, top) {
  * @param {string} root
  * @param {string} name - 文件名（不含扩展名时会补 .md）
  * @param {string} content
+ * @param {{ replace?: boolean }} [options] - replace:true 时覆盖同名文件而不是追加
  */
-export async function appendMaterial(root, name, content) {
+export async function appendMaterial(root, name, content, options = {}) {
   const safe = core.safeId(name).replace(/\.md$/i, '')
   const date = localDate()
   const fileName = safe.startsWith(date) ? `${safe}.md` : `${date}-${safe}.md`
@@ -692,8 +693,14 @@ export async function appendMaterial(root, name, content) {
   const at = resolveIn(root, rel)
   if (!at.ok) return { ok: false, error: at.error }
   const abs = at.abs
+  const body = content.endsWith('\n') ? content : content + '\n'
   await fs.mkdir(path.dirname(abs), { recursive: true })
-  await fs.appendFile(abs, (content.endsWith('\n') ? content : content + '\n'), 'utf8')
+  // 默认是追加（人一次次贴材料，越攒越多，这本来就要追加）。
+  // 但有些材料是「重新摘一遍」而不是「再补一条」——比如从记忆里重新提取
+  // 某个人。那种情况必须覆盖，否则同一个人每点一次就多一份重复的旧摘录，
+  // 而 AI 读的时候会把两份都当真，同一个事实被引用两次。
+  if (options?.replace === true) await fs.writeFile(abs, body, 'utf8')
+  else await fs.appendFile(abs, body, 'utf8')
   const full = await fs.readFile(abs, 'utf8')
   return { ok: true, path: rel, sha256: sha256(full) }
 }

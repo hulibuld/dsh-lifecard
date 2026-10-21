@@ -451,11 +451,11 @@ ${input.schemaHint}
   "items": [
     {
       "field": "competency",
-      "value": { "key": "woodwork", "label": "手艺", "level": "熟手" },
+      "value": { "key": "craft", "label": "手艺", "level": "熟手" },
       "source_level": "自述",
       "evidence": {
         "material": "materials/xxx.md",
-        "quote": "十六岁进作坊，干了三十七年",
+        "quote": "十几岁开始做这行，做了很多年",
         "line_start": 42
       },
       "note": "可选，一句说明"

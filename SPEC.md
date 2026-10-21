@@ -126,7 +126,7 @@ kind: real | fictional | hybrid | self | lens | world | system | relation
 
 ```yaml
 competency:
-  - key: woodwork
+  - key: craft
     label: 手艺
     level: 熟手                 # 封闭枚举：入门 | 熟手 | 精通 | 专家
     evidence:
@@ -330,13 +330,13 @@ lifecard apply 爷爷
   "fields": [
     {
       "field": "competency",
-      "value": {"key": "woodwork", "label": "手艺", "level": "熟手"},
+      "value": {"key": "craft", "label": "手艺", "level": "熟手"},
       "source_level": "自述",
       "evidence": {
         "material": "materials/2026-10-18-爷爷访谈.md",
         "line_start": 42,
         "line_end": 44,
-        "quote": "十六岁进作坊，干了三十七年"
+        "quote": "十几岁开始做这行，做了很多年"
       }
     }
   ],
@@ -379,8 +379,8 @@ lifecard apply 爷爷
 ```markdown
 ## competency
 
-- [x] `woodwork` 手艺 / 熟手
-      证据：materials/爷爷访谈.md L42「十六岁进作坊，干了三十七年」
+- [x] `craft` 手艺 / 熟手
+      证据：materials/爷爷访谈.md L42「十几岁开始做这行，做了很多年」
       来源：自述
 - [ ] `herbalism` 草药 / 入门
       证据：materials/爷爷访谈.md L88「他说山上那些草他都认得」

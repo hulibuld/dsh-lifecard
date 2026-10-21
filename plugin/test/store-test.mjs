@@ -58,13 +58,13 @@ console.log('=== 3. 墓碑：删掉就读不到 ===')
 
 console.log('=== 4. 材料只追加 ===')
 {
-  await store.appendMaterial(root, '爷爷访谈', '爷爷说：十六岁进作坊，干了三十七年。')
+  await store.appendMaterial(root, '爷爷访谈', '爷爷说：十几岁开始做这行，做了很多年。')
   await store.appendMaterial(root, '爷爷访谈', '他还说：最得意的是 1985 年那间铺子。')
   const mats = await store.readMaterials(root)
   const names = Object.keys(mats)
   t('只有一份文件', names.length === 1, names)
   const body = mats[names[0]]
-  t('两次追加都在', body.includes('十六岁进作坊') && body.includes('1985 年那间铺子'))
+  t('两次追加都在', body.includes('十几岁开始做这行') && body.includes('1985 年那间铺子'))
 
   // 回归：listAll 的 materials 曾经因为「relDir 就是 'materials'，末尾没斜杠」
   // 而一直返回空数组。readMaterials 是对的，所以只测它发现不了。
@@ -80,7 +80,7 @@ console.log('=== 5. 提案：引文门 ===')
   const proposal = {
     about: { id: 'yeye', name: '爷爷' },
     items: [
-      { field: 'competency', value: { key: 'woodwork', label: '手艺', level: '熟手' }, source_level: '自述', evidence: { material: Object.keys(materials)[0], quote: '十六岁进作坊，干了三十七年' } },
+      { field: 'competency', value: { key: 'craft', label: '手艺', level: '熟手' }, source_level: '自述', evidence: { material: Object.keys(materials)[0], quote: '十几岁开始做这行，做了很多年' } },
       { field: 'birth_year', value: 1958, source_level: '推测', evidence: { material: Object.keys(materials)[0], quote: '他生于一九五八年' } },
       { field: '自述', value: '会做一门手艺', source_level: '自述', evidence: { material: Object.keys(materials)[0], quote: '最得意的是 1985 年那间铺子' } },
     ],
@@ -91,7 +91,7 @@ console.log('=== 5. 提案：引文门 ===')
   t('2 条通过', saved.accepted === 2, saved.accepted)
   t('1 条被丢弃（编造的引文）', saved.rejected === 1, saved.rejected)
   const md = await fs.readFile(path.join(root, saved.md), 'utf8')
-  t('默认全不勾', md.includes('- [ ] `woodwork` 手艺 / 熟手') || md.includes('- [ ] 手艺 / 熟手'), md.split('\n').slice(0, 20).join('|'))
+  t('默认全不勾', md.includes('- [ ] `craft` 手艺 / 熟手') || md.includes('- [ ] 手艺 / 熟手'), md.split('\n').slice(0, 20).join('|'))
   t('列出了丢弃原因', md.includes('已丢弃') && md.includes('找不到'), md.slice(-600))
 }
 
@@ -401,13 +401,13 @@ console.log('=== 14. 同一天再跑一次分析，不许覆盖上一轮 ===')
   // 连同「哪几条被丢掉」的记录一起悄悄盖掉。那不是更新，是丢数据。
   const r14 = path.join(tmpdir(), 'lifecard-test-resave-' + Date.now())
   await store.openWorkspace(r14, { create: true })
-  await store.appendMaterial(r14, 'a', '爷爷十六岁进作坊，干了三十七年。')
+  await store.appendMaterial(r14, 'a', '爷爷十几岁开始做这行，做了很多年。')
   const mats14 = await store.readMaterials(r14)
   const key14 = Object.keys(mats14)[0]
   const prop14 = {
     about: { id: 'yeye' },
     items: [
-      { field: 'life', value: '在作坊干活', source_level: '自述', evidence: { material: key14, quote: '十六岁进作坊' } },
+      { field: 'life', value: '在作坊干活', source_level: '自述', evidence: { material: key14, quote: '十几岁开始做这行' } },
       { field: 'competency', value: '编的', source_level: '自述', evidence: { material: key14, quote: '材料里绝对没有这句' } },
     ],
   }

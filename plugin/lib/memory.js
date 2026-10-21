@@ -3,7 +3,7 @@
  *
  * 只跑在宿主侧（Node）。不联网、不调模型。
  *
- * 为什么要有这一层：用户脑子里的人是散在记忆里的——「父亲在XXXX 公司」
+ * 为什么要有这一层：用户脑子里的人是散在记忆里的——「父亲在 XXXX 公司」
  * 「爷爷在 a 市做手艺」——每条都只说了半件事。人不会为了做卡把这些重抄一遍，
  * 但软件可以先把它们捞出来，摆成「这几个人我认出来了，要不要开始」。
  *
@@ -58,7 +58,7 @@ const KIN_WORDS = [
  * 只认两种最明确的写法，其余一律不认：
  *   **父亲＝张三**        等号前后各一个词
  *   **父亲张三**          关系词后面直接粘着两个字以上的名字
- * 以及裸的 `父亲在XXXX 公司`（只知道关系，不知道名字）。
+ * 以及裸的 `父亲在 XXXX 公司`（只知道关系，不知道名字）。
  *
  * 为什么不认「他父亲叫张三」这类更复杂的句式：
  * 中文人名没有分隔符，「叫」后面跟几个字全看语感，正则判不准。
@@ -85,7 +85,7 @@ function findPerson(line, strict = false) {
   // 单独立出来，是因为「王先生」这种叫法后面往往直接接动词
   // （「师傅王先生只收过父亲一个徒弟」），靠标点断开判不出来。
   // 「先生」「院士」这类后缀是明确的称呼结尾，认它不容易误伤：
-  // 「爷爷a 市手艺」里没有后缀，仍然走下面那条更严的判断。
+  // 「爷爷在 a 市做手艺」里没有后缀，仍然走下面那条更严的判断。
   const titled = text.match(/(父亲|母亲|爷爷|奶奶|外公|外婆|师傅|师父|导师|老师)([\u4e00-\u9fa5]{1,2}(?:先生|女士|医生|教授|院士))/)
   // 「父亲是教授」的后缀是「教授」，但前面的「是」是动词不是姓——
   // 姓用一个字是常见的（「王先生」全名就两字），所以这里只挡动词/虚词。
@@ -405,6 +405,43 @@ export function renderMemoryMaterial(people, meta = {}) {
     if (p.missing.length > 0) lines.push('', `（还缺：${p.missing.join('、')}）`)
     lines.push('')
   }
+  return lines.join('\n')
+}
+
+/**
+ * 一个人一份材料。
+ *
+ * 和上面那份「一次全给你」不同，这里只写一个人：之后让 AI 读的时候，
+ * 它手上只有关于这个人的句子，不会顺手把父亲的职业写到爷爷头上。
+ * 一条材料只装一个人，是这套东西里最便宜的隔离。
+ *
+ * @param {{kin: string, name: string, lines: string[], sources?: string[], missing: string[]}} person
+ * @param {{read_at?: string}} [meta]
+ * @returns {string} 一段 Markdown
+ */
+export function renderPersonMaterial(person, meta = {}) {
+  const title = person.name === '' ? person.kin : `${person.kin}：${person.name}`
+  const lines = []
+  lines.push(`# ${title}`)
+  lines.push('')
+  lines.push('> 这份是从本机记忆和项目档案里摘出来的原话。只有提到过他的句子，没有推断。')
+  if (typeof meta.read_at === 'string') lines.push(`> 摘录时间：${meta.read_at}`)
+  if (Array.isArray(person.sources) && person.sources.length > 0) {
+    lines.push(`> 来自：${person.sources.join('、')}`)
+  }
+  lines.push('')
+  if (Array.isArray(person.missing) && person.missing.length > 0) {
+    lines.push('## 还缺什么')
+    lines.push('')
+    lines.push(`这份材料里没写到：${person.missing.join('、')}。可以补，也可以先空着。`)
+    lines.push('')
+  }
+  lines.push('## 提到他的原话')
+  lines.push('')
+  // 原话用引用块，一行一句。逐字保留是刻意的：AI 说的每一句都要能
+  // 指回这些行，改一个字就指不回去了。
+  for (const l of person.lines) lines.push(`> ${l}`)
+  lines.push('')
   return lines.join('\n')
 }
 

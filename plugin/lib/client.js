@@ -481,6 +481,11 @@ const CSS = `
 .lc-chip.add { border-style: dashed; }
 .lc-chip.add.on { border-style: solid; font-weight: 400; }
 .lc-chip.sm { padding: 3px 9px; font-size: 11.5px; }
+
+/* 「或者直接写」那一段被打字栏接管时的样子。
+   强调色从上面那排词挪到这里——一次只能有一个地方是「正在生效的」，
+   两个地方同时亮着，人就会以为要同时填两处。 */
+.lc-input.picked { border-color: var(--lc-interview); background: var(--lc-interview-soft); }
 /* 「还有什么」收起时只是一行灰字——它不是一栏，是一个可以点开的小口子 */
 .lc-more { margin-top: 2px; }
 .lc-more-open {
@@ -707,6 +712,8 @@ function LifeCardTab(props) {
   const [activeWorld, setActiveWorld] = useState(null)
   // 从一份「这个人还没有卡」的建议跳去新建时，把名字带过去。
   const [pendingAbout, setPendingAbout] = useState('')
+  // 第一次打开时那段简短介绍看过了没有。null = 还不知道（还没问过宿主）
+  const [introSeen, setIntroSeen] = useState(null)
   const mounted = useRef(true)
 
   useEffect(() => () => { mounted.current = false }, [])
@@ -739,6 +746,21 @@ function LifeCardTab(props) {
   }, [])
 
   useEffect(() => { refresh() }, [refresh])
+
+  // 第一次进来时那段简短介绍，看过没有。
+  // 只有真的打开了库才问（还没选文件夹时问也问不出什么），问到一次就不再问。
+  useEffect(() => {
+    if (state === null || state.exists !== true || introSeen !== null) return
+    call('ui.intro', {}).then((r) => {
+      if (!mounted.current) return
+      setIntroSeen(r?.ok === true && r.seen === true)
+    }).catch(() => { if (mounted.current) setIntroSeen(true) })
+  }, [state, introSeen])
+
+  const dismissIntro = useCallback(async () => {
+    setIntroSeen(true)
+    try { await call('ui.intro', { seen: true }) } catch { /* 记不住就算了，下次再介绍一遍不碍事 */ }
+  }, [])
 
   // 首次没有工作区 → 进 setup
   useEffect(() => {
@@ -867,7 +889,7 @@ function LifeCardTab(props) {
       [VIEWS.setup]: '选个文件夹',
       [VIEWS.newCard]: '新建一张卡',
       [VIEWS.world]: activeWorld?.data?.name ?? '这本世界书',
-      [VIEWS.jobs]: '看工作',
+      [VIEWS.jobs]: '下一步',
     }
     // 「选个文件夹」页一般不该有返回按钮（还没地方可回），
     // 但已经选过文件夹、是从首页主动进来换的时候要能退回去。
@@ -908,7 +930,13 @@ function LifeCardTab(props) {
           onAnalyze: (about) => { setInterviewFor(about ?? null); setView(VIEWS.analyze) },
         })
       case VIEWS.memory:
-        return h(MemoryView, { onBack: () => setView(VIEWS.home), onDone: () => setView(VIEWS.analyze) })
+        // 提取完直接跳到「让 AI 读」，省掉用户自己再想「我刚存的材料去哪了」。
+        // about 是个字符串，这个人还没建卡也能分析——分析结果会进提案，
+        // 采纳时才建卡。
+        return h(MemoryView, {
+          onBack: () => setView(VIEWS.home),
+          onDone: (about) => { setInterviewFor(about ?? null); setView(VIEWS.analyze) },
+        })
       case VIEWS.analyze:
         return h(AnalyzeView, {
           listing, state, flash, presetAbout: interviewFor,
@@ -922,7 +950,7 @@ function LifeCardTab(props) {
         // 直接退回首页，用户点了没反应，还以为坏了。现在把清单单独摊开。
         return activeCard === null
           ? proposal === null
-            ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+            ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
             : h('div', { className: 'lc-pad lc-stack' },
                 proposal.about === undefined || String(proposal.about).trim() === ''
                   ? null
@@ -964,7 +992,7 @@ function LifeCardTab(props) {
         })
       case VIEWS.world:
         return activeWorld === null
-          ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+          ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
           : h(WorldView, {
               world: activeWorld,
               listing,
@@ -975,7 +1003,7 @@ function LifeCardTab(props) {
       case VIEWS.jobs:
         return h(JobsView, { onBack: () => setView(VIEWS.home), flash })
       default:
-        return h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+        return h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
     }
   }
 
@@ -1044,7 +1072,7 @@ function SetupView({ state, onDone }) {
 
 // ── 首页 ──────────────────────────────────────────────────────────
 
-function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore }) {
+function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone }) {
   const [q, setQ] = useState('')
   const cards = listing?.cards ?? []
   const filtered = useMemo(() => {
@@ -1072,8 +1100,29 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
     return { real, fic, other }
   }, [filtered])
 
+  // 第一次进来时那段介绍。只出现一次，点过「知道了」就不再出现。
+  // 刻意只有四五行：介绍写长了没人读，读的人也只想知道「这玩意儿干吗的、从哪儿下手」。
+  const introBlock = intro !== true
+    ? null
+    : h('div', { className: 'lc-note', style: { marginBottom: 2 } },
+        h('div', { style: { fontWeight: 650, marginBottom: 4 } }, '这是做什么的'),
+        h('div', { style: { lineHeight: 1.7 } },
+          '把身边的人写成一张卡：他做过什么、怎么说话、你们之间发生过什么。写得越具体，AI 越像他。',
+        ),
+        h('div', { style: { lineHeight: 1.7, marginTop: 4 } },
+          '两种进来：让 AI 问你几个问题边聊边建，或者把别人给的卡拖进来。也可以自己一张空表慢慢填。',
+        ),
+        h('div', { style: { lineHeight: 1.7, marginTop: 4 } },
+          '卡都存在你自己选的文件夹里，是纯文本，用记事本就能打开看。',
+        ),
+        h('div', { className: 'lc-row', style: { marginTop: 6 } },
+          h(Btn, { size: 'sm', tone: 'primary', onClick: onIntroDone }, '知道了'),
+        ),
+      )
+
   if (cards.length === 0 && allWorlds.length === 0) {
     return h('div', { className: 'lc-pad lc-stack' },
+      introBlock,
       h('div', { className: 'lc-empty', style: { padding: '18px 8px 10px' } },
         h('div', { className: 'lc-empty-icon' }, h(Icon, { name: 'book', size: 22 })),
         h('h3', null, '还没有档案'),
@@ -1101,6 +1150,7 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
   }
 
   return h('div', { className: 'lc-pad lc-stack' },
+    introBlock,
     h('div', { className: 'lc-row' },
       h('input', { className: 'lc-input', value: q, onChange: (e) => setQ(e.target.value), placeholder: '找找看…', spellCheck: false }),
       h(Btn, { tone: 'primary', size: 'sm', icon: 'plus', onClick: () => onNavigate(VIEWS.newCard), title: '新建一张卡' }, '新建'),
@@ -1110,7 +1160,7 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
       h(Btn, { tone: 'interview', size: 'sm', icon: 'chat', onClick: () => onNavigate(VIEWS.interview) }, '聊着建'),
       h(Btn, { tone: 'import', size: 'sm', icon: 'import', onClick: () => onNavigate(VIEWS.import) }, '导入'),
       h(Btn, { tone: 'analyze', size: 'sm', icon: 'person', onClick: () => onNavigate(VIEWS.memory), title: '从你写过的记忆里认出身边的人' }, '从记忆里认人'),
-      h(Btn, { tone: 'primary', size: 'sm', icon: 'briefcase', onClick: () => onNavigate(VIEWS.jobs), title: '贴一份招聘说明，看看该不该投' }, '看工作'),
+      h(Btn, { tone: 'primary', size: 'sm', icon: 'briefcase', onClick: () => onNavigate(VIEWS.jobs), title: '贴一份招聘说明，看看该不该投；或者练一轮面试' }, '下一步'),
       h('div', { className: 'lc-grow' }),
       materials.length === 0 ? null : h(Btn, { tone: 'analyze', size: 'sm', icon: 'spark', onClick: () => onNavigate(VIEWS.analyze) }, `整理 ${materials.length} 份材料`),
     ),
@@ -2418,6 +2468,9 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
   // 「还有什么」默认收起：一行灰字，点开才出输入框
   const [showExtras, setShowExtras] = useState(false)
   const [extrasText, setExtrasText] = useState('')
+  // 光标在下面那条打字栏里，或者打字栏里已经有字：
+  // 这时候「正在生效的关系」是那句话，不上面那排词。
+  const [customFocus, setCustomFocus] = useState(false)
   const [plan, setPlan] = useState(null)
   const [queue, setQueue] = useState([])
   const [current, setCurrent] = useState(null)
@@ -2430,6 +2483,10 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
 
   // 宿主给什么就用什么；一个都没有（还没重启、旧版宿主）就用本地这份。
   const relations = (state?.relations?.length ?? 0) > 0 ? state.relations : RELATION_FALLBACK
+
+  // 「自己写」生效中：光标在那条打字栏里，或者里面已经有字。
+  // 只在这时候，强调色才从上面那四个词挪到打字栏。
+  const typing = customFocus || customRelation.trim() !== ''
 
   useEffect(() => {
     if (scrollRef.current !== null) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
@@ -2553,14 +2610,16 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
           RELATION_QUICK.map((r) => h('button', {
             key: r.id,
             type: 'button',
-            className: `lc-chip ${customRelation.trim() === '' && relation === r.id ? 'on' : ''}`,
-            onClick: () => { setRelation(r.id); setCustomRelation('') },
+            className: `lc-chip ${!typing && relation === r.id ? 'on' : ''}`,
+            onClick: () => { setRelation(r.id); setCustomRelation(''); setCustomFocus(false) },
           }, r.label)),
         ),
         h('input', {
-          className: 'lc-input',
+          className: `lc-input ${typing ? 'picked' : ''}`,
           style: { marginTop: 8 },
           value: customRelation,
+          onFocus: () => setCustomFocus(true),
+          onBlur: () => setCustomFocus(false),
           onChange: (e) => {
             const v = e.target.value
             setCustomRelation(v)
@@ -2776,6 +2835,10 @@ function MemoryView({ onDone, onBack }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const [msg, setMsg] = useState(null)
+  // 提取完每人一份材料之后，这里列出「谁已经准备好了」，每人后面挂一个
+  // 「让 AI 读这个人的」。没有这一栏，用户点完「存成材料」就断了线，
+  // 得自己回首页想「刚存的东西在哪」。
+  const [made, setMade] = useState(null)
 
   useEffect(() => {
     let alive = true
@@ -2800,12 +2863,15 @@ function MemoryView({ onDone, onBack }) {
   if ((scan?.archive_files ?? 0) > 0) where.push(`${scan.archive_files} 篇项目档案`)
   const whereText = where.length === 0 ? '' : `在${where.join('和')}里，`
 
-  const importChosen = async () => {
-    setBusy(true); setErr(null); setMsg(null)
+  // 一个人一份材料。分开存，之后让 AI 读某一个人时它手上只有关于这个人的
+  // 句子，不会把别人的事混进来。
+  const extractChosen = async () => {
+    setBusy(true); setErr(null); setMsg(null); setMade(null)
     try {
-      const r = await call('memory.import', { people: chosen })
-      if (r.ok !== true) { setErr(r.error ?? '没导进来'); return }
-      setMsg({ tone: 'ok', text: `存好了。${r.count} 个人写进材料，${r.incomplete} 个还缺东西。` })
+      const r = await call('memory.extract', { people: chosen })
+      if (r.ok !== true) { setErr(r.error ?? '没存上'); return }
+      setMade(r.files ?? [])
+      setMsg({ tone: 'ok', text: `存好了，一人一份，共 ${r.count} 份。${r.incomplete > 0 ? `其中 ${r.incomplete} 个人的材料还不全。` : ''}` })
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
   }
 
@@ -2867,11 +2933,26 @@ function MemoryView({ onDone, onBack }) {
     err === null ? null : h(Err, { text: err }),
     msg === null ? null : h(Note, { tone: msg.tone, icon: 'check' }, msg.text),
 
+    // 存完之后一人一行，各自能直接开始分析。
+    // 这一步是整个流程的关节：认出人 → 一人一份材料 → 挑一个人让 AI 读。
+    made === null || made.length === 0
+      ? null
+      : h('div', { className: 'lc-stack' },
+          h('div', { className: 'lc-meta' }, '接下来挑一个人，让 AI 只读他那份。'),
+          made.map((f) => h('div', { key: f.key, className: 'lc-row', style: { alignItems: 'center' } },
+            h('span', { className: 'lc-grow' },
+              f.label,
+              (f.missing ?? []).length === 0
+                ? null
+                : h('span', { className: 'lc-meta' }, ` · 还缺 ${f.missing.length} 样`)),
+            h(Btn, { size: 'sm', tone: 'analyze', icon: 'spark', onClick: () => onDone?.({ id: f.id, name: f.label }) }, '让 AI 读 TA'),
+          )),
+        ),
+
     h('div', { className: 'lc-row' },
       people.length === 0
         ? null
-        : h(Btn, { tone: 'primary', icon: 'check', onClick: importChosen, disabled: busy || chosen.length === 0 }, busy ? '正在存…' : `就这几个人（${chosen.length}）`),
-      msg === null ? null : h(Btn, { tone: 'analyze', icon: 'spark', onClick: () => onDone?.() }, '让 AI 读一读'),
+        : h(Btn, { tone: 'primary', icon: 'check', onClick: extractChosen, disabled: busy || chosen.length === 0 }, busy ? '正在存…' : `存成材料（${chosen.length} 份）`),
       h('div', { className: 'lc-grow' }),
       h(Btn, { onClick: onBack }, '回去'),
     ),
@@ -3165,7 +3246,7 @@ function scoreSection(report, onOpenCard) {
   )
 }
 
-// ── 看工作 ────────────────────────────────────────────────────────
+// ── 下一步（求职 / 面试 / 简历） ────────────────────────────────────────────────────────
 
 /** 投递状态的中文说法。和宿主侧 jobs-store.js 那份是同一套，改的时候两边一起改。 */
 const TRACK_LABEL = {
@@ -3180,7 +3261,11 @@ const TRACK_LABEL = {
 }
 
 /**
- * 「看工作」这一页。
+ * 「下一步」这一页。
+ *
+ * 为什么叫这个名字：它管的不只是「找工作」——改简历、练面试、
+ * 想清楚接下来半年怎么走，都是同一件事的不同阶段。叫「看工作」
+ * 会让人以为只有投简历那天才用得上。
  *
  * 只有一件事：把一份招聘说明贴进来，换回一张「哪里会卡住你」的清单。
  * 刻意没有的东西：批量投递、自动发信、岗位推荐流。这三样都会让人
@@ -3327,7 +3412,7 @@ function JobsView({ onBack, flash }) {
       ),
       showProfile !== true ? null : h('div', { className: 'lc-stack', style: { marginTop: 8 } },
         profileFound === false
-          ? h(Note, { tone: 'warn', icon: 'warning' }, '还没有「我自己」那张卡，这里填的东西没地方存。先去建一张，或者先跳过——不留这些也能看工作。')
+          ? h(Note, { tone: 'warn', icon: 'warning' }, '还没有「我自己」那张卡，这里填的东西没地方存。先去建一张，或者先跳过——不留这些也能往下走。')
           : null,
         h(Field, { label: '想做什么', hint: '写方向就行：「后端」「新媒体运营」。' },
           h('input', { className: 'lc-input', value: shownRoles, onChange: (e) => setDraftRoles(e.target.value), placeholder: '后端开发', spellCheck: false }),

@@ -341,7 +341,7 @@ console.log('\n=== 9. 名字要逐字对上，不做「大概认识」 ===')
   t('没提到就是空', jobs.findNetwork(cards, '某家不存在的公司').length === 0)
   t('空公司名不返回全库', jobs.findNetwork(cards, '').length === 0)
   t('一个字也太宽，不算', jobs.findNetwork(cards, '他').length === 0)
-  t('不是数组也不崩', jobs.findNetwork(undefined, '煤炭').length === 0)
+  t('不是数组也不崩', jobs.findNetwork(undefined, 'XXXX').length === 0)
   t('关系词也能命中', jobs.findNetwork([{ path: 'people/x.card.md', data: { id: 'x', kind: 'real', name: 'X', relation: 'XXXX 公司的同事' }, sections: [] }], 'XXXX 公司').length === 1)
 
   const md = jobs.renderNetwork(hits, 'XXXX 公司')

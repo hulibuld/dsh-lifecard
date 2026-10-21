@@ -28,7 +28,7 @@ console.log('\n记忆提取')
   t('关系词也带出来了', p[0].kin === '父亲')
 }
 {
-  const p = memory.findPeople('**爷爷**在 a 市做手艺，用旧料把父亲打进了a 中学。')
+  const p = memory.findPeople('**爷爷**在 a 市做手艺。')
   t('加粗包住的关系词认得出', p.length >= 1 && p[0].kin === '爷爷')
   t('爷爷没有名字时不瞎编', p[0].name === '')
 }
@@ -43,12 +43,12 @@ console.log('\n记忆提取')
   t('「住爷爷奶奶家」不算又认出个奶奶', !kins.includes('奶奶'), kins.join(','))
 }
 {
-  const p = memory.findPeople('父亲在XXXX 公司，母亲在YYYY 公司。')
+  const p = memory.findPeople('父亲在 XXXX 公司，母亲在 YYYY 公司。')
   const kins = p.map((x) => x.kin).sort()
   t('一句话里并列两个人，都要认出来', kins.includes('父亲') && kins.includes('母亲'), kins.join(','))
 }
 {
-  const p = memory.findPeople('父亲在XXXX 公司（工程师）')
+  const p = memory.findPeople('父亲在 XXXX 公司（工程师）')
   t('「父亲在浙江」不把「在浙江」当人名', p.every((x) => x.name === ''))
 }
 
@@ -81,8 +81,8 @@ console.log('\n记忆提取')
 {
   const bank = (s) => memory.findPeople(s)[0]?.bank
   t('父亲→父母那套题', bank('父亲＝张三，1970 年生。') === 'parent')
-  t('爷爷→祖辈那套题', bank('爷爷是手艺，1960 年生。') === 'grandparent')
-  t('师傅→老师那套题', bank('师傅是手艺，1930 年生。') === 'teacher')
+  t('爷爷→祖辈那套题', bank('爷爷是手艺人，1970 年生。') === 'grandparent')
+  t('师傅→老师那套题', bank('师傅是手艺人，1970 年生。') === 'teacher')
   t('姐姐→兄弟姐妹那套题', bank('姐姐是医生，1998 年生。') === 'sibling')
 }
 
@@ -96,6 +96,38 @@ console.log('\n记忆提取')
   t('每个人一个二级标题', (md.match(/^## /gm) ?? []).length === people.length)
   t('缺东西的人标出还缺什么', md.includes('还缺'))
   t('没名字的人用关系词当标题', md.includes('## 母亲'))
+}
+
+// ── 6b. 一人一份材料 ─────────────────────────────────────
+// 一人一份是为了隔离：AI 读父亲那份时，手上不该有爷爷的句子。
+// 混在一起写出来的卡，最容易出现「把爷爷的手艺安到父亲头上」。
+{
+  const people = memory.findPeopleIn([
+    { label: '本机记忆', text: '父亲＝张三，1970 年生，在 XXXX 公司上班。母亲在 YYYY 公司。爷爷是手艺人，身体还好。' },
+  ])
+  const father = people.find((p) => p.name === '张三')
+  const one = memory.renderPersonMaterial(father, { read_at: '2026-10-20' })
+  t('一个人的材料有自己的标题', one.includes('# 父亲：张三'))
+  t('只写一个人（没有别人的名字）', !one.includes('爷爷'))
+  t('写明了只有提到过他的句子', one.includes('只有提到过他的句子'))
+  t('带摘录时间', one.includes('2026-10-20'))
+  t('有自己的原话小标题', one.includes('## 提到他的原话'))
+  t('原话是引用块', one.includes('\n> '))
+  // 逐字保留：AI 说的每句都要能指回这些原话，改一个字就指不回去了。
+  t('原话逐字留在材料里', one.includes('1970 年生'))
+  t('来自哪几个文件也说清了', one.includes('来自：'))
+
+  const mother = people.find((p) => p.kin === '母亲')
+  if (mother === undefined) {
+    t('母亲被认出来了（构造用）', false)
+  } else {
+    const another = memory.renderPersonMaterial(mother)
+    t('缺东西的人材料里单列一栏', another.includes('## 还缺什么'))
+    t('说清还缺哪几样', another.includes('没写到'))
+    t('不缺的人不出现这一栏', !one.includes('## 还缺什么'))
+    t('没给时间时不留空括号', !another.includes('摘录时间：undefined'))
+  }
+  t('空人也能渲染（不崩）', typeof memory.renderPersonMaterial({ kin: '某人', name: '', lines: [], missing: [] }) === 'string')
 }
 
 // ── 7. 读文件 ────────────────────────────────────────────
@@ -183,14 +215,14 @@ console.log('\n记忆提取')
   t('严格模式下带称呼的写法照样认得出', clearHits.some((p) => p.name === '王先生'))
 
   // 严格模式下裸的关系词（没名没姓）仍然认，只是名字为空
-  const bare = memory.findPeople('父亲在XXXX 公司。', true)
+  const bare = memory.findPeople('父亲在 XXXX 公司。', true)
   t('严格模式下裸的关系词还认（名字留空）', bare.some((p) => p.kin === '父亲' && p.name === ''))
 }
 
 // ── 7d. 多来源合并：档案只补充你已经写过的人，不凭空造人 ────────────
 {
   const sources = [
-    { label: '本机记忆', text: '父亲＝张三。爷爷a 市手艺。' },
+    { label: '本机记忆', text: '父亲＝张三。爷爷在 a 市做手艺。' },
     { label: '某份档案', text: '父亲关系不好。爷爷的手艺很好。老师那天也在。', strict: true },
   ]
   const people = memory.findPeopleIn(sources)

@@ -286,7 +286,29 @@ renderRoot('首页（有数据）', base('home'))
 renderRoot('首页（空）', base('home', { 2: { ok: true, cards: [], materials: [], proposals: [], worlds: [], errors: [] } }))
 renderRoot('首页（展开更多工具）', base('home', { 10: true }))
 renderRoot('记忆（从首页进来）', base('memory'))
-renderRoot('看工作（从首页进来）', base('jobs'))
+renderRoot('下一步（从首页进来）', base('jobs'))
+
+// ── 第一次打开时那段简短介绍 ────────────────────────────────────
+// 只出现一次。写长了没人读，所以这里连内容一起钉住。
+// hook 槽 13 = introSeen：null 还不知道 / true 看过了 / false 该介绍
+{
+  const before = visibleText.length
+  renderRoot('首页（第一次打开）', base('home', { 13: false }))
+  const joined = visibleText.slice(before).join('|')
+  t('第一次打开有介绍', joined.includes('这是做什么的'), joined.slice(0, 160))
+  t('介绍说清了要写什么', joined.includes('他做过什么'))
+  t('介绍说了两种开始方式', joined.includes('边聊边建') && joined.includes('拖进来'))
+  t('介绍说清了卡存在自己选的文件夹里', joined.includes('纯文本'))
+  t('介绍末尾有个「知道了」', joined.includes('知道了'))
+  const seenBefore = visibleText.length
+  renderRoot('首页（介绍看过了）', base('home', { 13: true }))
+  const gone = visibleText.slice(seenBefore).join('|')
+  t('看过之后这段不再出现', !gone.includes('这是做什么的'), gone.slice(0, 160))
+  const emptyBefore = visibleText.length
+  renderRoot('首页（空库第一次打开）', base('home', { 2: { ok: true, cards: [], materials: [], proposals: [], worlds: [], errors: [] }, 13: false }))
+  const emptyJoined = visibleText.slice(emptyBefore).join('|')
+  t('库里什么都没有的时候也先介绍一遍', emptyJoined.includes('这是做什么的'))
+}
 
 // ── 点一下会怎样：首页那几个入口是「从头开始」的意思 ────────────────
 // 渲染树里的 onClick 是真的闭包，调它就能看到状态被改成了什么。
@@ -724,16 +746,22 @@ if (seen.has('CardRow')) {
   }, { 0: '手写' })
 }
 
-// ── 看工作 ──────────────────────────────────────────────────────
+// ── 下一步（求职 / 面试 / 简历） ─────────────────────────────────
 // 求职页最容易犯的错是「报喜不报忧」：把匹配的列一堆，把挡住的藏在最后。
 // 这里的断言按屏幕上出现的先后顺序核对。
 {
   const before = visibleText.length
-  renderRoot('看工作（空表单）', base('jobs'))
+  renderRoot('下一步（空表单）', base('jobs'))
   const joined = visibleText.slice(before).join('|')
   t('求职页有招聘说明输入框', joined.includes('招聘说明'), joined.slice(0, 200))
   t('求职页说清了要贴整段', joined.includes('整段'))
   t('求职页的按钮说的是看工作', joined.includes('看看这份工作'))
+  // 这个入口叫「下一步」，不叫「看工作」——它管的不只是找工作
+  const homeBefore = visibleText.length
+  renderRoot('首页（有下一步入口）', base('home'))
+  const homeJoined = visibleText.slice(homeBefore).join('|')
+  t('首页那个入口叫「下一步」', homeJoined.includes('下一步'), homeJoined.slice(0, 200))
+  t('首页不再叫「看工作」', !homeJoined.includes('看工作'))
   t('求职设置默认收起', joined.includes('你想找什么样的工作'))
   t('求职页不出现投递按钮', !joined.includes('一键投递') && !joined.includes('自动投递'))
 }
@@ -753,7 +781,7 @@ if (seen.has('CardRow')) {
   }
   // 报告组件只有「读过一份 JD」之后才出现在树上，所以要先把 JobsView
   // 推到有报告的那一格，让它把 JobReport 交给 seen。
-  renderOne('看工作（已经读过一份）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, { 4: REPORT })
+  renderOne('下一步（已经读过一份）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, { 4: REPORT })
   const before = visibleText.length
   const tree = renderOne('求职报告（有挡住的也有对得上的）', seen.get('JobReport'), { report: REPORT })
   const joined = visibleText.slice(before).join('|')
@@ -776,7 +804,7 @@ if (seen.has('CardRow')) {
 {
   // 「这家公司我认识谁」是这一页独有的东西，按钮和结果都得真的出得来
   const before = visibleText.length
-  renderOne('看工作（报告之后能问认识谁）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
+  renderOne('下一步（报告之后能问认识谁）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
     4: { company: '某公司', role: '后端', blocked: [], matched: [], gaps: [], unclear: [], questions: [], warnings: [], dropped: [] },
   })
   const joined = visibleText.slice(before).join('|')
@@ -785,7 +813,7 @@ if (seen.has('CardRow')) {
 }
 {
   const before = visibleText.length
-  renderOne('看工作（认识的谁查出来了）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
+  renderOne('下一步（认识的谁查出来了）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
     4: { company: '某公司', role: '后端', blocked: [], matched: [], gaps: [], unclear: [], questions: [], warnings: [], dropped: [] },
     12: { ok: true, company: '某公司', hits: [{ path: 'people/baba.card.md', name: '爸爸', relation: '父亲', field: '地址', line: 'XXXX 公司' }] },
   })
@@ -796,7 +824,7 @@ if (seen.has('CardRow')) {
 }
 {
   const before = visibleText.length
-  renderOne('看工作（没人提到这家公司）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
+  renderOne('下一步（没人提到这家公司）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
     4: { company: '某公司', role: '后端', blocked: [], matched: [], gaps: [], unclear: [], questions: [], warnings: [], dropped: [] },
     12: { ok: true, company: '某公司', hits: [] },
   })
@@ -806,13 +834,13 @@ if (seen.has('CardRow')) {
 {
   // 投递表：展开前只看到一个「我的投递」和条数；展开后才见行
   const before = visibleText.length
-  renderOne('看工作（投递表收起）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, { 15: false, 16: [] })
+  renderOne('下一步（投递表收起）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, { 15: false, 16: [] })
   const joined = visibleText.slice(before).join('|')
   t('投递表默认收起但看得见入口', joined.includes('我的投递'))
   t('没有记录时说「还没记」', joined.includes('还没记'))
 
   const before2 = visibleText.length
-  renderOne('看工作（投递表展开）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
+  renderOne('下一步（投递表展开）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
     15: true,
     16: [{ date: '2026-10-20', company: '某公司', role: '后端', status: 'applied', note: '内推' }],
   })
@@ -825,13 +853,13 @@ if (seen.has('CardRow')) {
 {
   // 面试故事：空的时候给入口，有内容时能读
   const before = visibleText.length
-  renderOne('看工作（还没有故事）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, { 17: true, 18: [] })
+  renderOne('下一步（还没有故事）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, { 17: true, 18: [] })
   const joined = visibleText.slice(before).join('|')
   t('故事区说清了为什么要写', joined.includes('临时想是来不及的'))
   t('故事区给了写法指引', joined.includes('什么情况'))
 
   const before2 = visibleText.length
-  renderOne('看工作（有面试故事）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
+  renderOne('下一步（有面试故事）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
     17: true,
     18: [{ title: '一次线上事故', body: '凌晨两点被告警叫起来。' }],
   })
@@ -854,7 +882,7 @@ if (seen.has('CardRow')) {
   const REPORT = { company: '某公司', role: '后端工程师', blocked: [], matched: [], gaps: [], unclear: [], questions: [], warnings: [], dropped: [] }
   const before = visibleText.length
   // 槽位：20 written / 21 writing（都排在最后，前面是老槽位）
-  renderOne('看工作（写了简历，有对不上的数字）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
+  renderOne('下一步（写了简历，有对不上的数字）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
     4: REPORT,
     20: { kind: 'resume', markdown: '# 李四\n\n## 经历\n- 把接口耗时降了 40%', path: 'jobs/resumes/x.md', warning: '这版里有 1 个数字在你材料里找不到：40%。投之前自己核一遍。' },
     23: null,
@@ -867,7 +895,7 @@ if (seen.has('CardRow')) {
   t('给了存成文件的路', joined.includes('存成文件'))
 
   const before2 = visibleText.length
-  renderOne('看工作（写了求职信）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
+  renderOne('下一步（写了求职信）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, {
     4: REPORT,
     20: { kind: 'cover', markdown: '我做过一次交易系统重构。', path: null, warning: null },
     23: null,
@@ -879,7 +907,7 @@ if (seen.has('CardRow')) {
 
   // 没看过工作的时候，两个按钮都不该出现——不知道照谁改
   const before3 = visibleText.length
-  renderOne('看工作（还没看过任何工作）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, { 4: null })
+  renderOne('下一步（还没看过任何工作）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, { 4: null })
   const joined3 = visibleText.slice(before3).join('|')
   t('没看过工作就不给改简历', !joined3.includes('照这份改简历'))
   t('没看过工作就不给写求职信', !joined3.includes('写封求职信'))

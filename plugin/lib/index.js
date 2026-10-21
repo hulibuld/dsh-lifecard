@@ -965,6 +965,23 @@ function buildApi(ctx, workspace, config) {
       return { ok: true, concept: saved.concept }
     },
 
+    /**
+     * 第一次打开时那段简短介绍，看过了没有。
+     *
+     * 存在工作区配置里而不是浏览器里：用户换台机器、重装插件，
+     * 只要还是同一个文件夹，就不该再被同一段介绍拦一次。
+     * 但换了文件夹会再看一遍——那本来就是另一个库，该重新说一次。
+     */
+    'ui.intro': async (body) => {
+      const ws = await root(body)
+      const cfg = await store.readConfig(ws)
+      if (body?.seen === true) {
+        await store.writeConfig(ws, { intro_seen: true })
+        return { ok: true, seen: true }
+      }
+      return { ok: true, seen: cfg.intro_seen === true }
+    },
+
     // ── 求职 ────────────────────────────────────────────────────
     //
     // 「看一份招聘说明」是这个插件唯一会替你判断的事。它不问要不要投、
@@ -1552,6 +1569,56 @@ function buildApi(ctx, workspace, config) {
         memory_files: got.memory_files,
         archive_files: got.archive_files,
         people: got.people, // 已经含 clues / missing / sources，界面直接就能画
+      }
+    },
+
+    /**
+     * 一个人一份材料，各自独立。
+     *
+     * 和 memory.import 的区别：那个是把一群人合成一份，适合先总览；
+     * 这个是每人一份，好处是之后让 AI 读某个人时，它手上只有关于这个人的
+     * 句子——写父亲的时候不会顺手把爷爷的职业接上去。一条材料只装一个人，
+     * 是这套东西里最便宜的隔离。
+     *
+     * 同一份会覆盖，不追加：从记忆里「重新摘一遍」的意思是要最新的那份，
+     * 不是要第二份。追加会让 AI 读到两份重复的摘录。
+     */
+    'memory.extract': async (body) => {
+      const ws = await root(body)
+      const got = await gatherMemoryPeople()
+      if (got.found !== true) return { ok: false, error: '这台电脑上没找到记忆文件，也没找到项目档案。' }
+      const all = got.people
+      if (all.length === 0) return { ok: false, error: '记忆和项目档案里都没有认出具体的人。' }
+      const keyOf = (p) => (p.name !== '' ? `${p.kin}:${p.name}` : p.kin)
+      const wanted = Array.isArray(body?.people) && body.people.length > 0
+        ? all.filter((p) => body.people.includes(keyOf(p)))
+        : all
+      if (wanted.length === 0) return { ok: false, error: '勾选的人一个都没对上。' }
+      const at = new Date().toISOString().slice(0, 10)
+      const files = []
+      for (const p of wanted) {
+        const label = p.name !== '' ? p.name : p.kin
+        const md = memory.renderPersonMaterial(p, { read_at: at })
+        const saved = await store.appendMaterial(ws, `记忆-${label}`, md, { replace: true })
+        if (saved.ok !== true) return saved
+        files.push({
+          key: keyOf(p),
+          // 给「让 AI 读这个人」用：分析接口收的 about 就是个字符串，
+          // 所以这个人还没有卡也能直接分析。
+          id: core.safeId(label),
+          name: p.name,
+          kin: p.kin,
+          label,
+          path: saved.path,
+          missing: p.missing,
+        })
+      }
+      await store.rememberMemoryPeople(ws, wanted)
+      return {
+        ok: true,
+        files,
+        count: files.length,
+        incomplete: wanted.filter((p) => p.missing.length > 0).length,
       }
     },
 
