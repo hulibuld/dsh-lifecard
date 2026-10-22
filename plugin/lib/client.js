@@ -1137,7 +1137,7 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
       h(Action, {
         tone: 'import', icon: 'import',
         title: '把已有的角色卡拖进来',
-        desc: '别人给你的角色卡文件（.png 或 .json），放进来就能看。',
+        desc: '别人给你的角色卡，图片或导出的文件都行，放进来就能看。',
         onClick: () => onNavigate(VIEWS.import),
       }),
       h(Action, {
@@ -1543,7 +1543,7 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
     ),
     showExport === true
       ? h('div', { className: 'lc-stack' },
-          h(Btn, { size: 'sm', onClick: exportJson, disabled: busy !== '' }, '存成数据文件（.json）'),
+          h(Btn, { size: 'sm', onClick: exportJson, disabled: busy !== '' }, '存成数据文件'),
           h('div', { className: 'lc-meta' }, '一般来说用不上。别人要原始数据的时候才需要。'),
         )
       : null,
@@ -2753,7 +2753,7 @@ function ImportView({ busy, onImport, onAnalyze, listing }) {
           },
             h('div', { className: 'lc-empty-icon', style: { background: 'var(--lc-import-soft)', color: 'var(--lc-import)' } }, h(Icon, { name: 'import', size: 22 })),
             h('h3', null, drag ? '松手就行' : '把文件拖到这里，或者点一下去选'),
-            h('div', { className: 'lc-meta' }, '别人给你的角色卡（.png 图片或 .json 文件）都能读。', h('br'), '可以一次选好几个。'),
+            h('div', { className: 'lc-meta' }, '别人给你的角色卡都能读——图片也行，导出的文件也行。', h('br'), '可以一次选好几个。'),
             h('input', {
               ref: inputRef, type: 'file', multiple: true, accept: '.png,.json,.charx,.zip',
               style: { display: 'none' }, onChange: (e) => handleFiles(e.target.files),
