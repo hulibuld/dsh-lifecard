@@ -540,12 +540,29 @@ const CSS = `
 @keyframes lc-rotate { to { transform: rotate(360deg); } }
 `
 
+/**
+ * 把样式挂进 <head>，并返回一个「拿掉它」的函数。
+ *
+ * 一定要在 ctx.effect 里调：插件被卸载/重开时，效果要跟着回收。
+ * 以前是 apply 里直接插、没人负责删——重开一次就多一个 <style>，
+ * 虽然靠 id 挡住了重复，但卸载时那块样式会一直留在页面上。
+ */
 function ensureStyle(doc) {
-  if (doc.getElementById(STYLE_ID) !== null) return
+  const existing = doc.getElementById(STYLE_ID)
+  if (existing !== null && existing !== undefined) {
+    return () => {
+      if (typeof existing.remove === 'function') existing.remove()
+      else if (existing.parentNode?.removeChild !== undefined) existing.parentNode.removeChild(existing)
+    }
+  }
   const style = doc.createElement('style')
   style.id = STYLE_ID
   style.textContent = CSS
   doc.head.appendChild(style)
+  return () => {
+    if (typeof style.remove === 'function') style.remove()
+    else if (style.parentNode?.removeChild !== undefined) style.parentNode.removeChild(style)
+  }
 }
 
 // ── 小组件 ────────────────────────────────────────────────────────
@@ -4102,7 +4119,8 @@ const PANEL_ID = 'lifecard'
 const PANEL_ORDER = 35
 
 function apply(ctx) {
-  ensureStyle(document)
+  // 样式也算副作用：跟着插件一起上手、一起回收。
+  ctx.effect(() => ensureStyle(document), 'lifecard: 样式')
 
   // 一、挂到左侧栏那排图标里 —— 平时点开东西都是从那儿点的，比右侧栏的「+」好找。
   // 用 slots.inject：座位什么时候出现由外壳决定；没有这个座位就什么都不做，不影响启动。
