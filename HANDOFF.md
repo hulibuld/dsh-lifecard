@@ -62,18 +62,19 @@ LifeCard/
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `lib/client.js` | 3608 | **整个侧边栏界面**。纯手写，没有 React 依赖注入以外的框架 |
-| `lib/index.js` | 1883 | 宿主侧：55 条 HTTP 路由、调用模型、**注册访谈 skill**、路径越界闸、导出 consent 闸 |
-| `lib/store.js` | 1296 | 工作区、快照、墓碑 `redactions.jsonl`、提案与勾选旁路、头像、概念、草稿、doctor |
+| `lib/client.js` | 4007 | **整个侧边栏界面**。纯手写，没有 React 依赖注入以外的框架 |
+| `lib/index.js` | 2185 | 宿主侧：55 条 HTTP 路由、调用模型、**注册访谈 skill**、路径越界闸、导出 consent 闸 |
+| `lib/store.js` | 1303 | 工作区、快照、墓碑 `redactions.jsonl`、提案与勾选旁路、头像、概念、草稿、doctor |
 | `lib/core.js` | 1019 | 零依赖：YAML 子集解析/序列化、卡片校验、覆盖率、**引文校验门** |
 | `lib/codec.js` | 785 | PNG tEXt/iTXt 读写、CCv2/CCv3/CHARX、双 chunk 导出、保真字段 |
-| `lib/jobs.js` | 607 | **求职纯逻辑**：两遍读法、五档重要性 + 三档证据、一票否决、关系网找人、报告渲染。不联网不调模型 |
 | `lib/prompts.js` | 497 | 14 类关系视角 × 问题库（带 `bank` 映射）、`buildAnalyzePrompt` |
-| `lib/jobs-store.js` | 367 | 求职落盘：评估报告、投递表、故事银行、简历/求职信草稿、求职设置（存在 self 卡上） |
+| `lib/jobs.js` | 607 | **求职纯逻辑**：两遍读法、五档重要性 + 三档证据、一票否决、关系网找人、报告渲染。不联网不调模型 |
+| `lib/jobs-interview.js` | 434 | **模拟面试纯逻辑**：出题、判回答、读下一轮重点、收尾总结。三道闸：不碰背调／不编数字／不查隐私。不联网 |
+| `lib/jobs-store.js` | 437 | 求职落盘：评估报告、投递表、故事银行、面试存档、简历/求职信草稿、求职设置（存在 self 卡上） |
 | `lib/score.js` | 329 | **纯本地**体检打分 0–100、字数估算、占位符与世界书健康度 |
-| `lib/memory.js` | 262 | 从本机记忆文件里认出「你身边的人」，给出还缺什么 |
+| `lib/memory.js` | 454 | 从本机记忆文件里认出「你身边的人」，给出还缺什么 |
 | `skills/lifecard-interview/SKILL.md` | 192 | **会随包安装的那份**访谈 skill |
-| `test/` | 15 个在 `all.mjs` 里 + `live.mjs`，另有 `make-samples.mjs` | 1347 项断言 |
+| `test/` | 16 个在 `all.mjs` 里 + `live.mjs`，另有 `make-samples.mjs` | 1347 项断言 |
 | `locale/{zh,en}.json` | — | 侧栏 tab 的标题与描述 |
 | `cordis.patch.yml` | — | 装进 profile 时插入的插件条目 |
 | `node_modules/@deepseek-ai/schemastery` | — | 软链，见下面坑 #2 |
