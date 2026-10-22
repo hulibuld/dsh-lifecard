@@ -168,6 +168,19 @@ const PROPOSAL = {
   md: 'proposals/p1.md',
 }
 
+const PROPOSAL_OBJECTS = {
+  json: 'proposals/p2.json',
+  about: { id: 'mama', name: '妈妈' },
+  items: [
+    { field: 'knowledge', value: { knows: ['榫卯'], does_not_know: ['电路'] }, checked: true },
+    { field: 'address', value: { them_to_me: ['老张'], me_to_them: ['张叔'] }, checked: true },
+    { field: 'life', value: { dietary: ['清淡'], physical: ['腿不好'] }, checked: true },
+    { field: 'competency', value: { key: '做红烧肉', level: 'expert' }, checked: true },
+  ],
+  rejected: [],
+  md: 'proposals/p2.md',
+}
+
 const DOCTOR = {
   ok: true,
   counts: { cards: 4, worlds: 1, relations: 2, materials: 2, redactions: 0 },
@@ -643,6 +656,19 @@ if (seen.has('CardForm')) {
 
 if (seen.has('ProposalPanel')) {
   renderOne('建议面板', seen.get('ProposalPanel'), { proposal: PROPOSAL, onClose: () => {}, onApplied: async () => {} })
+}
+
+if (seen.has('ProposalPanel')) {
+  // 旧版把对象值 JSON.stringify 上屏：knows: ["榫卯"]；does_not_know: []
+  // 英文程度 expert 也直接露出来。这里用真实形状断言说人话。
+  const from = visibleText.length
+  renderOne('建议面板（对象值说人话）', seen.get('ProposalPanel'), { proposal: PROPOSAL_OBJECTS, onClose: () => {}, onApplied: async () => {} })
+  const text = visibleText.slice(from).join('\n')
+  t('knowledge 说成「知道 / 不知道」', /知道：榫卯/.test(text) && /不知道：电路/.test(text), text)
+  t('address 说成「他叫你 / 你叫他」', /他叫你：老张/.test(text) && /你叫他：张叔/.test(text), text)
+  t('life 说成「吃 / 身体」', /吃：清淡/.test(text) && /身体：腿不好/.test(text), text)
+  t('competency 的等级是中文', /做红烧肉：精通/.test(text), text)
+  t('对象值不再抖出字段名 / JSON / 英文等级', !/knows|does_not_know|them_to_me|me_to_them|JSON|expert/.test(text), text)
 }
 
 if (seen.has('HistoryPanel')) {

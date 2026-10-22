@@ -48,14 +48,10 @@ function defaultWorkspace() {
   return path.join(homedir(), 'LifeCard')
 }
 
-/** 从配置 + 运行时状态解析当前工作区。 */
-let runtimeWorkspace = null
-
-async function currentWorkspace(config) {
-  if (runtimeWorkspace !== null) return runtimeWorkspace
+/** 当前工作区：每次调用都从配置里现取，不往模块级塞状态。 */
+function currentWorkspace(config) {
   const configured = typeof config?.workspace === 'string' && config.workspace.trim() !== '' ? config.workspace.trim() : ''
-  runtimeWorkspace = configured !== '' ? path.resolve(configured) : defaultWorkspace()
-  return runtimeWorkspace
+  return configured !== '' ? path.resolve(configured) : defaultWorkspace()
 }
 
 // ── HTTP 小工具 ────────────────────────────────────────────────────
@@ -87,15 +83,31 @@ async function readBody(req, limit = 64 * 1024 * 1024) {
   }
 }
 
-/** 路由内统一的错误包装：永远返回 JSON，不让异常冒成 500 空响应。 */
-function guard(handler) {
-  return async (req, res) => {
-    try {
-      await handler(req, res)
-    } catch (error) {
-      writeJson(res, 500, { ok: false, error: { code: 'internal', message: String(error?.message ?? error) } })
-    }
+/**
+ * 把宿主抛出来的错误翻成人话。
+ *
+ * 规则与 lib/client.js 的 humanizeError 是同一套（浏览器包是自包含的，不能
+ * require 这一份；改一边要同步另一边）。最后一道判英文：EISDIR / ENOTDIR
+ * 这类 errno 不在上面的表里，翻不掉就统一压成一句通用中文，绝不上屏。
+ */
+function humanizeHostError(input) {
+  const raw0 = String(input?.message ?? input ?? '').trim()
+  if (raw0 === '' || raw0 === '[object Object]') return '这一步没做成，再试一次看看。'
+  const raw = raw0.replace(/^[A-Za-z]*Error:\s*/i, '').replace(/^Exception:\s*/i, '').trim()
+  if (/fetch failed|failed to fetch|networkerror|econnrefused|enotfound|load failed|network request failed/i.test(raw)) {
+    return '连不上后台。可能是软件刚启动还没准备好，等几秒再试一次。'
   }
+  if (/chara|ccv3|ccv2|chunk|charx|tEXt/i.test(raw)) {
+    return '这个文件里读不出角色信息。它可能不是角色卡，或者文件已经坏了。'
+  }
+  if (/enoent|no such file|不是文件夹|文件夹不存在/i.test(raw)) return '找不到那个位置了。它可能刚被移走或改名了，重新选一次。'
+  if (/eacces|eperm|permission|没有权限/i.test(raw)) return '没有权限动这个位置。换一个文件夹再试。'
+  if (/enospc|no space|磁盘满/i.test(raw)) return '磁盘满了，存不进去。清一点空间再试。'
+  if (/error|exception|undefined|null|nan|\[object/i.test(raw)) return '这一步没做成。等一会儿再试一次；还不行就重启一下软件。'
+  if (/[{}\[\]<>]/.test(raw)) return '这一步没做成。等一会儿再试一次；还不行就重启一下软件。'
+  // 还剩英文（EISDIR 这类 errno）：规则表没覆盖，也不能原样露给用户。
+  if (/[A-Za-z]{3,}/.test(raw)) return '后台没做成这一步，等一会儿再试一次；还不行就重启软件。'
+  return raw
 }
 
 /**
@@ -155,7 +167,7 @@ function exportBlockedBy(data, format) {
   if (kind === 'lens') {
     return {
       code: 'not-exportable',
-      message: 'lens 卡是永不可导出的偏好透镜——它描述的是「你怎么看」，不是一个人。',
+      message: '这是「我的偏好」那张卡，按设计不能导出给别人。',
     }
   }
   const consent = data?.consent
@@ -163,13 +175,13 @@ function exportBlockedBy(data, format) {
     if (String(consent.basis) === 'fictional' && (kind === 'real' || kind === 'self')) {
       return {
         code: 'consent-required',
-        message: 'kind 是 ' + String(kind) + ' 的卡不能用 consent.basis: fictional 来绕过同意——要么去拿到同意，要么把 kind 改成 fictional。',
+        message: '这张卡写的是真人，但不能把「对方是虚构的」当成同意。要么去拿到同意，要么把这张卡改成虚构人物。',
       }
     }
     if (String(consent.basis) === 'family-agreed' && (consent.recorded_at === undefined || String(consent.recorded_at).trim() === '')) {
       return {
         code: 'consent-incomplete',
-        message: 'consent.basis 是 family-agreed 时必须填 recorded_at（家属同意的日期），否则不能导出。',
+        message: '家属同意了，还要填上同意的日期才能导出。',
       }
     }
   }
@@ -538,14 +550,13 @@ async function gatherMemoryPeople() {
  * @param {any} config
  */
 function buildApi(ctx, workspace, config) {
+  const settings = config ?? {}
   const root = async (body) => {
-    // 允许请求里带 workspace（首次选择文件夹），否则用当前工作区
+    // 请求里带 workspace 只作用于这一次调用；要记住得走 workspace.init。
     if (typeof body?.workspace === 'string' && body.workspace.trim() !== '') {
-      const abs = path.resolve(body.workspace.trim())
-      runtimeWorkspace = abs
-      return abs
+      return path.resolve(body.workspace.trim())
     }
-    return await workspace()
+    return await currentWorkspace(settings)
   }
 
   return {
@@ -578,7 +589,7 @@ function buildApi(ctx, workspace, config) {
       const ws = await root(body)
       const opened = await store.openWorkspace(ws, { create: true })
       if (!opened.ok) return { ok: false, error: opened.error }
-      runtimeWorkspace = ws
+      settings.workspace = ws
       return { ok: true, workspace: ws, created: true }
     },
 
@@ -818,7 +829,28 @@ function buildApi(ctx, workspace, config) {
       const ws = await root(body)
       const filePath = String(body?.path ?? '').trim()
       if (filePath === '') return { ok: false, error: '没有选文件。' }
-      const abs = path.resolve(filePath.replace(/^~(?=\/|$)/, homedir()))
+      // 这条路由收的是「你在文件选择器里点的那个文件」，本来就常常在工作区外面
+      //（比如从下载文件夹里挑一份访谈记录），所以不能像别的路由那样只放行工作区
+      // 之内的路径——那样等于让「导入一段文字」这个功能失效。
+      // 但它确实是个不带凭据的 POST：网页上任何脚本都能往这里发一个路径。
+      // 所以按「只可能读到什么」来卡，而不是按「在哪里」来卡：
+      //   只认纯文本类后缀 + 只认普通文件（挡住 /dev/*）+ 8 MB 上限。
+      // 最坏情况是读到一份文本，读不到凭证、目录、整个盘。
+      const TEXT_EXT = new Set(['.txt', '.md', '.markdown', '.json', '.csv', '.log', '.yml', '.yaml', '.html', '.htm'])
+      const raw = filePath.replace(/^~(?=\/|$)/, homedir())
+      const base = path.resolve(ws)
+      const abs = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(base, raw)
+      if (!TEXT_EXT.has(path.extname(abs).toLowerCase())) {
+        return { ok: false, error: '这个格式暂时读不了。纯文本、Markdown、数据文件都可以；图片请用「导入角色卡」。' }
+      }
+      let stat
+      try {
+        stat = await fs.stat(abs)
+      } catch {
+        return { ok: false, error: '找不到这个文件。它可能刚被移走或改名了，重新选一次。' }
+      }
+      if (!stat.isFile()) return { ok: false, error: '这是一个文件夹，不是文件。' }
+      if (stat.size > 8 * 1024 * 1024) return { ok: false, error: '这个文件太大了（超过 8 MB 的纯文字很少见），换一个小一点的。' }
       let text
       try {
         text = await fs.readFile(abs, 'utf8')
@@ -2149,8 +2181,11 @@ function splitSkillFile(raw) {
 }
 
 export function apply(ctx, config) {
-  const workspace = () => currentWorkspace(config)
-  const api = buildApi(ctx, workspace, config ?? {})
+  // 同一个配置对象贯穿 apply 与 buildApi，workspace.init 把选择记在这里，
+  // 不写模块级变量，也不需要请求体每次都带 workspace。
+  const settings = config ?? {}
+  const workspace = () => currentWorkspace(settings)
+  const api = buildApi(ctx, workspace, settings)
 
   registerInterviewSkill(ctx)
 
@@ -2180,7 +2215,9 @@ export function apply(ctx, config) {
           const result = await handler(body)
           writeJson(res, 200, result)
         } catch (error) {
-          writeJson(res, 500, { ok: false, error: { code: 'internal', message: String(error?.message ?? error) } })
+          // 兜底 catch 也不能把 EISDIR 这类英文原样漏到界面上。
+          console.error('[lifecard] 路由没做成：', error)
+          writeJson(res, 500, { ok: false, error: { code: 'internal', message: humanizeHostError(error) } })
         }
       },
     }),

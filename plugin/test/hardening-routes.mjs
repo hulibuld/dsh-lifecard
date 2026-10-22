@@ -44,6 +44,14 @@ const table = api.buildApi(ctx, async () => ws, { workspace: ws })
 const badPath = (r) => r.ok === false && r.error !== null && typeof r.error === 'object' && r.error.code === 'bad-path'
 // 界面上会原样显示 error.message，所以不许出现内部词。
 const humanText = (r) => typeof r.error?.message === 'string' && r.error.message !== '' && !/workspace|工作区/i.test(r.error.message)
+// 行为断言用：拦截文案里一个技术词都不许有。
+// wording-test 只扫单行字面量，抓不到 `'kind 是 ' + kind` 这种拼接，所以这里真调路由。
+const TECH_WORDS = ['lens', 'kind', 'world', 'consent', 'basis', 'recorded_at', 'chunk', 'schema', 'JSON', 'json', 'proposal', 'frontmatter', 'snapshot', 'workspace', 'YAML']
+const plainText = (r) => {
+  const message = r.error?.message
+  if (typeof message !== 'string' || message === '') return false
+  return !TECH_WORDS.some((word) => message.includes(word))
+}
 
 const baseCard = (over = {}) => ({
   lifecard: '0.1',
@@ -218,6 +226,54 @@ console.log('\n=== 8. 导出门禁：不拦「real 完全没填 consent」（本
   const json = await table['export.json']({ path: rel })
   t('real 没填 consent 也能导出 JSON', json.ok === true, json.error ?? json.ok)
   t('PNG 导出返回了 base64', typeof png.base64 === 'string' && png.base64.length > 100, String(png.base64 ?? '').length)
+}
+
+console.log('\n=== 9. 拦截文案里没有技术词（每种拦截真调一次路由） ===')
+{
+  // 重新种一张「家属同意但没填日期」的卡：6d 已经把 fam.card.md 补成能导出了。
+  await table['card.save']({ path: 'people/fam-nodate.card.md', data: baseCard({ id: 'fam-nodate', name: '庚', consent: { basis: 'family-agreed' } }), sections: [], force: true })
+  const cases = [
+    ['「我的偏好」卡', 'people/lens.card.md', 'not-exportable'],
+    ['真人却填了虚构同意', 'people/rea-fic.card.md', 'consent-required'],
+    ['家属同意没填日期', 'people/fam-nodate.card.md', 'consent-incomplete'],
+    ['未满 18 岁的真人卡', 'people/minor.card.md', 'minor-no-png'],
+  ]
+  for (const [name, rel, code] of cases) {
+    const r = await table['export.card']({ path: rel })
+    t(`${name}被拦下且 code 不变`, r.ok === false && r.error?.code === code, r)
+    t(`${name}的提示没有技术词`, plainText(r), r.error?.message)
+  }
+  const normal = await table['export.card']({ path: 'people/adult.card.md' })
+  t('能导出的正常卡没被误伤', normal.ok === true, normal.error ?? normal.ok)
+}
+
+console.log('\n=== 10. 后台兜底 catch 不漏英文（EISDIR 这类 errno） ===')
+{
+  let handler = null
+  const sent = []
+  const res = {
+    status: 0,
+    writeHead(status) { this.status = status },
+    end(payload) { sent.push({ status: this.status, body: JSON.parse(String(payload)) }) },
+  }
+  const ctx2 = {
+    webServer: { register: (options) => { handler = options.handler; return () => {} } },
+    reflect: { get: () => undefined },
+    effect: (fn) => { fn(); return () => {} },
+    logger: { warn: () => {} },
+  }
+  api.apply(ctx2, { workspace: ws })
+  t('假 webServer 拿到了 handler', typeof handler === 'function', typeof handler)
+  await handler({
+    method: 'POST',
+    url: '/api/dsh-lifecard/card.get',
+    async *[Symbol.asyncIterator]() { throw new Error('EISDIR: illegal operation on a directory, read') },
+  }, res)
+  const got = sent[0]
+  t('兜底 catch 回 500', got?.status === 500, got?.status)
+  t('兜底 catch 带 internal code', got?.body?.error?.code === 'internal', got?.body?.error)
+  t('EISDIR 不会原样露到界面', typeof got?.body?.error?.message === 'string' && !/[A-Za-z]{3,}/.test(got.body.error.message), got?.body?.error?.message)
+  t('兜底文案仍然是中文', /[\u4e00-\u9fff]/.test(String(got?.body?.error?.message ?? '')), got?.body?.error?.message)
 }
 
 await fs.rm(ws, { recursive: true, force: true }).catch(() => {})

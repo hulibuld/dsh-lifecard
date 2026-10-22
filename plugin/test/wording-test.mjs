@@ -22,8 +22,11 @@ const t = (name, cond, extra) => {
 }
 
 // 和 render-all.mjs 里那份保持同一套词。那边扫界面，这边扫后台回话。
-const forbidden = ['JSON', 'chunk', 'tEXt', 'CHARX', 'CCv2', 'CCv3', 'Zod', 'schema', 'YAML',
+const forbidden = ['JSON', 'json', 'chunk', 'tEXt', 'CHARX', 'CCv2', 'CCv3', 'Zod', 'schema', 'YAML',
   'proposal', 'materials/', 'doctor', 'workspace', '.lifecard', 'tombstone', '墓碑', 'frontmatter']
+// 路由回话（index/store）是用户点「导出」时直接看到的，字段名一个都不许露。
+// core 的体检提示是数据诊断，字段名是定位用的，先不套这一层（另案处理）。
+const routeForbidden = ['lens', 'kind', 'world', 'consent', 'basis', 'recorded_at', 'snapshot']
 
 const files = ['index', 'store', 'core', 'score', 'codec', 'memory', 'jobs', 'jobs-store', 'jobs-interview']
 
@@ -59,7 +62,8 @@ for (const name of files) {
     // `${...}` 里的东西是代码，不是文案——界面上看到的是它算出来的值。
     // 不剥掉的话，`${String(data.lifecard)}` 会因为字段名叫 lifecard 而误报。
     const shown = s.text.replace(/\$\{[^}]*\}/g, '')
-    const bad = forbidden.filter((w) => shown.includes(w))
+    const words = name === 'index' || name === 'store' ? forbidden.concat(routeForbidden) : forbidden
+    const bad = words.filter((w) => shown.includes(w))
     if (bad.length > 0) offenders.push(`lib/${name}.js:${s.line} [${bad.join(',')}] ${s.text.slice(0, 120)}`)
   }
   t(`lib/${name}.js 回给界面的 ${strings.length} 句话是干净的`, offenders.length === 0, offenders.join(' | '))
