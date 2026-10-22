@@ -90,19 +90,22 @@ cd .../LifeCard/plugin
 
 # 1. 全量单元测试：1366 项
 node test/all.mjs
-# → roundtrip 23 / codec 52 / store 121 / score 51 / json-extract 10 / prompt 154
-#   client-smoke 27 / skill-register 18 / routes 63 / hardening-routes 46
-#   hardening-data 54 / render-all 128 / wording 12
+# → roundtrip 23 / codec 52 / store 157 / score 51 / memory 72 / jobs 148
+#   interview 112 / json-extract 10 / prompt 238 / client-smoke 27
+#   skill-register 20 / routes 85 / hardening-routes 46 / hardening-data 54
+#   render-all 255 / wording 16
 
 # 2. 对真实运行的 DSH 做端到端验收：14/14
 node test/live.mjs "$DSH_GUI"          # $DSH_GUI = 运行时上下文里那个 GUI URL
+# 退出码：0 = 真验过且全过 / 1 = 有项没过 / 2 = 没验（端口上没有本插件）
+# 这一步的 2 不算绿。以前跳过也返回 0，「没装」和「装好全过」长得一样。
 
-# 3. 界面文案自检：黑话零命中（界面 128 项 + 后台回话 12 项，已含在 all.mjs 里）
+# 3. 界面文案自检：黑话零命中（界面 255 项 + 后台回话 16 项，已含在 all.mjs 里）
 node test/render-all.mjs
 node test/wording-test.mjs
 ```
 
-**2026-10-22 06:05 的实测结果**：`all.mjs` 1366 项全过；`live.mjs` 14/14 全过。
+**2026-10-22 16:37 的实测结果**：`all.mjs` 1366 项全过；`live.mjs` 14/14 全过；`state.get` 200；git 工作区干净。
 
 live 那 14 项验的是：插件已激活 / 宿主有 llm / 建工作区 / 卡被列出 / 材料被列出 / 分析跑通 / 有可采纳条目 / 默认不勾选 / 每条都有引文 / 采纳成功 / 导出 PNG / 双 chunk 同源 / doctor 跑通 / 宿主段已写。
 

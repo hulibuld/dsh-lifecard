@@ -4,7 +4,9 @@
  * 这不是单元测试：它需要一个已经装好本插件的 dsh web 实例。
  *   node test/live.mjs http://127.0.0.1:50199
  *
- * 没有实例时它会明确跳过，而不是假装通过。
+ * 没有实例时它会明确跳过，而不是假装通过——**跳过的退出码是 2**，不是 0。
+ * 这一条很重要：退出码 0 代表「真的验过了」。以前跳过也返回 0，
+ * 于是自动化里「没装插件」和「装好了、全过」看起来一模一样。
  */
 const BASE = (process.argv[2] ?? 'http://127.0.0.1:50199').replace(/\/$/, '')
 const H = { 'content-type': 'application/json', 'Origin': BASE }
@@ -24,7 +26,8 @@ try {
 } catch (e) {
   console.log(`\n跳过：${BASE} 上没有本插件的路由（${e.message}）。`)
   console.log('先用 dsh --profile <装了本插件的 profile> --port 50199 --no-open 起一个实例。')
-  process.exit(0)
+  console.log('\n退出码 2 = 没验，不等于通过。别把这一步当成绿了。')
+  process.exit(2)
 }
 
 t('插件已激活', st.ok === true)
