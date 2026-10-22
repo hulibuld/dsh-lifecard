@@ -868,7 +868,9 @@ function buildApi(ctx, workspace, config) {
       const base = path.resolve(ws)
       const abs = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(base, raw)
       if (!TEXT_EXT.has(path.extname(abs).toLowerCase())) {
-        return { ok: false, error: '这个格式暂时读不了。纯文本、Markdown、数据文件都可以；图片请用「导入角色卡」。' }
+        // 不写「Markdown / CSV」这类后缀名：用户手里是一份文档，
+        // 他不需要知道它叫什么格式，只需要知道「拿过来能不能读」。
+        return { ok: false, error: '这个格式暂时读不了。纯文字的文件都可以；是图片的话请用「导入角色卡」。' }
       }
       let stat
       try {
