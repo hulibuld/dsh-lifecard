@@ -819,7 +819,10 @@ const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
  *
  * @returns {Promise<{ok: boolean, path?: string, bytes?: number, error?: string}>}
  */
-export async function writeAvatar(root, cardId, base64) {
+export async function writeAvatar(root, cardId, base64, options = {}) {
+  const capBytes = Number.isFinite(Number(options?.maxBytes)) && Number(options.maxBytes) > 0
+    ? Number(options.maxBytes)
+    : 8 * 1024 * 1024
   const id = String(cardId ?? '').trim()
   if (id === '') return { ok: false, error: '这张卡还没有编号，先存一次再来设头像' }
   let buf
@@ -830,7 +833,7 @@ export async function writeAvatar(root, cardId, base64) {
   }
   if (buf.length === 0) return { ok: false, error: '图片是空的，请重新选一次' }
   if (!buf.subarray(0, 8).equals(PNG_SIG)) return { ok: false, error: '只认 PNG 图片，请换一张或重新截一次' }
-  if (buf.length > 8 * 1024 * 1024) return { ok: false, error: `图片有 ${(buf.length / 1048576).toFixed(1)}MB，太大了。头像不需要这么大，请重新截一次` }
+  if (buf.length > capBytes) return { ok: false, error: `图片有 ${(buf.length / 1048576).toFixed(1)}MB，太大了（上限 ${(capBytes / 1048576).toFixed(0)}MB）。头像不需要这么大，请重新截一次` }
   const rel = avatarRelPath(id)
   const abs = path.join(root, rel)
   await fs.mkdir(path.dirname(abs), { recursive: true })

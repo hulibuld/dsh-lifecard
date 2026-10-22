@@ -196,13 +196,13 @@ function Icon({ name, size = 16 }) {
 const STYLE_ID = 'lifecard-styles'
 const CSS = `
 .lc-root {
-  --lc-bg: #fbfaf7;
-  --lc-panel: #ffffff;
-  --lc-ink: #1f2328;
-  --lc-muted: #6b7280;
-  --lc-line: #e6e2da;
-  --lc-line-strong: #d6d0c4;
-  --lc-accent: #3b5bdb;
+  --lc-bg: var(--dsw-alias-bg-base, #fbfaf7);
+  --lc-panel: var(--dsw-alias-bg-layer-1, #ffffff);
+  --lc-ink: var(--dsw-alias-label-primary, #1f2328);
+  --lc-muted: var(--dsw-alias-label-tertiary, #6b7280);
+  --lc-line: var(--dsw-alias-border-l1, #e6e2da);
+  --lc-line-strong: var(--dsw-alias-border-l2, #d6d0c4);
+  --lc-accent: var(--dsw-alias-brand-primary, #3b5bdb);
   --lc-accent-ink: #ffffff;
   --lc-accent-soft: #eef1fd;
   --lc-import: #0b7285;
@@ -211,13 +211,23 @@ const CSS = `
   --lc-interview-soft: #f1edfd;
   --lc-analyze: #b8860b;
   --lc-analyze-soft: #fdf4e0;
-  --lc-doctor: #2f9e44;
+  --lc-doctor: var(--dsw-alias-state-success-primary, #2f9e44);
   --lc-doctor-soft: #e9f7ec;
-  --lc-danger: #c92a2a;
+  --lc-danger: var(--dsw-alias-state-error-primary, #c92a2a);
   --lc-danger-soft: #fdecec;
   --lc-radius: 10px;
   --lc-shadow: 0 1px 2px rgba(20, 20, 30, .06), 0 6px 20px rgba(20, 20, 30, .05);
   --lc-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+/*
+ * 上面这几行是「跟宿主走」：var(--dsw-alias-xxx, 兜底色) 的意思是——
+ * 软件本身（宿主）定义了主题色就用它的，没定义就用我们这套兜底的暖白纸感配色。
+ * 好处是用户切深色主题、换品牌色时，这一页跟着变，不会像贴上去的一块白纸；
+ * 坏处是每个变量都必须留兜底值，否则宿主没给这个变量时颜色会变成透明。
+ * 下面的 soft（浅底）系列没有对应的宿主变量可借，仍然是自己的颜色：
+ * 它们是「强调色的 10% 底」，只能跟强调色一起看，单独换没有意义。
+ */
+
 
   height: 100%;
   display: flex;

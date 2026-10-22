@@ -295,5 +295,51 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   const FORBIDDEN = /lens|kind|consent|basis|recorded_at|chunk|schema|json|JSON|proposal|frontmatter|snapshot|workspace|YAML/
   t('拦下来时 message 是人话', typeof r.error?.message === 'string' && r.error.message.length > 4 && !FORBIDDEN.test(r.error.message), r)
 }
+// ── 同名新建不许把已有的卡悄悄换掉 ──────────────────────────────────
+{
+  const api5 = api.buildApi({}, async () => ws, {})
+  const first = await api5['card.save']({ data: { lifecard: '0.1', id: 'same', kind: 'real', world: 'reality', name: '同名', relation: '朋友' }, sections: [{ title: '关系史', body: '原来那张卡里写过的东西' }] })
+  t('第一次新建没问题', first.ok === true, first)
+  const again = await api5['card.save']({ data: { lifecard: '0.1', id: 'same', kind: 'real', world: 'reality', name: '同名' }, sections: [] })
+  t('同名再来一次被拦下', again.ok === false, again)
+  t('拦下时说的是人话、并且告诉人该怎么办', /已经有一张/.test(String(again.error)) && /改名|名字/.test(String(again.error)), again.error)
+  const back = await api5['card.get']({ path: 'people/same.card.md' })
+  t('原来那张卡的内容还在', back.ok === true && JSON.stringify(back.sections ?? []).includes('原来那张卡里写过的东西'), back.sections)
+  const forced = await api5['card.save']({ path: 'people/same.card.md', data: { lifecard: '0.1', id: 'same', kind: 'real', world: 'reality', name: '同名' }, sections: [] })
+  t('明确给路径的保存照旧能改这张卡', forced.ok === true, forced)
+}
+
+// ── 调用方传进来的工作区，不许被配置里的真实路径盖掉 ────────────────
+// 这条曾经真出过事：路由层改成「每次都从配置现读工作区」之后，
+// 传进来的临时目录被忽略，整套测试改成了往用户自己的库（~/LifeCard）里写，
+// 而且是静默的——测试全绿，用户的 cards/ 里多出几份测试卡。
+{
+  const api4 = api.buildApi({}, async () => ws, {})
+  const st = await api4['state.get']({})
+  t('注入的工作区优先于配置', path.resolve(st.workspace) === path.resolve(ws), { got: st.workspace, want: ws })
+  await api4['card.save']({ data: { lifecard: '0.1', id: 'only-temp', kind: 'real', world: 'reality', name: '只该落在临时目录' }, sections: [] })
+  const landed = await fs.stat(path.join(ws, 'people', 'only-temp.card.md')).then((s) => s.isFile()).catch(() => false)
+  t('新写的卡落在注入的那个目录里', landed === true)
+  await fs.rm(path.join(ws, 'people', 'only-temp.card.md'), { force: true })
+}
+
+// ── 访谈账本：名字带前缀的另一个人，不能算成同一个人回答过 ──────────
+// 张三 与 张三丰 只是示例；真实场景是「老王」和「老王的儿子」这类 id。
+{
+  const api3 = api.buildApi({}, async () => ws, {})
+  for (const [id, name] of [['zsan', '张三'], ['zsanfeng', '张三丰']]) {
+    await api3['card.save']({ data: { lifecard: '0.1', id, kind: 'real', world: 'reality', name, relation: '朋友' }, sections: [] })
+  }
+  // 只给「张三」记一条已经问过的
+  const rec = await api3['interview.record']({ about: 'zsan', q: 'friend.q01', ask: '怎么认识的', answer: '在单位食堂认识的，坐一桌' })
+  t('访谈记录写得进账本', rec.ok === true, rec)
+
+  const plain = await api3['interview.plan']({ about: 'zsan', relation: 'friend', limit: 20 })
+  const neighbor = await api3['interview.plan']({ about: 'zsanfeng', relation: 'friend', limit: 20 })
+  t('已问过的那题不再问', plain.next.every((q) => q.id !== 'friend.q01'), plain.next)
+  t('另一个人一题都不该被算成已问', neighbor.next.some((q) => q.id === 'friend.q01'), neighbor.next)
+  t('两个人的已问数不同', plain.askedAlready === 1 && neighbor.askedAlready === 0, { plain: plain.askedAlready, neighbor: neighbor.askedAlready })
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

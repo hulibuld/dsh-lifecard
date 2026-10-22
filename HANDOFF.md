@@ -52,7 +52,6 @@ LifeCard/
 ├── 使用指南.md         早期文档，已被 SPEC 取代，留作背景
 ├── 策划书.md           同上
 ├── 策划书-第二部分.md   同上
-├── skills/lifecard-interview/SKILL.md   顶层副本（历史遗留，不随包安装）
 ├── .bak/               3 个旧 md 的备份
 ├── .bak-20261018/      2026-10-18 整份快照
 └── plugin/             ← 真正的成品，所有代码在这里
@@ -291,7 +290,7 @@ job.interview.end  job.interview.get  job.interview.list
 ### P3 — 还没做的（都需要人点头）
 
 1. **`defaultWorkspace()` 返回 `homedir()/LifeCard`**（`lib/index.js:42-44`）。是否改成 `homedir()/Documents/Life Cards`？改的话用户已经 seed 过 `~/LifeCard`，要处理迁移或兼容。
-2. **顶层 `skills/lifecard-interview/SKILL.md` 与 `plugin/skills/lifecard-interview/SKILL.md` 内容完全相同**（md5 `02e0a2a6daf930b669ed4d9c594d793e`）。**只有 plugin 里那份会随包安装**。建议删掉顶层那份，或明确标成"设计稿，改内容必须同步两份"。
+2. ~~顶层那份 SKILL.md~~ **已删**（2026-10-22，用户定「只留一份」）。现在只有 `plugin/skills/lifecard-interview/SKILL.md` 一份，改它就行，没有第二处要同步。
 3. **四份原始文档**（使用指南/策划书/策划书-第二部分）已被 SPEC.md 取代。保留作背景材料，还是归档到 `docs/archive/`？
 4. ~~**同一天对同一个人跑两次分析，第二次会覆盖第一次的提案与遗留记录**~~ → **已修（commit 见 `lib/store.js` 的 `freeProposalBase`）**。第一次仍用不带序号的老名字，撞上了才依次试 `-2`、`-3`；三个文件（`.md` / `.json` / `.checked.json`）一起占名，勾选不串台。`test/store-test.mjs` 第 14 组 12 项锁住，并用修复前的 `store.js` 验过会红 6 项。
 5. **本地 HTTP 端点没有 Origin/CSRF 校验**，且任何请求都能用 `body.workspace` 改当前库。这是宿主 `/api` 的暴露面，不是本插件能单独修的，建议在宿主侧做 Origin 白名单。

@@ -39,6 +39,12 @@ export const inject = ['webServer']
 const Schema = z.object({
   workspace: z.string().default(''),
   defaultAnalysisModel: z.string().default(''),
+  // 几个「多大算太大」的上限。写死在代码里的时候，遇到大一点的卡（带世界书、
+  // 带对话示例）只能改源码；做成配置就只是改一行数字，而且各项分开算：
+  // 请求体要宽松（一次导入几十张卡），头像和纯文字文件要严（正常远小于这个）。
+  maxBodyMB: z.number().min(1).max(512).default(64),
+  maxAvatarMB: z.number().min(1).max(64).default(8),
+  maxTextFileMB: z.number().min(1).max(64).default(8),
 })
 
 export const Config = Schema
@@ -49,6 +55,13 @@ function defaultWorkspace() {
 }
 
 /** 当前工作区：每次调用都从配置里现取，不往模块级塞状态。 */
+/** 把配置里的 MB 换算成字节；配置坏了（不是正数）就用兜底值，不让一个手滑把上限变成 0。 */
+function mbToBytes(value, fallbackMB) {
+  const n = Number(value)
+  const mb = Number.isFinite(n) && n > 0 ? n : fallbackMB
+  return Math.floor(mb * 1024 * 1024)
+}
+
 function currentWorkspace(config) {
   const configured = typeof config?.workspace === 'string' && config.workspace.trim() !== '' ? config.workspace.trim() : ''
   return configured !== '' ? path.resolve(configured) : defaultWorkspace()
@@ -66,7 +79,7 @@ function writeJson(res, status, value) {
   res.end(body)
 }
 
-async function readBody(req, limit = 64 * 1024 * 1024) {
+async function readBody(req, limit = mbToBytes(64, 64)) {
   const chunks = []
   let size = 0
   for await (const chunk of req) {
@@ -556,6 +569,10 @@ function buildApi(ctx, workspace, config) {
     if (typeof body?.workspace === 'string' && body.workspace.trim() !== '') {
       return path.resolve(body.workspace.trim())
     }
+    // 优先用外面传进来的那个函数（apply 传的是「每次现读配置」，所以没有模块级状态）。
+    // 只有当调用方没给（或给了非函数）时才自己从配置算——测试会传一个指向临时目录的函数，
+    // 那时候绝不能绕过它去读真实配置，否则测试写的是用户自己的库。
+    if (typeof workspace === 'function') return await workspace()
     return await currentWorkspace(settings)
   }
 
@@ -702,6 +719,16 @@ function buildApi(ctx, workspace, config) {
         rel = safe.rel
       } else {
         rel = store.cardRelPath(id, data.world)
+        // 没给路径＝这是一张新卡。同名文件已经在了就不再写：
+        // 以前会直接覆盖，用户点「新建」写了个已有的名字，那人原来那张卡
+        // 连同快照之外的一切（关系史、口癖）就没了声息地被换成了空白。
+        const exists = await fs.stat(path.join(ws, rel)).then((st) => st.isFile()).catch(() => false)
+        if (exists && body?.overwrite !== true) {
+          return {
+            ok: false,
+            error: `已经有一张叫「${String(data.name ?? id)}」的卡了。想改它，去列表里点开那张；想再建一张，把名字改得能区分开。`,
+          }
+        }
       }
       const written = await store.writeCard(ws, rel, data, Array.isArray(body?.sections) ? body.sections : [], { force: body?.force === true })
       return written
@@ -850,7 +877,10 @@ function buildApi(ctx, workspace, config) {
         return { ok: false, error: '找不到这个文件。它可能刚被移走或改名了，重新选一次。' }
       }
       if (!stat.isFile()) return { ok: false, error: '这是一个文件夹，不是文件。' }
-      if (stat.size > 8 * 1024 * 1024) return { ok: false, error: '这个文件太大了（超过 8 MB 的纯文字很少见），换一个小一点的。' }
+      const textCap = mbToBytes(config?.maxTextFileMB, 8)
+      if (stat.size > textCap) {
+        return { ok: false, error: `这个文件太大了（超过 ${(textCap / 1048576).toFixed(0)} MB 的纯文字很少见），换一个小一点的。` }
+      }
       let text
       try {
         text = await fs.readFile(abs, 'utf8')
@@ -873,7 +903,7 @@ function buildApi(ctx, workspace, config) {
       const rel = safe.rel
       const card = await store.readCard(ws, rel)
       if (!card.ok) return card
-      const saved = await store.writeAvatar(ws, card.data?.id, body?.base64)
+      const saved = await store.writeAvatar(ws, card.data?.id, body?.base64, { maxBytes: mbToBytes(config?.maxAvatarMB, 8) })
       if (saved.ok !== true) return saved
       return { ok: true, path: rel, avatar: saved.path, bytes: saved.bytes }
     },
@@ -1429,13 +1459,10 @@ function buildApi(ctx, workspace, config) {
           cvText: session.cvText ?? '',
           questionNo: turns.length + 1,
         })
-        const called = await callModel(ctx, {
-          system: '你在一场模拟面试里当面试官。你只提问，不评价，不解释。你问的每一句都会被程序检查：重复的不算、问了不该问的会被拦下、追问他上一句时引不到原话会被丢掉。',
-          user: prompt,
-          model: typeof body?.model === 'string' && body.model !== '' ? body.model : (config?.defaultAnalysisModel ?? undefined),
-        })
         // 被拦下时带着原因重问一次：模型不知道自己踩了哪条线，
         // 不告诉它就只会原样再问一遍，白丢一整轮。
+        // 注意：这里不要在循环外先问一次——以前那样写会白打一次模型（结果被下面同名变量遮蔽），
+        // 用户付两次钱，第一次的回答直接扔掉。
         let reject = ''
         for (let attempt = 0; attempt < 2; attempt += 1) {
           const retryPrompt = reject === ''
@@ -1832,7 +1859,9 @@ function buildApi(ctx, workspace, config) {
       const host = {
         ran: true,
         at: new Date().toISOString(),
-        dshVersion: ctx.get?.('version') ?? undefined,
+        // 这里以前写 `ctx.get('version')`——宿主没有这个服务，所以永远是 undefined，
+        // 等于在诊断文件里留了一个「看起来会填、其实永远空」的字段。
+        // 与其留个假字段，不如只写真的能拿到的：插件自己的版本在 package.json 里，界面不需要它。
         services: {
           llm: ctx.get?.('llm') !== undefined && ctx.get?.('llm') !== null,
           webServer: true,
@@ -2058,6 +2087,16 @@ async function uniqueId(ws, base) {
 }
 
 /** 读某人的访谈账本。 */
+/**
+ * 账本文件名 = `<日期>-<id>.jsonl`。判断它是不是这个人的：
+ * 要么正好是 `<id>.jsonl`，要么以 `-<id>.jsonl` 结尾。
+ * 用「结尾」而不是「含」，是为了不把 张三丰 的账本算到 张三 头上。
+ */
+function ledgerBelongsTo(fileName, safe) {
+  if (fileName === `${safe}.jsonl`) return true
+  return fileName.endsWith(`-${safe}.jsonl`)
+}
+
 async function collectAnswered(ws, aboutId) {
   const dir = path.join(ws, 'interviews')
   let entries
@@ -2070,7 +2109,10 @@ async function collectAnswered(ws, aboutId) {
   const out = []
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue
-    if (!entry.name.includes(safe) && safe !== '') continue
+    // 只认「以这个人 id 结尾」的账本，不能只判「含有」：
+    // 名字里带 safe 的另一个人（张三 vs 张三丰）会被算成同一个人回答过，
+    // 于是给张三问过的问题在张三丰那边显示成「已问」，一题都不出。
+    if (safe !== '' && !ledgerBelongsTo(entry.name, safe)) continue
     try {
       const text = await fs.readFile(path.join(dir, entry.name), 'utf8')
       for (const line of text.split('\n')) {
@@ -2211,7 +2253,7 @@ export function apply(ctx, config) {
           return
         }
         try {
-          const body = await readBody(req)
+          const body = await readBody(req, mbToBytes(config?.maxBodyMB, 64))
           const result = await handler(body)
           writeJson(res, 200, result)
         } catch (error) {
