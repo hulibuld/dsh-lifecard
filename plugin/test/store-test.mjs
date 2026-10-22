@@ -350,7 +350,11 @@ console.log('\n=== 12. 提案给数组时，卡里要是一条条，不是「0: 
       { field: 'taboos', value: ['别提她', '别提那件事'], source_level: '自述', evidence: { material: 'm.md', quote: '丁说别提' } },
     ],
   }
-  const saved = await store.saveProposal(ws, 'arr', p, { 'm.md': '丁说家人\n丁也说家人\n丁说别提' })
+  // 材料要真在盘上：apply 会对着现有材料重验引文（材料可删，删了就不能再引）。
+  const matsText = '丁说家人\n丁也说家人\n丁说别提'
+  await fs.mkdir(path.join(ws, 'materials'), { recursive: true })
+  await fs.writeFile(path.join(ws, 'materials', 'm.md'), matsText, 'utf8')
+  const saved = await store.saveProposal(ws, 'arr', p, { 'm.md': matsText })
   t('提案保存成功', saved.ok === true, saved)
   await store.writeCheckedFile(ws, saved.json, [0, 1, 2])
   const r = await store.applyProposal(ws, saved.json)

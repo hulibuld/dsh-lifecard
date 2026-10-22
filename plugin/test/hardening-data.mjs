@@ -29,6 +29,12 @@ const root = path.join(tmpdir(), 'lifecard-hard-data-' + stamp)
 const sibling = root + '-evil'
 const outsideCard = path.join(tmpdir(), 'lifecard-hard-outside-' + stamp + '.card.md')
 
+// 手写提案（第 6/8 组）绕过生成侧闸门直接测写入侧，但 apply 现在会对着
+// **盘上**的材料重验引文。所以先把要引用的句子真写进 materials/x.md，
+// 否则测的就不是「保留字段被拦」而是「引文找不到」。
+await fs.mkdir(path.join(root, 'materials'), { recursive: true })
+await fs.writeFile(path.join(root, 'materials', 'x.md'), '他喜欢下棋。她爱做饭，家里人都知道。', 'utf8')
+
 await store.openWorkspace(root, { create: true })
 
 // ── 1. 引文门 ──────────────────────────────────────────────────────
@@ -318,6 +324,52 @@ console.log('=== 9. doctor：未标记来源比例要真算 ===')
   t('listAll.updated 是时间不是文件名', all.cards.every((c) => c.updated === undefined || !String(c.updated).includes('.card.md')), all.cards.map((c) => c.updated))
 }
 
+// ── 10. 材料被删之后，旧提案不能把无出处的断言写进卡 ─────────────
+// 材料可以删（用户要求）。删完再勾旧提案，那几条的原文已经不在任何文件里，
+// 照写就是凭空往卡里加没有出处的话。修复前 applyProposal 只信保存时的验证结果，
+// 一条都不会被拦。
+console.log('=== 10. 删了材料，旧提案里引用它的条目要落空 ===')
+{
+  await store.writeCard(root, 'people/mama3.card.md', {
+    lifecard: '0.1', id: 'mama3', kind: 'real', world: 'reality', name: '妈妈3',
+  }, [{ title: '自述', body: '爱做饭。' }], { force: true })
+
+  const mats = {
+    'materials/甲.md': '他每天五点起床，风雨无阻。',
+    'materials/乙.md': '他说最怕的是给家里添麻烦。',
+  }
+  const proposal = {
+    about: { id: 'mama3' },
+    items: [
+      { field: 'status', value: 'deceased', source_level: '他述', evidence: { material: 'materials/甲.md', quote: '每天五点起床' } },
+      { field: 'taboos', value: '给家里添麻烦', source_level: '自述', evidence: { material: 'materials/乙.md', quote: '最怕的是给家里添麻烦' } },
+    ],
+  }
+  const saved = await store.saveProposal(root, 'mama3', proposal, mats)
+  t('两条都过闸门', saved.accepted === 2, saved)
+
+  // 两条都勾上
+  const read = await store.readProposal(root, saved.json)
+  const idx = read.items.map((_, i) => i)
+
+  // 删掉其中一份材料
+  await fs.mkdir(path.join(root, 'materials'), { recursive: true })
+  await fs.writeFile(path.join(root, 'materials', '甲.md'), mats['materials/甲.md'], 'utf8')
+  await fs.writeFile(path.join(root, 'materials', '乙.md'), mats['materials/乙.md'], 'utf8')
+  const del = await store.deleteMaterial(root, 'materials/甲.md')
+  t('材料删得掉', del.ok === true, del)
+
+  // 两条都勾，但甲已经没了
+  const applied = await store.applyProposal(root, saved.json, { checked: idx })
+  const after = await store.readCard(root, 'people/mama3.card.md')
+  t('删了材料后还能写入（剩下的那条）', applied.ok === true, applied)
+  t('引用已删材料的那条被丢掉', applied.dropped === 1, applied)
+  // 「最怕的是给家里添麻烦」还在乙里，必须写进去
+  const taboos = (after.data.taboos ?? []).map((x) => (typeof x === 'string' ? x : x?.label))
+  t('还有原文的那条照常写入', JSON.stringify(taboos) === JSON.stringify(['给家里添麻烦']), after.data.taboos)
+  // 「每天五点起床」只在甲里，甲没了就不该写
+  t('没了原文的那条没写进卡', after.data.status !== 'deceased', after.data.status)
+}
 // ── 收尾 ───────────────────────────────────────────────────────────
 await fs.rm(root, { recursive: true, force: true }).catch(() => {})
 await fs.rm(sibling, { recursive: true, force: true }).catch(() => {})

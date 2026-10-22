@@ -1117,16 +1117,47 @@ export async function applyProposal(root, jsonRel, options = {}) {
   const chosen = read.items.filter((i) => i.checked)
   if (chosen.length === 0) return { ok: false, error: '还没有勾选任何一条。先点一下要留下的条目。' }
 
+  // 写进卡之前，引文要对着**现在**的材料再验一遍。
+  //
+  // 这个闸门本来是保存提案时过的，但材料可以被删（用户明确要求「材料要能删」）。
+  // 删掉材料之后再勾选旧提案，那些引用它的断言就成了「引文已经不在任何文件里」，
+  // 照写就是凭空往卡里加没有出处的话——那正是这个工具最不该做的事。
+  // 所以这里重验一次，对不上的跳过并在返回值里报数，让界面能说清「有几条因为
+  // 原文没了没写进去」。
+  const materials = await readMaterials(root)
+  const stillThere = []
+  const dropped = []
+  for (const item of chosen) {
+    const q = core.verifyQuote(item, materials)
+    if (q.ok) stillThere.push(item)
+    else dropped.push({ field: item?.field ?? '', reason: q.reason })
+  }
+  if (stillThere.length === 0) {
+    return {
+      ok: false,
+      error: '勾选的这些条目，原文都已经不在材料里了（可能材料被删过），所以一条都没写。',
+      dropped,
+    }
+  }
+
   const data = { ...card.data }
   const sections = (card.sections ?? []).map((s) => ({ ...s }))
   const applied = []
-  for (const item of chosen) {
+  for (const item of stillThere) {
     const ok = applyItem(data, sections, item)
     if (ok) applied.push(describeValue(item))
   }
   const written = await writeCard(root, target, data, sections)
   if (!written.ok) return written
-  return { ok: true, path: target, applied: applied.length, appliedLabels: applied, skipped: chosen.length - applied.length }
+  return {
+    ok: true,
+    path: target,
+    applied: applied.length,
+    appliedLabels: applied,
+    skipped: stillThere.length - applied.length,
+    // 原文已经不在的条目单独报：它们不是「没勾」，是「勾了但证据没了」。
+    dropped: dropped.length,
+  }
 }
 
 /**
