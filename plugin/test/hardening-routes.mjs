@@ -341,5 +341,15 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   t('两个人的已问数不同', plain.askedAlready === 1 && neighbor.askedAlready === 0, { plain: plain.askedAlready, neighbor: neighbor.askedAlready })
 }
 
+// ── 验收脚本不许把用户正在用的工作区指走 ────────────────────────
+// 真实事故：live.mjs 把实例工作区指到 /tmp 下建库、跑完 rm -rf 就退出。
+// 用户开着的那一屏因此变成一个已被删除的目录，看起来就是「我的卡全没了」。
+{
+  const live = await fs.readFile(new URL('./live.mjs', import.meta.url), 'utf8')
+  t('验收脚本记得住跑之前是哪个工作区', /const ORIGINAL_WS =/.test(live) && /st\.workspace/.test(live))
+  t('验收脚本跑完会把工作区指回去', /workspace\.init', \{ workspace: ORIGINAL_WS \}/.test(live))
+  t('验收脚本里这句解释了为什么必须指回去', /指回/.test(live) && /卡全没了/.test(live))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

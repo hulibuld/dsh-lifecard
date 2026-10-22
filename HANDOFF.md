@@ -7,7 +7,7 @@
 
 ## 一句话现状
 
-**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 **1425 项**通过，对一个真实运行的 DSH 实例做的端到端验收 **14/14** 通过。**P0（上传 GitHub 前的准备）、P1（陈旧文档）、P2（六项功能扩展）全部做完。** 之后又做了四轮加固：数据层 20 处隐患、编码/路由层 20 处隐患、世界书导入与展示，以及一批界面死路修复。
+**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 **1428 项**通过，对一个真实运行的 DSH 实例做的端到端验收 **15/15** 通过。**P0（上传 GitHub 前的准备）、P1（陈旧文档）、P2（六项功能扩展）全部做完。** 之后又做了四轮加固：数据层 20 处隐患、编码/路由层 20 处隐患、世界书导入与展示，以及一批界面死路修复。
 
 **P3 之后新加的三块**（2026-10-20）：
 - **关系视角改造**：访谈页不再问「你们是什么关系（父母/祖辈/伴侣）」，改成「他是我的什么人」（父亲 / 母亲 / 爷爷 / 奶奶 / 伴侣 / 好友 / 兄弟姐妹 / 同学 / 老师 / 同事 / 亲戚 / 我自己 / 虚构角色 / 自己填），并且可以勾「还有别的吗」（也是伴侣 / 也是家人 / 也是好友 / 也是同事 / 也是老师 / 也是对手）。「这是谁」那栏改名「他叫什么」，跟关系不再重复。
@@ -73,7 +73,7 @@ LifeCard/
 | `lib/score.js` | 329 | **纯本地**体检打分 0–100、字数估算、占位符与世界书健康度 |
 | `lib/memory.js` | 454 | 从本机记忆文件里认出「你身边的人」，给出还缺什么 |
 | `skills/lifecard-interview/SKILL.md` | 192 | **会随包安装的那份**访谈 skill |
-| `test/` | 16 个在 `all.mjs` 里 + `live.mjs`，另有 `make-samples.mjs` | 1425 项断言 |
+| `test/` | 16 个在 `all.mjs` 里 + `live.mjs`，另有 `make-samples.mjs` | 1428 项断言 |
 | `locale/{zh,en}.json` | — | 侧栏 tab 的标题与描述 |
 | `cordis.patch.yml` | — | 装进 profile 时插入的插件条目 |
 | `node_modules/@deepseek-ai/schemastery` | — | 软链，见下面坑 #2 |
@@ -87,14 +87,14 @@ LifeCard/
 ```bash
 cd .../LifeCard/plugin
 
-# 1. 全量单元测试：1425 项
+# 1. 全量单元测试：1428 项
 node test/all.mjs
 # → roundtrip 23 / codec 52 / store 157 / score 51 / memory 72 / jobs 148
 #   interview 112 / json-extract 10 / prompt 238 / client-smoke 27
 #   skill-register 20 / routes 85 / hardening-routes 46 / hardening-data 54
 #   render-all 255 / wording 16
 
-# 2. 对真实运行的 DSH 做端到端验收：14/14
+# 2. 对真实运行的 DSH 做端到端验收：15/15
 node test/live.mjs "$DSH_GUI"          # $DSH_GUI = 运行时上下文里那个 GUI URL
 # 退出码：0 = 真验过且全过 / 1 = 有项没过 / 2 = 没验（端口上没有本插件）
 # 这一步的 2 不算绿。以前跳过也返回 0，「没装」和「装好全过」长得一样。
@@ -104,9 +104,9 @@ node test/render-all.mjs
 node test/wording-test.mjs
 ```
 
-**2026-10-22 17:48 的实测结果**：`all.mjs` 1425 项全过；`live.mjs` 14/14 全过；`state.get` 200；git 工作区干净。
+**2026-10-22 23:36 的实测结果**：`all.mjs` 1428 项全过；`live.mjs` 15/15 全过；`state.get` 200；git 工作区干净。
 
-live 那 14 项验的是：插件已激活 / 宿主有 llm / 建工作区 / 卡被列出 / 材料被列出 / 分析跑通 / 有可采纳条目 / 默认不勾选 / 每条都有引文 / 采纳成功 / 导出 PNG / 双 chunk 同源 / doctor 跑通 / 宿主段已写。
+live 那 15 项验的是：插件已激活 / 宿主有 llm / 建工作区 / 卡被列出 / 材料被列出 / 分析跑通 / 有可采纳条目 / 默认不勾选 / 每条都有引文 / 采纳成功 / 导出 PNG / 双 chunk 同源 / doctor 跑通 / 宿主段已写 / 跑完把工作区指回原来的。
 
 **访谈 skill 确认可见**：本次会话注入的 skill 目录里已经有 `lifecard-interview`，描述是"引导式访谈，在对话里把一张人物卡问出来。用于「帮我建一张 XX 的卡」「继续上次那个访谈」「这张卡还缺什么」"。也就是说**用户现在在对话里说"帮我建一张我妈的卡"就会触发它**。这条不用再验了。
 
@@ -219,8 +219,8 @@ job.interview.end  job.interview.get  job.interview.list
 ### P1 — 文档陈旧（✅ 已完成）
 | 位置 | 原来写的 | 现在是 |
 |---|---|---|
-| `README.md:27` | 「96 项测试全部通过」 | 1425 项 |
-| `plugin/README.md:178` | `# 全部测试（96 项）` | 1425 项 |
+| `README.md:27` | 「96 项测试全部通过」 | 1428 项 |
+| `plugin/README.md:178` | `# 全部测试（96 项）` | 1428 项 |
 | `plugin/README.md:29` | 侧栏会出现**人物档案** | **Life Cards** |
 
 `plugin/README.md` 的目录树与"三个入口"图已对着现在的界面重写（commit `43266e6`）。
@@ -379,7 +379,7 @@ node test/all.mjs                                      # 期望 736 通过
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \
   "$DSH_GUI/api/dsh-lifecard/state.get" \
   -H 'content-type: application/json' -d '{}'          # 期望 200
-node test/live.mjs "$DSH_GUI"                          # 期望 14/14
+node test/live.mjs "$DSH_GUI"                          # 期望 15/15
 ```
 
 三条都绿，就可以直接从 P0 开始。有一条红，先修环境再说功能。
