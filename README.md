@@ -34,11 +34,26 @@ LifeCard 是一个本地优先的人物档案工具。它把现实里的人（�
 
 需要 Node.js 20 以上、一个能装插件的 DSH。
 
+**方式一：用 DSH 自己的插件管理装**（推荐）。在 App 的插件设置里装，或者：
+
 ```bash
-# 在插件目录里装进 desktop profile
-cd plugin
-dsh plugin add .
+# --profile 后面换成你自己的 profile 名（默认是 desktop）
+dsh plugin --profile desktop add /绝对路径/LifeCard/plugin
 ```
+
+**方式二：手动放进去。** 把整个 `plugin/` 目录复制成
+`~/.dsh/profiles/desktop/node_modules/dsh-lifecard`，再在
+`~/.dsh/profiles/desktop/cordis.patch.yml` 末尾加上：
+
+```yaml
+- insert:
+    - id: lifecard
+      name: dsh-lifecard
+```
+
+> ⚠️ **如果你的 profile 里已经有手工打过补丁的插件，别用 `dsh plugin add`。**
+> 那条命令底层是 pnpm，它会重新解析整棵依赖树、把**所有**插件按锁文件重装一遍，
+> 你手工改过的插件会被覆盖掉。这种 profile 请走方式二。
 
 装完**重启 DSH App**（桌面版被独占，没有热重载）。重启后**左边那排图标里会多一个 Life Cards**（一个打开的小本子），点一下中间就是它。
 

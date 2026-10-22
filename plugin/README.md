@@ -35,6 +35,11 @@
 dsh plugin --profile desktop add /path/to/LifeCard/plugin
 ```
 
+> ⚠️ 这条命令底层是 pnpm，会重新解析整棵依赖树、把 profile 里**所有**插件按锁文件重装一遍。
+> 如果你的 profile 里有手工改过代码的插件，它会被覆盖。这种情况请手动装：把整个目录复制成
+> `~/.dsh/profiles/<profile>/node_modules/dsh-lifecard`，再在 `cordis.patch.yml` 末尾加
+> `- insert: [{ id: lifecard, name: dsh-lifecard }]`。
+
 装完**重启 DSH App**（桌面版的 profile 被它独占，改了文件也不会热更新，必须重启）。
 
 重启后，**左边那排图标里会多一个 Life Cards**（一个打开的小本子）。点一下，中间主区域就是它。
