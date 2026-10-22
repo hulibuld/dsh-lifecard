@@ -168,6 +168,23 @@ job.interview.end  job.interview.get  job.interview.list
 
 ---
 
+## 第五轮：无上下文三审（2026-10-22 晚）
+
+用 `dsh-plugin-team` 开了四个没看过本项目对话的审查员（契约 / 质量 / 文档 / 基线），一共报 48 条。逐条复现后修掉 40 条，8 条记为「先不动」。
+
+**修掉的里最要紧的六件**（都在 `git log` 里，提交信息写清了为什么）：
+
+1. **client 的 `inject` 里写了第三方 `betterSidebar`** —— Cordis 对未就绪 inject 会挂起整个 fiber，`apply` 一句都不执行。干净 profile 上装完就是这个结果：左边图标没有、主区域空白，用户以为插件没装上。现在只 `inject: ['slots']`，右侧栏那个入口走 `ctx.get('betterSidebar')` 的可选分支。**这条是「发布给别人装」的阻断项。**
+2. **导出被拦的提示把内部词摆到界面上** —— `lens`、`kind`、`consent.basis`、`recorded_at`。而 `test/wording-test.mjs` 只扫单行字面量、抓不到字符串拼接，所以一直是绿的（假安全感）。现在文案全改人话，断言改成「真调一次 `export.card` 拿返回的 message 比禁用词」。
+3. **采纳面板会把对象值 `JSON.stringify` 出来** —— 屏幕上出现 `knows: ["榫卯"]；does_not_know: []`，能力等级显示英文 `expert`。
+4. **材料删掉后，旧提案还能把无出处的断言写进卡** —— 材料现在能删，但 `applyProposal` 只信保存时的验证结果。现在写卡前对着现有材料重验一遍，找不到的进 `dropped` 并在界面上说清「有几条因为原文没了没写」。
+5. **同一个提案采纳第二次会给卡里塞重复条目** —— `competency`/`taboos` 是数组，重复 push 就长出两条一样的。现在按指纹记账，第二次点采纳什么都不写（也不报错）；旁路文件 `.checked.json`/`.applied.json` 也不再被当成提案列进「还等着你看的建议」。
+6. **快照备份不下来也照样覆盖旧卡** —— `writeCard` 里那个 `catch {}` 把权限、磁盘满一起吞了。现在只有「本来就没有这张卡」（ENOENT）可以跳过，其它一律不写并说明原因。顺带：`parseCard` 失败以前当成功，坏卡变成一张空白卡挂在列表里，那句「有 N 个文件读不了」永远不触发——现在会进 `errors`。
+
+**另外还改了**：`import.textFile` 补了读盘边界（只认纯文本类后缀 + 普通文件 + 8MB 上限；这条是「从文件选择器挑一个工作区外的文件」的正当流程，所以不能按「只许工作区内」来卡）；`card.save` 不再接受 `body.force` 跳校验；去掉模块级 `runtimeWorkspace`；样式在 `ctx.effect` 里挂/回收；`package.json` 补 `exports` 的 `./locale/*.json` 与 `./icon.svg`、`icon` 字段、`engines`；`live.mjs` 跳过时退出码改成 2（以前「没装」和「装好全过」都是 0）。
+
+**记了不修（低优先，别看漏）**：`readBody` 64MiB 这类写死的上限（该走配置）；界面里 40 处字面色值没用 `--dsw-alias-*` 主题变量；`jobs-interview` 每轮多打一次模型（外层 `called` 被内层遮蔽）；访谈账本用 `includes` 匹配（张三会读到张三丰的记录）；`card.save` 同名新建会覆盖（已由快照兜底）；`doctor` 读一个不存在的 version 服务。
+
 ## 踩过的坑（这一段最值钱，别重犯）
 
 1. **cordis `resolveConfig` 读 `Config["~standard"].validate`**，传普通对象会抛 `Cannot read properties of undefined (reading 'validate')`。必须用 schemastery 的 `z.object(...)` 定义 config。
