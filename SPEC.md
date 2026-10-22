@@ -18,7 +18,7 @@
 | 对话访谈（问题库 + 覆盖度排题 + 账本） | ✅ |
 | 文本导入 → 分析 → 引文校验门 → 提案 → 勾选采纳 | ✅ |
 | doctor（数据段 + 宿主段） | ✅ |
-| 测试 | 1345 项，全部通过（`node plugin/test/all.mjs`） |
+| 测试 | 1347 项，全部通过（`node plugin/test/all.mjs`） |
 
 测过的真实环境：DSH 0.2.0-rc.2 + better-sidebar，模型路由实测可用。
 

@@ -31,6 +31,20 @@ console.log('=== 1. SKILL.md 随包存在 ===')
   // "文件在仓库里但用户装不到" 的另一种形态。
   const pkg = JSON.parse(readFileSync(path.join(here, '..', 'package.json'), 'utf8'))
   t('package.json files 覆盖 skills/', pkg.files.some((f) => f.startsWith('skills/')), pkg.files)
+
+  // lib/index.js 一开头就 import 了 schemastery。装机之后这个模块由谁提供，
+  // 取决于宿主；但「有没有在 package.json 里说要它」是我们自己的责任——
+  // 漏声明时本地能跑（本地有软链），别人装完可能起不来，而且报的是
+  // 「Cannot find module」，看着像别人的问题。
+  t('package.json 声明了 schemastery 依赖',
+    Boolean((pkg.dependencies ?? {})['@deepseek-ai/schemastery']
+      || (pkg.peerDependencies ?? {})['@deepseek-ai/schemastery']),
+    pkg.dependencies)
+
+  // 反过来：import 了却没声明，装机就会缺。这里只盯这一处已知的运行时依赖，
+  // node: 开头的内置模块不算。
+  const indexSrc = readFileSync(path.join(here, '..', 'lib', 'index.js'), 'utf8')
+  t('index.js 的 schemastery import 和声明对得上', indexSrc.includes("from '@deepseek-ai/schemastery'"))
 }
 
 console.log('\n=== 2. apply 时注册进 skills 服务 ===')
