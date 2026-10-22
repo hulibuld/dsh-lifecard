@@ -714,6 +714,9 @@ function LifeCardTab(props) {
   const [pendingAbout, setPendingAbout] = useState('')
   // 第一次打开时那段简短介绍看过了没有。null = 还不知道（还没问过宿主）
   const [introSeen, setIntroSeen] = useState(null)
+  // 从首页点某一份材料进来时，把那一份预先勾上。没有它，用户点「材料」
+  // 只是到了一个空白的分析页，还得自己在列表里再找一遍刚才那份。
+  const [materialFor, setMaterialFor] = useState(null)
   const mounted = useRef(true)
 
   useEffect(() => () => { mounted.current = false }, [])
@@ -939,7 +942,7 @@ function LifeCardTab(props) {
         })
       case VIEWS.analyze:
         return h(AnalyzeView, {
-          listing, state, flash, presetAbout: interviewFor,
+          listing, state, flash, presetAbout: interviewFor, presetMaterials: materialFor,
           onProposal: showProposal,
           onBack: () => { setInterviewFor(null); setView(VIEWS.home) },
           onNeedMaterial: () => setView(VIEWS.import),
@@ -950,7 +953,15 @@ function LifeCardTab(props) {
         // 直接退回首页，用户点了没反应，还以为坏了。现在把清单单独摊开。
         return activeCard === null
           ? proposal === null
-            ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+            ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: async (m) => {
+            const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
+              ? window.confirm(`确定删掉「${m.name}」吗？\n\n删了就真没了，AI 以后也读不到这一份。`)
+              : true
+            if (ok !== true) return
+            const r = await call('material.delete', { path: m.path })
+            if (r?.ok === true) { flash(`删掉了「${m.name}」`); await refresh(state?.workspace) }
+            else setError(r?.error ?? '没删掉')
+          }, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
             : h('div', { className: 'lc-pad lc-stack' },
                 proposal.about === undefined || String(proposal.about).trim() === ''
                   ? null
@@ -992,7 +1003,15 @@ function LifeCardTab(props) {
         })
       case VIEWS.world:
         return activeWorld === null
-          ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+          ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: async (m) => {
+            const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
+              ? window.confirm(`确定删掉「${m.name}」吗？\n\n删了就真没了，AI 以后也读不到这一份。`)
+              : true
+            if (ok !== true) return
+            const r = await call('material.delete', { path: m.path })
+            if (r?.ok === true) { flash(`删掉了「${m.name}」`); await refresh(state?.workspace) }
+            else setError(r?.error ?? '没删掉')
+          }, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
           : h(WorldView, {
               world: activeWorld,
               listing,
@@ -1003,7 +1022,15 @@ function LifeCardTab(props) {
       case VIEWS.jobs:
         return h(JobsView, { onBack: () => setView(VIEWS.home), flash })
       default:
-        return h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+        return h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: async (m) => {
+            const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
+              ? window.confirm(`确定删掉「${m.name}」吗？\n\n删了就真没了，AI 以后也读不到这一份。`)
+              : true
+            if (ok !== true) return
+            const r = await call('material.delete', { path: m.path })
+            if (r?.ok === true) { flash(`删掉了「${m.name}」`); await refresh(state?.workspace) }
+            else setError(r?.error ?? '没删掉')
+          }, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
     }
   }
 
@@ -1072,7 +1099,7 @@ function SetupView({ state, onDone }) {
 
 // ── 首页 ──────────────────────────────────────────────────────────
 
-function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone }) {
+function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial }) {
   const [q, setQ] = useState('')
   const cards = listing?.cards ?? []
   const filtered = useMemo(() => {
@@ -1186,6 +1213,26 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
         )
       : null,
 
+    // 材料单独一栏。以前材料只在「更多工具」里报个数字，用户从记忆里提出来
+    // 一堆东西之后回首页找不到——不知道存哪了，也没法看、没法删。
+    materials.length === 0
+      ? null
+      : h('div', null,
+          h(GroupTitle, { tone: 'analyze', icon: 'list' }, `材料 · ${materials.length}`),
+          h('div', { className: 'lc-stack' }, materials.map((m) => h('div', { key: m.path, className: 'lc-card-item', style: { cursor: 'default' } },
+            h('div', { className: 'lc-avatar', style: { background: 'var(--lc-analyze-soft)', color: 'var(--lc-analyze)' } }, h(Icon, { name: 'list', size: 14 })),
+            h('div', { className: 'lc-grow', style: { minWidth: 0 } },
+              h('div', { className: 'lc-ellipsis', style: { fontWeight: 600 } }, m.name),
+              h('div', { className: 'lc-meta' }, [
+                m.chars > 0 ? `${m.chars} 字` : (m.size > 0 ? `${m.size} 字节` : '空文件'),
+                m.mtime === undefined ? '' : shortDate(m.mtime),
+              ].filter((x) => x !== '').join(' · ')),
+            ),
+            onMaterial === undefined ? null : h(Btn, { size: 'sm', ghost: true, onClick: () => onMaterial(m) }, '看'),
+            onDeleteMaterial === undefined ? null : h(Btn, { size: 'sm', ghost: true, icon: 'trash', onClick: () => onDeleteMaterial(m), title: '删掉这一份' }, '删'),
+          ))),
+        ),
+
     q.trim() !== '' && filtered.length === 0 && worlds.length === 0
       ? h('div', { className: 'lc-meta', style: { textAlign: 'center', padding: 12 } }, '没找到。换个词试试？')
       : null,
@@ -1228,7 +1275,7 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
       ? h('div', { className: 'lc-stack' },
           h('div', { className: 'lc-meta' }, materials.length === 0
             ? '你还没有放材料。想用材料建卡，先去「添加」里贴一段文字。'
-            : `已经放了 ${materials.length} 份材料（访谈记录、聊天记录、你写的文字都算）。`),
+            : '材料都在上面那一栏里。点「看」能挑一份让 AI 读。'),
           h('div', { className: 'lc-row' },
             h(Btn, { size: 'sm', icon: 'spark', onClick: () => onNavigate(VIEWS.analyze), disabled: materials.length === 0 }, '让 AI 读出建议'),
             h(Btn, { size: 'sm', icon: 'doctor', onClick: onDoDoctor }, '检查档案有没有问题'),
@@ -2946,6 +2993,15 @@ function MemoryView({ onDone, onBack }) {
                 ? null
                 : h('span', { className: 'lc-meta' }, ` · 还缺 ${f.missing.length} 样`)),
             h(Btn, { size: 'sm', tone: 'analyze', icon: 'spark', onClick: () => onDone?.({ id: f.id, name: f.label }) }, '让 AI 读 TA'),
+            // 正好在这里也能删：刚生成、扫一眼就知道不对的那一份，不必再回首页找。
+            h(Btn, {
+              size: 'sm', ghost: true, icon: 'trash', title: '删掉这一份',
+              onClick: async () => {
+                const r = await call('material.delete', { path: f.path })
+                if (r?.ok === true) setMade(made.filter((x) => x.key !== f.key))
+                else setErr(r?.error ?? '没删掉')
+              },
+            }, '删'),
           )),
         ),
 
@@ -2966,11 +3022,11 @@ function peopleKey(p) {
 
 // ── 让 AI 读材料 ──────────────────────────────────────────────────
 
-function AnalyzeView({ listing, state, flash, onProposal, presetAbout, onBack, onNeedMaterial }) {
+function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMaterials, onBack, onNeedMaterial }) {
   const materials = listing?.materials ?? []
   const cards = listing?.cards ?? []
   const [about, setAbout] = useState(presetAbout?.id ?? '')
-  const [chosen, setChosen] = useState([])
+  const [chosen, setChosen] = useState(presetMaterials === undefined || presetMaterials === null ? [] : [presetMaterials])
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const [result, setResult] = useState(null)

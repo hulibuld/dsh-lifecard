@@ -518,5 +518,35 @@ console.log('=== 14. 同一天再跑一次分析，不许覆盖上一轮 ===')
   t('坏文件不进列表', (await store.listDrafts(r15)).length === 0)
 }
 
+// ── 20. 材料能删 ──────────────────────────────────────────────
+{
+  const r16 = path.join(tmpdir(), 'lifecard-test-delmat-' + Date.now())
+  await store.openWorkspace(r16, { create: true })
+  // 示例材料与后来提取的材料都要能删：用户删得掉，才敢按下去试。
+  const one = await store.appendMaterial(r16, '示例材料', '这是一份示例材料。')
+  const two = await store.appendMaterial(r16, '记忆-张三', '张三，1970 年生，做木工。')
+  t('两份材料都在', (await store.listAll(r16)).materials.length === 2)
+
+  const gone = await store.deleteMaterial(r16, one.path)
+  t('删示例材料成功', gone.ok === true, JSON.stringify(gone))
+  const after = (await store.listAll(r16)).materials
+  t('列表里只剩一份', after.length === 1, JSON.stringify(after.map((m) => m.path)))
+  t('删掉的那份真的不在列表里', after.every((m) => m.path !== one.path))
+  t('读材料也读不到删掉的那份', (await store.readMaterials(r16))[one.path] === undefined)
+
+  // 范围卡死：不能顺着 path 删到材料夹外面去。
+  const bad1 = await store.deleteMaterial(r16, 'people/x.md')
+  t('材料夹外面的不给删', bad1.ok === false, JSON.stringify(bad1))
+  const bad2 = await store.deleteMaterial(r16, 'materials/../../etc/passwd')
+  t('带 .. 的路径不给删', bad2.ok === false, JSON.stringify(bad2))
+  const bad3 = await store.deleteMaterial(r16, '')
+  t('没说删哪份就报错', bad3.ok === false)
+  const bad4 = await store.deleteMaterial(r16, two.path)
+  t('第二份也能删', bad4.ok === true, JSON.stringify(bad4))
+  const bad5 = await store.deleteMaterial(r16, two.path)
+  t('删第二遍给人话提示', bad5.ok === false && /不在了/.test(bad5.error), JSON.stringify(bad5))
+  await fs.rm(r16, { recursive: true, force: true })
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

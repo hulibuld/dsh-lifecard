@@ -62,7 +62,7 @@ dsh plugin --profile desktop add /path/to/LifeCard/plugin
 ├── relations/               有向关系边          mama--self.relation.md
 ├── worlds/                  世界观；导进来的世界书落成 worlds/<名字>/world.md
 ├── systems/                 消费协议（扮演 / 访谈 / 写作素材）
-├── materials/               原始材料，只追加、不可编辑
+├── materials/               原始材料，只追加、不编辑；可整份删除
 ├── interviews/              访谈账本（问答过程，不是结果）
 ├── proposals/               建议清单 + 你勾的那几项
 │                            两份文件：.md 给人看，.json 给程序读，
@@ -186,7 +186,7 @@ dsh plugin --profile desktop add /path/to/LifeCard/plugin
 | 决定 | 理由 |
 |---|---|
 | 文件是唯一真源 | 没有任何 KV 缓存充当第二真源。你手改 Markdown，插件立刻看得到 |
-| `materials/` 只追加 | 它是原话的存档，所有断言都要能追回这里 |
+| `materials/` 只追加、可整份删 | 它是原话的存档，所有断言都要能追回这里；但整份可以删掉——从记忆里试提出来的一次性材料，不让删就没人敢按 |
 | 访谈不抽字段 | 抽取归「分析」，那里才有引文校验门。访谈也抽就等于开一条没校验的旁路 |
 | 删除留墓碑 | 撤回要真的能撤回：读取、导出、分析输入都先过 `redactions.jsonl` |
 | 快照存全文不存 diff | 快照是审计依据；diff 快照没法审计，还会和墓碑过滤打架 |
@@ -226,7 +226,7 @@ dsh plugin --profile desktop add /path/to/LifeCard/plugin
 ## 开发
 
 ```bash
-node test/all.mjs        # 全部测试（1347 项）
+node test/all.mjs        # 全部测试（1366 项）
 node test/roundtrip.mjs  # YAML ↔ Markdown 往返
 node test/codec-test.mjs # 酒馆卡编解码 + 双 chunk 同源
 node test/store-test.mjs # 文件层：墓碑、提案、引文门、采纳

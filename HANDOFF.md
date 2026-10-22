@@ -7,7 +7,7 @@
 
 ## 一句话现状
 
-**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 **1347 项**通过，对一个真实运行的 DSH 实例做的端到端验收 **14/14** 通过。**P0（上传 GitHub 前的准备）、P1（陈旧文档）、P2（六项功能扩展）全部做完。** 之后又做了四轮加固：数据层 20 处隐患、编码/路由层 20 处隐患、世界书导入与展示，以及一批界面死路修复。
+**插件已经装好、在跑、测过了。** 侧边栏里能用，访谈 skill 已经注册进 DSH 并且模型能看见，全量测试 **1366 项**通过，对一个真实运行的 DSH 实例做的端到端验收 **14/14** 通过。**P0（上传 GitHub 前的准备）、P1（陈旧文档）、P2（六项功能扩展）全部做完。** 之后又做了四轮加固：数据层 20 处隐患、编码/路由层 20 处隐患、世界书导入与展示，以及一批界面死路修复。
 
 **P3 之后新加的三块**（2026-10-20）：
 - **关系视角改造**：访谈页不再问「你们是什么关系（父母/祖辈/伴侣）」，改成「他是我的什么人」（父亲 / 母亲 / 爷爷 / 奶奶 / 伴侣 / 好友 / 兄弟姐妹 / 同学 / 老师 / 同事 / 亲戚 / 我自己 / 虚构角色 / 自己填），并且可以勾「还有别的吗」（也是伴侣 / 也是家人 / 也是好友 / 也是同事 / 也是老师 / 也是对手）。「这是谁」那栏改名「他叫什么」，跟关系不再重复。
@@ -62,9 +62,9 @@ LifeCard/
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
-| `lib/client.js` | 4007 | **整个侧边栏界面**。纯手写，没有 React 依赖注入以外的框架 |
-| `lib/index.js` | 2185 | 宿主侧：55 条 HTTP 路由、调用模型、**注册访谈 skill**、路径越界闸、导出 consent 闸 |
-| `lib/store.js` | 1303 | 工作区、快照、墓碑 `redactions.jsonl`、提案与勾选旁路、头像、概念、草稿、doctor |
+| `lib/client.js` | 4063 | **整个侧边栏界面**。纯手写，没有 React 依赖注入以外的框架 |
+| `lib/index.js` | 2191 | 宿主侧：64 条 HTTP 路由、调用模型、**注册访谈 skill**、路径越界闸、导出 consent 闸 |
+| `lib/store.js` | 1333 | 工作区、快照、墓碑 `redactions.jsonl`、提案与勾选旁路、头像、概念、草稿、doctor |
 | `lib/core.js` | 1019 | 零依赖：YAML 子集解析/序列化、卡片校验、覆盖率、**引文校验门** |
 | `lib/codec.js` | 785 | PNG tEXt/iTXt 读写、CCv2/CCv3/CHARX、双 chunk 导出、保真字段 |
 | `lib/prompts.js` | 497 | 14 类关系视角 × 问题库（带 `bank` 映射）、`buildAnalyzePrompt` |
@@ -74,7 +74,7 @@ LifeCard/
 | `lib/score.js` | 329 | **纯本地**体检打分 0–100、字数估算、占位符与世界书健康度 |
 | `lib/memory.js` | 454 | 从本机记忆文件里认出「你身边的人」，给出还缺什么 |
 | `skills/lifecard-interview/SKILL.md` | 192 | **会随包安装的那份**访谈 skill |
-| `test/` | 16 个在 `all.mjs` 里 + `live.mjs`，另有 `make-samples.mjs` | 1347 项断言 |
+| `test/` | 16 个在 `all.mjs` 里 + `live.mjs`，另有 `make-samples.mjs` | 1366 项断言 |
 | `locale/{zh,en}.json` | — | 侧栏 tab 的标题与描述 |
 | `cordis.patch.yml` | — | 装进 profile 时插入的插件条目 |
 | `node_modules/@deepseek-ai/schemastery` | — | 软链，见下面坑 #2 |
@@ -88,7 +88,7 @@ LifeCard/
 ```bash
 cd .../LifeCard/plugin
 
-# 1. 全量单元测试：1347 项
+# 1. 全量单元测试：1366 项
 node test/all.mjs
 # → roundtrip 23 / codec 52 / store 121 / score 51 / json-extract 10 / prompt 154
 #   client-smoke 27 / skill-register 18 / routes 63 / hardening-routes 46
@@ -102,7 +102,7 @@ node test/render-all.mjs
 node test/wording-test.mjs
 ```
 
-**2026-10-22 06:05 的实测结果**：`all.mjs` 1347 项全过；`live.mjs` 14/14 全过。
+**2026-10-22 06:05 的实测结果**：`all.mjs` 1366 项全过；`live.mjs` 14/14 全过。
 
 live 那 14 项验的是：插件已激活 / 宿主有 llm / 建工作区 / 卡被列出 / 材料被列出 / 分析跑通 / 有可采纳条目 / 默认不勾选 / 每条都有引文 / 采纳成功 / 导出 PNG / 双 chunk 同源 / doctor 跑通 / 宿主段已写。
 
@@ -128,7 +128,7 @@ live 那 14 项验的是：插件已激活 / 宿主有 llm / 建工作区 / 卡�
 - **端口每次重启都会变**（见过 49204 / 49192 / 53872）。不要写死，以运行时上下文给的 GUI URL 为准，或从 `ps aux | grep dsh-desktop-host` 里看 `--port`。
 - `POST /api/dsh-lifecard/state.get` **不需要 token 就能打**（其它 `/api/*` 路由要 401），所以外部脚本能验插件。
 
-完整的 55 条路由：
+完整的 **64 条**路由（与运行时 `buildApi` 的键一一对上，2026-10-22 实测）：
 
 ```
 state.get  workspace.init  workspace.inspect  workspace.list
@@ -138,17 +138,20 @@ card.history  card.version  card.restore
 avatar.set  avatar.remove  avatar.list
 import.cards  import.text  import.textFile
 export.card  export.json
-material.add  material.list
+material.add  material.list  material.delete
 analyze.run
 proposal.list  proposal.get  proposal.check  proposal.apply
 doctor.run
 interview.questions  interview.plan  interview.record  interview.history
 concept.get  concept.set
+ui.intro
 draft.get  draft.save  draft.drop  draft.list
-memory.scan  memory.import
+memory.scan  memory.import  memory.extract
 job.profile.get  job.profile.set  job.evaluate  job.evaluations  job.evaluation.get
 job.network  job.tracker.list  job.tracker.add  job.tracker.update
 job.stories  job.story.add  job.drafts  job.draft.get  job.resume.build  job.cover.build
+job.interview.start  job.interview.turn  job.interview.answer
+job.interview.end  job.interview.get  job.interview.list
 ```
 
 ---
@@ -195,8 +198,8 @@ job.stories  job.story.add  job.drafts  job.draft.get  job.resume.build  job.cov
 ### P1 — 文档陈旧（✅ 已完成）
 | 位置 | 原来写的 | 现在是 |
 |---|---|---|
-| `README.md:27` | 「96 项测试全部通过」 | 1347 项 |
-| `plugin/README.md:178` | `# 全部测试（96 项）` | 1347 项 |
+| `README.md:27` | 「96 项测试全部通过」 | 1366 项 |
+| `plugin/README.md:178` | `# 全部测试（96 项）` | 1366 项 |
 | `plugin/README.md:29` | 侧栏会出现**人物档案** | **Life Cards** |
 
 `plugin/README.md` 的目录树与"三个入口"图已对着现在的界面重写（commit `43266e6`）。

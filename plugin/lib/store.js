@@ -706,6 +706,35 @@ export async function appendMaterial(root, name, content, options = {}) {
 }
 
 /**
+ * 删一份材料。
+ *
+ * materials/ 原本是「只追加」的，因为人一次次贴材料本来就该越攒越多。
+ * 但从记忆里提取出来的东西往往是一次性的——试一下、看一眼、不对就删。
+ * 不许删的话，用户连试都不敢试（按一下就在盘上留一份他爸的摘录）。
+ * 所以这里开一个口子，范围卡死：只能删 materials/ 下面实在存在的文件。
+ *
+ * 不写墓碑，理由：墓碑是按内容 sha 认的，而「同一天对同一个人重新提取」
+ * 出来的内容常常一模一样，写了墓碑反而会把刚重新提取的那份挡在界面外，
+ * 表现出来就是「点了保存，但哪里都没有」。
+ */
+export async function deleteMaterial(root, rel) {
+  const p = String(rel ?? '').trim()
+  if (p === '') return { ok: false, error: '没说要删哪一份' }
+  const norm = p.replace(/\\/g, '/')
+  if (!norm.startsWith('materials/')) return { ok: false, error: '只能删材料夹里的东西' }
+  if (norm.includes('..')) return { ok: false, error: '这个位置不对' }
+  const at = resolveIn(root, norm)
+  if (!at.ok) return { ok: false, error: at.error }
+  try {
+    await fs.unlink(at.abs)
+  } catch (err) {
+    if (err?.code === 'ENOENT') return { ok: false, error: '这份材料已经不在了，刷新一下看看' }
+    return { ok: false, error: '删不掉，可能是文件正被别的东西占着' }
+  }
+  return { ok: true, path: norm }
+}
+
+/**
  * 读所有材料（给提案的引文校验、分析输入用）。key 是相对路径。
  *
  * 先过墓碑。SPEC §9.1 要求所有读取路径都过滤，分析输入也算一条——
@@ -1286,6 +1315,7 @@ export default {
   writeCard,
   listAll,
   appendMaterial,
+  deleteMaterial,
   readMaterials,
   avatarRelPath,
   writeAvatar,

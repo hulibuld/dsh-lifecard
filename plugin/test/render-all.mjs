@@ -282,7 +282,16 @@ function renderOne(name, Component, props, presets = {}) {
 // 6 activeCard / 7 proposal / 8 doctor / 9 interviewFor / 10 showMore
 const base = (view, extra = {}) => ({ 0: view, 1: STATE, 2: LISTING, 3: '', 4: null, 5: null, 6: null, 7: null, 8: null, 9: null, 10: false, ...extra })
 
-renderRoot('首页（有数据）', base('home'))
+const homeTree = renderRoot('首页（有数据）', base('home'))
+{
+  // 材料必须在首页有一栏。以前只在「更多工具」里报个数字，用户从记忆里
+  // 提出来一堆东西之后回首页找不到——不知道存哪了，也没法看、没法删。
+  const homeText = homeTree === null ? '' : JSON.stringify(expand(homeTree))
+  t('首页有「材料」这一栏', homeText.includes('材料 · 2'), homeText.slice(0, 400))
+  t('首页列出每一份材料', homeText.includes('mama-interview.md'), homeText.slice(0, 400))
+  t('每份材料旁边能「看」', homeText.includes('"看"') || homeText.includes('看'), homeText.slice(0, 400))
+  t('每份材料旁边能「删」', homeText.includes('"删"') || homeText.includes('删'), homeText.slice(0, 400))
+}
 renderRoot('首页（空）', base('home', { 2: { ok: true, cards: [], materials: [], proposals: [], worlds: [], errors: [] } }))
 renderRoot('首页（展开更多工具）', base('home', { 10: true }))
 renderRoot('记忆（从首页进来）', base('memory'))
@@ -670,6 +679,24 @@ if (seen.has('MemoryView')) {
     0: { ok: true, found: true, files: 1, chars: 200, people: [] }, 1: [],
   })
   t('记忆页说得清「一个都没认出来」', tree !== null && JSON.stringify(expand(tree)).includes('没有提到具体的人'))
+
+  // 存完材料之后那一栏。
+  // 没有它用户点完「存成材料」就断了线：不知道存哪了、也不知道下一步该点谁。
+  const MADE = [{
+    key: '父亲:张三', id: 'zhangsan', name: '张三', kin: '父亲', label: '张三',
+    path: 'materials/2026-10-22-记忆-张三.md', missing: [],
+  }, {
+    key: '母亲', id: '母亲', name: '', kin: '母亲', label: '母亲',
+    path: 'materials/2026-10-22-记忆-母亲.md', missing: ['名字', '出生时间'],
+  }]
+  const madeTree = renderOne('记忆（存完材料之后）', seen.get('MemoryView'), { onBack: () => {}, onDone: () => {} }, {
+    0: MEM_PEOPLE, 1: ['父亲:张三', '母亲'], 2: false, 3: null,
+    4: { tone: 'ok', text: '存好了，一人一份，共 2 份。' }, 5: MADE,
+  })
+  const madeText = madeTree === null ? '' : JSON.stringify(expand(madeTree))
+  t('存完材料后列出每个人', madeText.includes('张三') && madeText.includes('母亲'), madeText.slice(0, 300))
+  t('每个人后面有「让 AI 读」的按钮', madeText.includes('让 AI 读'), madeText.slice(0, 300))
+  t('说清下一步是挑一个人', madeText.includes('挑一个人'), madeText.slice(0, 300))
 }
 
 if (seen.has('CompetencyEditor')) {

@@ -944,6 +944,12 @@ function buildApi(ctx, workspace, config) {
       return { ok: true, files, bodies: body?.withBody === true ? all : undefined }
     },
 
+    /** 删材料。只能删 materials/ 下面的；删了就真没了，不留底。 */
+    'material.delete': async (body) => {
+      const ws = await root(body)
+      return store.deleteMaterial(ws, body?.path)
+    },
+
     /**
      * 分析：材料 → 提案。
      *

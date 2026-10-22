@@ -18,7 +18,7 @@
 | 对话访谈（问题库 + 覆盖度排题 + 账本） | ✅ |
 | 文本导入 → 分析 → 引文校验门 → 提案 → 勾选采纳 | ✅ |
 | doctor（数据段 + 宿主段） | ✅ |
-| 测试 | 1347 项，全部通过（`node plugin/test/all.mjs`） |
+| 测试 | 1366 项，全部通过（`node plugin/test/all.mjs`） |
 
 测过的真实环境：DSH 0.2.0-rc.2 + better-sidebar，模型路由实测可用。
 
@@ -71,7 +71,7 @@ C 不是新链路，这是它能成立的原因：一套闸门，两个进料口
 ├── systems/
 │   ├── reality-interview.system.md
 │   └── ccv2-prompt.system.md
-├── materials/                        # 原始材料，只追加、不可编辑
+├── materials/                        # 原始材料，只追加、不编辑；可整份删除
 │   └── 2026-10-18-爷爷的访谈.md
 ├── interviews/                       # 访谈账本（问答过程，不是结果）
 │   └── 2026-10-18-爷爷.jsonl
@@ -291,7 +291,7 @@ lifecard import text 爷爷访谈.md --about 爷爷
 ```
 
 ```
-materials/2026-10-18-爷爷访谈.md      # 原文，只追加、不可编辑
+materials/2026-10-18-爷爷访谈.md      # 原文，只追加、不编辑；可整份删除
 ```
 
 然后（下例是 v0.2 规划中的命令行形态；v0.1 在侧栏里点「整理材料」）：
