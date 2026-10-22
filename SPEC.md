@@ -294,7 +294,7 @@ lifecard import text 爷爷访谈.md --about 爷爷
 materials/2026-10-18-爷爷访谈.md      # 原文，只追加、不可编辑
 ```
 
-然后：
+然后（下例是 v0.2 规划中的命令行形态；v0.1 在侧栏里点「整理材料」）：
 
 ```
 lifecard analyze 爷爷 --material 爷爷访谈
