@@ -445,6 +445,18 @@ export async function readCard(root, relPath) {
     return { ok: false, path: relPath, error: `这条记录已被撤回（${hit.reason ?? '未说明原因'}），不再显示` }
   }
   const parsed = core.parseCard(text)
+  // 解析失败要说失败。以前无论 parse 成不成一律 ok:true，于是格式坏掉的卡
+  // 会以「一张什么都没有的卡」出现在列表里，而界面上那句「有 N 个文件读不了」
+  // 永远不触发——用户看得见坏结果，却看不见原因。
+  if (parsed.ok !== true) {
+    return {
+      ok: false,
+      path: relPath,
+      text,
+      error: `这个文件读不出来：${(parsed.errors ?? []).join('；') || '格式不对'}`,
+      parse: parsed,
+    }
+  }
   return { ok: true, path: relPath, text, data: parsed.data, sections: parsed.sections, parse: parsed }
 }
 
@@ -478,13 +490,26 @@ export async function writeCard(root, relPath, data, sections, options = {}) {
   const abs = at.abs
   await fs.mkdir(path.dirname(abs), { recursive: true })
   // 快照：旧内容存全文（快照是审计依据，不能只存 diff）
+  let old = null
   try {
-    const old = await fs.readFile(abs, 'utf8')
-    const snapDir = path.join(root, '.lifecard/snapshots', relPath.replace(/[\\/]/g, '__'))
-    await fs.mkdir(snapDir, { recursive: true })
-    await fs.writeFile(path.join(snapDir, `${await freeStamp(snapDir, new Date())}.md`), old, 'utf8')
-  } catch {
-    // 首次写入，没有旧内容
+    old = await fs.readFile(abs, 'utf8')
+  } catch (err) {
+    // 只有「本来就没有这张卡」可以放过去。别的读失败（权限、磁盘）必须
+    // 让这次写入停下来：悄悄跳过快照再覆盖，等于把唯一的回滚依据丢了，
+    // 而用户只会看到「保存成功」。
+    if (err?.code !== 'ENOENT') {
+      return { ok: false, path: relPath, error: '这张卡原来的内容读不出来，为了不覆盖掉它，这次没存。检查一下文件权限或磁盘空间，再试一次。' }
+    }
+  }
+  if (old !== null) {
+    try {
+      const snapDir = path.join(root, '.lifecard/snapshots', relPath.replace(/[\\/]/g, '__'))
+      await fs.mkdir(snapDir, { recursive: true })
+      await fs.writeFile(path.join(snapDir, `${await freeStamp(snapDir, new Date())}.md`), old, 'utf8')
+    } catch {
+      // 快照留不下就不许覆盖：留不下快照还照写，就是「丢了一份文件还报成功」。
+      return { ok: false, path: relPath, error: '这次改动之前的那一版没能备份下来，为了不丢掉它，这次没存。检查一下磁盘空间，再试一次。' }
+    }
   }
   const text = core.stringifyCard(data, sections)
   await fs.writeFile(abs, text, 'utf8')

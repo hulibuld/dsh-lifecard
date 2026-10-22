@@ -419,6 +419,45 @@ console.log('=== 11. 侧车不进待办；采纳过的条目不重复写 ===')
   t('已采纳数不超过可采用数', listed2[0]?.adopted <= listed2[0]?.accepted, listed2[0])
 }
 
+// ── 12. 快照留不下就不许覆盖；坏卡要报「读不出来」而不是装成空卡 ────
+// 两个都是「界面说成功、其实丢了东西」的形状：
+// 快照写失败被 catch 吞掉后照样覆盖 —— 唯一能回滚的那一份没了，用户还以为是保存成功；
+// 解析失败被当成 ok:true —— 格式坏掉的卡变成一张空白卡挂在列表里，
+// 而那句「有 N 个文件读不了」永远不触发。
+console.log('=== 12. 快照写不下就不覆盖；格式坏的卡要报错 ===')
+{
+  await store.writeCard(root, 'people/keep.card.md', {
+    lifecard: '0.1', id: 'keep', kind: 'real', world: 'reality', name: '原名',
+  }, [{ title: '自述', body: '第一版。' }], { force: true })
+
+  // 把快照目录的位置占成一个文件：mkdir 必然失败
+  const snapDirAsFile = path.join(root, '.lifecard', 'snapshots', 'people__keep.card.md')
+  await fs.mkdir(path.dirname(snapDirAsFile), { recursive: true })
+  await fs.writeFile(snapDirAsFile, "x", "utf8")
+
+  const blocked = await store.writeCard(root, 'people/keep.card.md', {
+    lifecard: '0.1', id: 'keep', kind: 'real', world: 'reality', name: '改过的名字',
+  }, [{ title: '自述', body: '第二版。' }], { force: true })
+  t('快照写不下时拒绝覆盖', blocked.ok === false, blocked)
+  t('拒绝时给了人话原因', typeof blocked.error === 'string' && blocked.error.length > 4, blocked)
+
+  const still = await store.readCard(root, 'people/keep.card.md')
+  t('旧内容还在，没被覆盖', still.ok === true && still.data.name === '原名', still.data?.name)
+
+  // 清掉占位，恢复可写
+  await fs.rm(snapDirAsFile, { recursive: true, force: true })
+
+  // 坏卡：开头没有 --- 分隔线
+  await fs.writeFile(path.join(root, 'people', 'broken.card.md'), '# 我开始写了但没写头\n\n## 自述\n随便写。\n', 'utf8')
+  const bad = await store.readCard(root, 'people/broken.card.md')
+  t('格式坏的卡读出来是失败', bad.ok === false, bad)
+  t('失败原因是人话', typeof bad.error === 'string' && bad.error.includes('读不出来'), bad.error)
+
+  const all = await store.listAll(root)
+  t('坏卡没被当成正常卡列出来', all.cards.every((c) => c.path !== 'people/broken.card.md'), all.cards.map((c) => c.path))
+  t('坏卡进了读不了清单', all.errors.some((e) => String(e.path).includes('broken.card.md')), all.errors)
+}
+
 // ── 收尾 ───────────────────────────────────────────────────────────
 await fs.rm(root, { recursive: true, force: true }).catch(() => {})
 await fs.rm(sibling, { recursive: true, force: true }).catch(() => {})
