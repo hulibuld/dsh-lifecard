@@ -2391,6 +2391,12 @@ function ProposalPanel({ proposal, onClose, onApplied, applyBlocked, onBuildCard
       if ((r.skipped ?? 0) > 0) {
         setErr(`有 ${r.skipped} 条写不进去——它们想改的是只有你自己能填的地方（比如这张卡属于真人还是虚构、对方知不知道）。这些请在卡片里自己改。`)
       }
+      // 还有一种写不进去：勾了，但当初引用的那段原文已经不在材料里了
+      // （材料删得掉，删完旧提案就失去依据）。这类单独说，否则用户会以为
+      // 自己勾的东西被无故吞了。
+      if ((r.dropped ?? 0) > 0) {
+        setErr(`有 ${r.dropped} 条没写——勾选的那几条引用的原文已经不在材料里了（可能是那份材料被删掉了）。有原文的已经写进去了；这几条要重新整理材料才能再来一遍。`)
+      }
       await onApplied(r)
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
   }
