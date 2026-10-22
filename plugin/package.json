@@ -52,5 +52,14 @@
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.4"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "keywords": [
+    "dsh-plugin",
+    "character-card",
+    "sillytavern",
+    "worldbook",
+    "lifecard",
+    "persona-archive",
+    "markdown"
+  ]
 }
