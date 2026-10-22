@@ -12,6 +12,11 @@ const t = (n, c, x) => { if (c) { pass++; console.log('  PASS', n) } else { fail
 const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
 t('是 ModuleLoader 格式', source.startsWith('window.__ModuleLoader__.load({'))
 t('有 factory', source.includes('factory: (require) =>'))
+// 后台有几条路由把 error 写成 {code, message}（导出门禁那几条）。
+// 界面拿到的是这个东西本身，塞进红字里就是 [object Object]，
+// 严重时 React 直接抛、用户看到白屏。所以 call() 必须统一压成一句话。
+// 这条只能查源码里那段归一化还在——call() 没有对外导出，测不到运行时。
+t('call() 会把对象形状的 error 压成一句话', source.includes("typeof json.error === 'object'") && source.includes('json.error.message'))
 
 // 假 React：createElement 返回一个可检查的树节点
 const hookStore = []

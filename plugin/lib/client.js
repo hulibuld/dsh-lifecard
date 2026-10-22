@@ -44,11 +44,20 @@ async function call(method, body) {
       ? '这一步没有权限，没做成。'
       : '后台没能完成这一步。等一会儿再试一次；还不行就重启一下软件。')
   }
+  let json
   try {
-    return await res.json()
+    json = await res.json()
   } catch {
     throw new Error('后台回的话没看懂，这一步可能没做成。再试一次看看。')
   }
+  // 有些路由把 error 写成了 {code, message}（导出门禁那几条就是这样）。
+  // 界面拿到的是这个东西本身，塞进红字里就是 [object Object]，
+  // 严重时 React 直接抛、用户看到白屏。在这里统一压成一句话，
+  // 比让每个调用点各自记得判形状可靠——漏一个就是一个白屏。
+  if (json !== null && typeof json === 'object' && json.error !== null && typeof json.error === 'object') {
+    json.error = String(json.error.message ?? json.error.error ?? '这一步没做成。')
+  }
+  return json
 }
 
 /**

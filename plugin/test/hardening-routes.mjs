@@ -224,5 +224,18 @@ await fs.rm(ws, { recursive: true, force: true }).catch(() => {})
 await fs.rm(sibling, { recursive: true, force: true }).catch(() => {})
 await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
 
+// ── 导出门禁的 error 必须是一句话，不是对象 ────────────────────
+{
+  // 曾经这里 return { ok:false, error: {code, message} }。
+  // 界面把 error 直接塞进红字里显示：运气好显示成 [object Object]，
+  // 运气不好 React 直接抛，用户看到的是白屏。门禁本身是对的，是形状错了。
+  const api2 = api.buildApi({}, async () => ws, {})
+  await api2['card.save']({ data: { lifecard: '0.1', id: 'lens-x', kind: 'lens', world: 'reality', name: '某透镜' }, sections: [] })
+  const r = await api2['export.card']({ path: 'people/lens-x.card.md' })
+  t('lens 卡导不出 PNG', r.ok === false, r)
+  // 路由层的 error 是 {code, message}：code 给程序判，message 给人看。
+  t('拦下来时带可判定的 code', r.error?.code === 'not-exportable', r)
+  t('拦下来时 message 是人话', typeof r.error?.message === 'string' && /透镜/.test(r.error.message), r)
+}
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
