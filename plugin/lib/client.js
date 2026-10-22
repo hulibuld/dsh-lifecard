@@ -1116,7 +1116,10 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
     if (needle === '') return cards
     return cards.filter((c) => `${c.name} ${c.id} ${(c.tags ?? []).join(' ')} ${c.relation ?? ''}`.toLowerCase().includes(needle))
   }, [cards, q])
-  const proposals = listing?.proposals ?? []
+  // 已经全部采纳完的建议不再算「还等着你看」——留着会让待办永远清不空，
+  // 用户每次回首页都以为自己还有事没做。
+  const allProposals = listing?.proposals ?? []
+  const proposals = allProposals.filter((p) => (p.adopted ?? 0) < (p.accepted ?? 0))
   const materials = listing?.materials ?? []
   const avatars = listing?.avatars ?? {}
   // 世界书不是卡：它没有覆盖度、不参与体检打分，放在卡列表里会让人以为
@@ -1263,7 +1266,11 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
             h('div', { className: 'lc-avatar', style: { background: 'var(--lc-analyze-soft)', color: 'var(--lc-analyze)' } }, h(Icon, { name: 'spark', size: 14 })),
             h('div', { className: 'lc-grow' },
               h('div', { style: { fontWeight: 600 } }, `关于「${p.about}」`),
-              h('div', { className: 'lc-meta' }, `${p.accepted} 条可以采用`, p.rejected > 0 ? ` · ${p.rejected} 条没能核实，已丢掉` : '', ' · ', shortDate(p.generated_at)),
+              h('div', { className: 'lc-meta' },
+                `${p.accepted} 条可以采用`,
+                (p.adopted ?? 0) > 0 ? ` · 已经写进去 ${p.adopted} 条` : '',
+                p.rejected > 0 ? ` · ${p.rejected} 条没能核实，已丢掉` : '',
+                ' · ', shortDate(p.generated_at)),
             ),
           ))),
         )
@@ -2454,15 +2461,90 @@ function fieldLabel(field) {
   return table[field] ?? (String(field ?? '').startsWith('自述') || String(field ?? '') === '' ? '一段描述' : '一条补充')
 }
 
+/** 英文（旧版或模型偶尔会写）→ core 的四个中文等级。core 只认这四个。 */
+const LEVEL_ALIAS = {
+  novice: '入门', beginner: '入门', basic: '入门',
+  intermediate: '熟手', medium: '熟手',
+  expert: '精通', advanced: '精通',
+  master: '专家', native: '专家',
+}
+
+function levelLabel(level) {
+  const s = String(level ?? '').trim()
+  if (LEVEL_LABEL.includes(s)) return s
+  return LEVEL_ALIAS[s.toLowerCase()] ?? '程度没填'
+}
+
+/** 挑出能直接给人看的词；对象里的结构不摆到界面上。 */
+function wordList(value) {
+  const list = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value]
+  const out = []
+  for (const one of list) {
+    const word = typeof one === 'string' ? one : String(one?.label ?? one?.key ?? one?.name ?? '').trim()
+    if (word !== '') out.push(word)
+  }
+  return out
+}
+
+function describeCompetency(value) {
+  const one = value !== null && typeof value === 'object' ? value : {}
+  const name = String(one.key ?? one.label ?? one.name ?? '').trim()
+  if (name === '') return ''
+  return `${name}：${levelLabel(one.level)}`
+}
+
+/**
+ * 把一条建议的值说成人话。
+ *
+ * 这里禁止 JSON.stringify：界面上曾经出现过
+ * `knows: ["榫卯"]；does_not_know: []` 和英文程度 `expert`。
+ * 认识的形状按字段翻；不认识的一律说「一条补充」，不把结构抖出来。
+ */
 function describeValue(item) {
   const v = item?.value
-  if (v === null || v === undefined) return String(item?.field ?? '（空）')
+  const field = String(item?.field ?? '')
+  if (v === null || v === undefined) return '一条补充'
   if (typeof v === 'string') return v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  if (Array.isArray(v)) {
+    if (field === 'competency') {
+      const rows = v.map(describeCompetency).filter((s) => s !== '')
+      return rows.length > 0 ? rows.join('；') : '一条补充'
+    }
+    const words = wordList(v)
+    return words.length > 0 ? words.join('、') : '一条补充'
+  }
   if (typeof v !== 'object') return String(v)
-  const label = v.label ?? v.key ?? v.name
-  if (label !== undefined && v.level !== undefined) return `${label} / ${v.level}`
-  if (label !== undefined) return String(label)
-  return Object.keys(v).map((k) => `${k}: ${typeof v[k] === 'object' ? JSON.stringify(v[k]) : v[k]}`).join('；')
+
+  if (field === 'knowledge') {
+    const knows = wordList(v.knows)
+    const notKnows = wordList(v.does_not_know)
+    const rows = []
+    if (knows.length > 0) rows.push(`知道：${knows.join('、')}`)
+    if (notKnows.length > 0) rows.push(`不知道：${notKnows.join('、')}`)
+    return rows.length > 0 ? rows.join('；') : '一条补充'
+  }
+  if (field === 'address') {
+    const them = wordList(v.them_to_me)
+    const me = wordList(v.me_to_them)
+    const rows = []
+    if (them.length > 0) rows.push(`他叫你：${them.join('、')}`)
+    if (me.length > 0) rows.push(`你叫他：${me.join('、')}`)
+    return rows.length > 0 ? rows.join('；') : '一条补充'
+  }
+  if (field === 'life') {
+    const rows = []
+    for (const [key, label] of [['dietary', '吃'], ['physical', '身体'], ['sensory', '感觉'], ['logistics', '日常']]) {
+      const words = wordList(v[key])
+      if (words.length > 0) rows.push(`${label}：${words.join('、')}`)
+    }
+    return rows.length > 0 ? rows.join('；') : '一条补充'
+  }
+  if (field === 'competency' || (v.level !== undefined && (v.key !== undefined || v.label !== undefined))) {
+    const row = describeCompetency(v)
+    return row === '' ? '一条补充' : row
+  }
+  return '一条补充'
 }
 
 // ── 新建空卡 ──────────────────────────────────────────────────────
@@ -4066,7 +4148,14 @@ function apply(ctx) {
   }), 'lifecard: better-sidebar tab')
 }
 
-const inject = ['betterSidebar', 'slots']
+// 只声明随宿主一起来的东西。
+//
+// `betterSidebar` 是另装的第三方插件，不在随附运行时里。把它写进 inject 的
+// 后果不是「少一个入口」，而是 Cordis 认为这个 fiber 的前置没就绪、整个 apply
+// 都不执行——干净 profile 上连自带的左侧栏图标和主面板一起消失，用户看到的是
+// 「插件没装上」。所以它只走下面 ctx.get 的可选分支：有就多一个右侧标签页，
+// 没有就只是少一个入口。
+const inject = ['slots']
 
 
 

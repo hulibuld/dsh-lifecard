@@ -1027,6 +1027,47 @@ export async function writeCheckedFile(root, jsonRel, checked) {
   return { ok: true, checked: clean }
 }
 
+/**
+ * 已经采纳过的条目标记。
+ *
+ * 采纳一次之后，提案文件本身还留在提案夹里（用户可能想回看「当时为什么这么写」）。
+ * 但界面上的「还等着你看的建议」如果继续把它算进去，一个已经处理完的东西
+ * 会永远挂在待办里；更糟的是再点一次采纳，数组型字段（competency、taboos）
+ * 会被重复 push，卡里长出两条一模一样的记录。
+ * 所以采纳成功时把「这条已经写进去了」按指纹记下来，下次跳过。
+ */
+function appliedRelOf(jsonRel) {
+  return jsonRel.replace(/\.json$/, '.applied.json')
+}
+
+/** 一条条目的稳定指纹：改的是哪个字段、写成什么值。 */
+function itemFingerprint(item) {
+  return String(item?.field ?? '') + '\u0000' + JSON.stringify(item?.value ?? null)
+}
+
+/** 读已采纳指纹。文件不存在时返回空表。 */
+export async function readAppliedFile(root, jsonRel) {
+  try {
+    const raw = JSON.parse(await fs.readFile(path.join(root, appliedRelOf(jsonRel)), 'utf8'))
+    return new Set(Array.isArray(raw?.applied) ? raw.applied.filter((x) => typeof x === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+async function writeAppliedFile(root, jsonRel, fingerprints) {
+  const abs = path.join(root, appliedRelOf(jsonRel))
+  try {
+    await fs.mkdir(path.dirname(abs), { recursive: true })
+    const list = [...new Set(fingerprints)].sort()
+    await fs.writeFile(abs, JSON.stringify({ applied: list, updated_at: new Date().toISOString() }, null, 2) + '\n', 'utf8')
+    return { ok: true }
+  } catch {
+    // 标记写不进去不该让采纳失败——卡已经写成功了，丢的只是「别重复采纳」的备忘。
+    return { ok: false }
+  }
+}
+
 /** 读一份提案的 JSON，并解析对应 Markdown 里的勾选状态。 */
 export async function readProposal(root, jsonRel) {
   const abs = (rel) => path.join(root, rel)
@@ -1079,15 +1120,23 @@ export async function listProposals(root) {
   const out = []
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.json')) continue
+    // `<名字>.checked.json` / `<名字>.applied.json` 是提案的旁路备忘，不是提案本身。
+    // 以前只按 .json 结尾筛，于是这两份侧车会被当成「还等着你看的建议」列出来：
+    // 点开 0 条，清也清不掉，待办计数还虚高。
+    if (entry.name.endsWith('.checked.json') || entry.name.endsWith('.applied.json')) continue
     const rel = path.posix.join('proposals', entry.name)
     try {
       const record = JSON.parse(await fs.readFile(path.join(dir, entry.name), 'utf8'))
+      const done = await readAppliedFile(root, rel)
       out.push({
         json: rel,
         about: record.about?.id ?? entry.name.replace(/\.json$/, ''),
         generated_at: record.generated_at,
         accepted: Array.isArray(record.accepted) ? record.accepted.length : 0,
         rejected: Array.isArray(record.rejected) ? record.rejected.length : 0,
+        // 已经写进卡的条数：界面据此把「整份都采纳完了」的建议从待办里摘掉。
+        adopted: (Array.isArray(record.accepted) ? record.accepted : [])
+          .filter((i) => done.has(itemFingerprint(i))).length,
       })
     } catch {
       // 坏文件跳过
@@ -1125,14 +1174,24 @@ export async function applyProposal(root, jsonRel, options = {}) {
   // 所以这里重验一次，对不上的跳过并在返回值里报数，让界面能说清「有几条因为
   // 原文没了没写进去」。
   const materials = await readMaterials(root)
+  // 已经采纳过的条目不再写第二次：数组型字段（competency / taboos / tags）
+  // 会因此长出重复条目，而用户看到的只是「我又点了一下采纳」。
+  const doneBefore = await readAppliedFile(root, jsonRel)
   const stillThere = []
   const dropped = []
+  const already = []
   for (const item of chosen) {
     const q = core.verifyQuote(item, materials)
-    if (q.ok) stillThere.push(item)
-    else dropped.push({ field: item?.field ?? '', reason: q.reason })
+    if (!q.ok) { dropped.push({ field: item?.field ?? '', reason: q.reason }); continue }
+    if (doneBefore.has(itemFingerprint(item))) { already.push(item?.field ?? ''); continue }
+    stillThere.push(item)
   }
   if (stillThere.length === 0) {
+    // 全都是「之前已经采纳过」的：这不是失败。再点一次采纳应该什么都不发生，
+    // 而不是弹一句「原文都已经不在材料里了」把人吓一跳。
+    if (already.length > 0) {
+      return { ok: true, path: target, applied: 0, appliedLabels: [], skipped: 0, dropped: dropped.length, already: already.length }
+    }
     return {
       ok: false,
       error: '勾选的这些条目，原文都已经不在材料里了（可能材料被删过），所以一条都没写。',
@@ -1149,6 +1208,9 @@ export async function applyProposal(root, jsonRel, options = {}) {
   }
   const written = await writeCard(root, target, data, sections)
   if (!written.ok) return written
+  // 记账只记真的写进卡的那些（applyItem 返回 true 的），否则下次会重写一遍。
+  const doneNow = stillThere.filter((i) => applied.includes(describeValue(i)))
+  await writeAppliedFile(root, jsonRel, [...doneBefore, ...doneNow.map(itemFingerprint)])
   return {
     ok: true,
     path: target,
@@ -1157,6 +1219,8 @@ export async function applyProposal(root, jsonRel, options = {}) {
     skipped: stillThere.length - applied.length,
     // 原文已经不在的条目单独报：它们不是「没勾」，是「勾了但证据没了」。
     dropped: dropped.length,
+    // 之前已经采纳过、这次跳过的条数。
+    already: already.length,
   }
 }
 
@@ -1267,7 +1331,7 @@ export async function doctor(root) {
   worldIds.add('reality')
   for (const card of all.cards) {
     if (card.world !== undefined && card.world !== 'reality' && !worldIds.has(String(card.world))) {
-      issues.push({ path: card.path, level: 'warn', field: 'world', message: `world "${card.world}" 不存在（worlds/ 下没有这个 id）` })
+      issues.push({ path: card.path, level: 'warn', field: 'world', message: '这张卡写的那个世界已经找不到了，去「世界」里重新选一个。' })
     }
   }
   // 悬空关系端点
@@ -1348,6 +1412,7 @@ export default {
   appendMaterial,
   deleteMaterial,
   readMaterials,
+  readAppliedFile,
   avatarRelPath,
   writeAvatar,
   readAvatar,

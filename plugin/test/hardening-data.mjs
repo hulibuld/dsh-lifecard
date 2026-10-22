@@ -370,6 +370,55 @@ console.log('=== 10. 删了材料，旧提案里引用它的条目要落空 ==='
   // 「每天五点起床」只在甲里，甲没了就不该写
   t('没了原文的那条没写进卡', after.data.status !== 'deceased', after.data.status)
 }
+// ── 11. 提案侧车不当提案；采纳过的条目不再写第二次 ───────────────
+// 两个都是「界面看起来正常、但账在慢慢错」的 bug：
+// 侧车被列进待办 → 点开 0 条、清不掉、待办计数虚高；
+// 重复采纳 → 数组字段（competency/taboos）被 push 两遍，卡里长出重复条目。
+console.log('=== 11. 侧车不进待办；采纳过的条目不重复写 ===')
+{
+  await store.writeCard(root, 'people/mama4.card.md', {
+    lifecard: '0.1', id: 'mama4', kind: 'real', world: 'reality', name: '妈妈4',
+  }, [{ title: '自述', body: '爱做饭。' }], { force: true })
+
+  const matsText = '她说最拿手的是红烧肉。'
+  await fs.mkdir(path.join(root, 'materials'), { recursive: true })
+  await fs.writeFile(path.join(root, 'materials', '丙.md'), matsText, 'utf8')
+
+  const proposal = {
+    about: { id: 'mama4' },
+    items: [
+      { field: 'taboos', value: ['别提那件事'], source_level: '自述', evidence: { material: 'materials/丙.md', quote: '最拿手的是红烧肉' } },
+    ],
+  }
+  const saved = await store.saveProposal(root, 'mama4', proposal, { 'materials/丙.md': matsText })
+  t('保存成功', saved.ok === true, saved)
+
+  // 写一份勾选侧车，它绝不能被当成一份提案列出来
+  await store.writeCheckedFile(root, saved.json, [0])
+  const listed = await store.listProposals(root)
+  t('侧车没有混进提案列表', listed.every((x) => !String(x.json).includes('.checked.json')), listed.map((x) => x.json))
+  t('提案列表里这份只出现一次', listed.filter((x) => String(x.json).includes('mama4')).length === 1, listed.map((x) => x.json))
+
+  const first = await store.applyProposal(root, saved.json, { checked: [0] })
+  t('第一次采纳成功', first.ok === true, first)
+  t('第一次采纳了一条', first.applied === 1, first)
+
+  // 再点一次同一份、同样勾选
+  const second = await store.applyProposal(root, saved.json, { checked: [0] })
+  t('第二次仍然返回成功（不是报错）', second.ok === true, second)
+  t('第二次没有重复写', second.applied === 0, second)
+  t('第二次记成「之前已采纳」', second.already === 1, second)
+
+  const after = await store.readCard(root, 'people/mama4.card.md')
+  const taboos = (after.data.taboos ?? []).map((x) => (typeof x === 'string' ? x : x?.label))
+  t('卡里那条没被写两遍', taboos.length === 1, taboos)
+
+  // 采纳完，列表要知道这份已经采纳过，界面才能把它从待办里摘掉
+  const listed2 = await store.listProposals(root)
+  t('列表报告已采纳条数', listed2[0]?.adopted === 1, listed2)
+  t('已采纳数不超过可采用数', listed2[0]?.adopted <= listed2[0]?.accepted, listed2[0])
+}
+
 // ── 收尾 ───────────────────────────────────────────────────────────
 await fs.rm(root, { recursive: true, force: true }).catch(() => {})
 await fs.rm(sibling, { recursive: true, force: true }).catch(() => {})

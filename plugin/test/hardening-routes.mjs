@@ -235,7 +235,9 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   t('lens 卡导不出 PNG', r.ok === false, r)
   // 路由层的 error 是 {code, message}：code 给程序判，message 给人看。
   t('拦下来时带可判定的 code', r.error?.code === 'not-exportable', r)
-  t('拦下来时 message 是人话', typeof r.error?.message === 'string' && /透镜/.test(r.error.message), r)
+  // 界面会把 message 原样显示出来，所以它一个字的技术词都不能有。
+  const FORBIDDEN = /lens|kind|consent|basis|recorded_at|chunk|schema|json|JSON|proposal|frontmatter|snapshot|workspace|YAML/
+  t('拦下来时 message 是人话', typeof r.error?.message === 'string' && r.error.message.length > 4 && !FORBIDDEN.test(r.error.message), r)
 }
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

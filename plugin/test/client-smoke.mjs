@@ -81,7 +81,13 @@ const spec = fakeWindow.__spec
 t('有 apply 导出', typeof (api.apply ?? spec?.factory) === 'function' || typeof api.apply === 'function')
 
 if (typeof api.apply === 'function') {
-  t('inject 含 betterSidebar', Array.isArray(api.inject) && api.inject.includes('betterSidebar'), JSON.stringify(api.inject))
+  // inject 里**不许**出现第三方宿主服务。
+  //
+  // betterSidebar 是另装的插件，不在随附运行时里。Cordis 对未就绪的 inject
+  // 会挂起整个 fiber：apply 一句都不执行，连本插件自带的左侧栏图标和主面板
+  // 也一起消失——干净 profile 上用户看到的就是「插件没装上」。
+  // 它只该走 apply 里 ctx.get('betterSidebar') 的可选分支。
+  t('inject 不含第三方 betterSidebar', Array.isArray(api.inject) && !api.inject.includes('betterSidebar'), JSON.stringify(api.inject))
 
   // 假 ctx
   const effects = []
@@ -122,7 +128,8 @@ if (typeof api.apply === 'function') {
     t('组件能渲染（二次）', false, e.stack)
   }
 
-  // 没有 betterSidebar 时不应抛错
+  // 既没有 betterSidebar、也没有 slots 时不应抛错：
+  // 精简 profile 就是这种状态，它必须能起来（这是用户给的硬约束）。
   const ctx2 = { get: () => undefined, effect: () => {} }
   const warn = console.warn
   let warned = ''
