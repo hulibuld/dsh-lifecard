@@ -82,7 +82,7 @@ console.log('=== 5. 提案：引文门 ===')
     items: [
       { field: 'competency', value: { key: 'craft', label: '手艺', level: '熟手' }, source_level: '自述', evidence: { material: Object.keys(materials)[0], quote: '十几岁开始做这行，做了很多年' } },
       { field: 'birth_year', value: 1958, source_level: '推测', evidence: { material: Object.keys(materials)[0], quote: '他生于一九五八年' } },
-      { field: '自述', value: '会做一门手艺', source_level: '自述', evidence: { material: Object.keys(materials)[0], quote: '最得意的是 1985 年那间铺子' } },
+      { field: '自述', value: '会做手艺活', source_level: '自述', evidence: { material: Object.keys(materials)[0], quote: '最得意的是 1985 年那间铺子' } },
     ],
     gaps: [{ field: 'birth_year', why: '材料没说出出生年' }],
   }
