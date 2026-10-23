@@ -696,6 +696,10 @@ if (seen.has('ProposalPanel')) {
   t('写进过卡的那条不再列出来', !text.includes('那年冬天他一个人去了南方'), text)
   t('还没写的那条照样列出来', text.includes('话少，但答应了就一定做'), text)
   t('说了有几条已经写进去了', text.includes('1 条之前已经写进卡了'), text)
+  // 用户报的：「都不要」等于什么都没发生，那份建议一直占着首页的位置。
+  // 现在这一下要真把整份从待办里撤掉，所以它不能长得像「关掉」。
+  t('「都不要」是一个真动作，不是关窗口', text.includes('都不要'), text)
+  t('「都不要」不用「关闭 / 收起」这种说法', !/关掉这份|收起建议|关闭建议/.test(text), text)
 }
 
 if (seen.has('ProposalPanel')) {

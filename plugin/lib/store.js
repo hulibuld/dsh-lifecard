@@ -1064,6 +1064,37 @@ export async function writeCheckedFile(root, jsonRel, checked) {
  * 会被重复 push，卡里长出两条一模一样的记录。
  * 所以采纳成功时把「这条已经写进去了」按指纹记下来，下次跳过。
  */
+/**
+ * 「这份建议我不要了」的旁路文件。
+ *
+ * 采纳过一部分也会用到它：剩下的那几条不再采纳，整份就该从首页待办里消失。
+ * 记在旁路而不是删文件——删了的话，用户过几天想回头看「当时 AI 说了什么」
+ * 就再也找不到了，而那条记录本身是有价值的。
+ */
+function dismissedRelOf(jsonRel) {
+  return jsonRel.replace(/\.json$/, '.dismissed.json')
+}
+
+export async function readDismissed(root, jsonRel) {
+  try {
+    const raw = JSON.parse(await fs.readFile(path.join(root, dismissedRelOf(jsonRel)), 'utf8'))
+    return raw?.dismissed === true
+  } catch {
+    return false
+  }
+}
+
+export async function writeDismissed(root, jsonRel, dismissed = true) {
+  const abs = path.join(root, dismissedRelOf(jsonRel))
+  if (dismissed !== true) {
+    await fs.rm(abs, { force: true })
+    return { ok: true, dismissed: false }
+  }
+  await fs.mkdir(path.dirname(abs), { recursive: true })
+  await fs.writeFile(abs, JSON.stringify({ dismissed: true, at: new Date().toISOString() }, null, 2) + '\n', 'utf8')
+  return { ok: true, dismissed: true }
+}
+
 function appliedRelOf(jsonRel) {
   return jsonRel.replace(/\.json$/, '.applied.json')
 }
@@ -1164,8 +1195,10 @@ export async function listProposals(root) {
     // `<名字>.checked.json` / `<名字>.applied.json` 是提案的旁路备忘，不是提案本身。
     // 以前只按 .json 结尾筛，于是这两份侧车会被当成「还等着你看的建议」列出来：
     // 点开 0 条，清也清不掉，待办计数还虚高。
-    if (entry.name.endsWith('.checked.json') || entry.name.endsWith('.applied.json')) continue
+    if (entry.name.endsWith('.checked.json') || entry.name.endsWith('.applied.json') || entry.name.endsWith('.dismissed.json')) continue
     const rel = path.posix.join('proposals', entry.name)
+    // 用户点过「都不要」的就从待办里消失。文件留着，想看还能点进来。
+    if (await readDismissed(root, rel)) continue
     try {
       const record = JSON.parse(await fs.readFile(path.join(dir, entry.name), 'utf8'))
       const done = await readAppliedFile(root, rel)
@@ -1521,6 +1554,8 @@ export default {
   deleteMaterial,
   readMaterials,
   readAppliedFile,
+  readDismissed,
+  writeDismissed,
   avatarRelPath,
   writeAvatar,
   readAvatar,

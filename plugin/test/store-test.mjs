@@ -636,5 +636,55 @@ console.log('=== 14. 同一天再跑一次分析，不许覆盖上一轮 ===')
   await fs.rm(r17, { recursive: true, force: true })
 }
 
+// ── 22. 「都不要」之后不该还挂在首页待办里 ──────────────────────────
+{
+  const r18 = path.join(tmpdir(), 'lifecard-test-dismiss-' + Date.now())
+  await store.openWorkspace(r18, { create: true })
+  await store.writeCard(
+    r18,
+    'people/yi.card.md',
+    { lifecard: '0.1', id: 'yi', kind: 'real', world: 'reality', name: '乙' },
+    [],
+    { force: true },
+  )
+  const mat = await store.appendMaterial(r18, '乙访谈', '乙说他在镇上开了一间铺子，只收过一个学徒。')
+  const record = {
+    spec: 'lifecard_proposal_v1',
+    about: { id: 'yi', name: '乙' },
+    generated_at: new Date().toISOString(),
+    accepted: [
+      { field: '关系史', value: '在镇上开了一间铺子', source_level: '自述', evidence: { material: mat.path, quote: '在镇上开了一间铺子', line_start: 1 } },
+    ],
+    rejected: [],
+    gaps: [],
+    questions: [],
+  }
+  const rel = 'proposals/yi-1.json'
+  await fs.mkdir(path.join(r18, 'proposals'), { recursive: true })
+  await fs.writeFile(path.join(r18, rel), JSON.stringify(record, null, 2), 'utf8')
+
+  t('刚整理完时它算一件待办', (await store.listProposals(r18)).length === 1)
+  const d = await store.writeDismissed(r18, rel, true)
+  t('「都不要」能记下来', d.ok === true && d.dismissed === true, JSON.stringify(d))
+  t('记下来之后不再挂在待办里', (await store.listProposals(r18)).length === 0)
+  t('旁路文件本身不被当成一份建议', (await store.listProposals(r18)).every((p) => !String(p.json).includes('.dismissed.')))
+  const still = await store.readProposal(r18, rel)
+  t('文件没删，想回头看还能点进来', still.ok === true && (still.items ?? []).length === 1)
+  t('文件确实还在盘上', (await fs.stat(path.join(r18, rel))).isFile())
+  const undo = await store.writeDismissed(r18, rel, false)
+  t('也能撤回「不要了」', undo.ok === true && undo.dismissed === false, JSON.stringify(undo))
+  t('撤回后又回到待办里', (await store.listProposals(r18)).length === 1)
+
+  // 采纳过一部分之后点「都不要」：剩下的不再出现，已写进卡的不受影响
+  await store.applyProposal(r18, rel, { checked: [0] })
+  let card = await store.readCard(r18, 'people/yi.card.md')
+  t('先采纳的那条照样写进了卡', ((card.sections ?? []).find((s) => s.title === '关系史')?.body ?? '').includes('在镇上开了一间铺子'))
+  await store.writeDismissed(r18, rel, true)
+  t('采纳完再「都不要」，整份也不再占位', (await store.listProposals(r18)).length === 0)
+  card = await store.readCard(r18, 'people/yi.card.md')
+  t('已经写进卡的内容不会因为「都不要」被抹掉', ((card.sections ?? []).find((s) => s.title === '关系史')?.body ?? '').includes('在镇上开了一间铺子'))
+  await fs.rm(r18, { recursive: true, force: true })
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

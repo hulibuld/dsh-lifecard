@@ -1853,6 +1853,25 @@ function buildApi(ctx, workspace, config) {
       return { ok: true, checked: written.checked }
     },
 
+    /**
+     * 「这份建议我不要了」。
+     *
+     * 不删文件：那条记录本身有价值，用户过几天想回头看 AI 当时说了什么，
+     * 还能点进来。只把它从首页待办里摘掉——留着的话待办永远清不空，
+     * 用户每次回首页都以为自己还有事没做。
+     */
+    'proposal.dismiss': async (body) => {
+      const ws = await root(body)
+      const safe = insideWorkspace(ws, body?.json)
+      if (safe.ok !== true) return { ok: false, error: safe.error }
+      const rel = safe.rel
+      if (!rel.endsWith('.json') || rel.endsWith('.checked.json') || rel.endsWith('.applied.json')) {
+        return { ok: false, error: '这个位置不是一份建议。' }
+      }
+      const written = await store.writeDismissed(ws, rel, true)
+      return { ok: true, dismissed: written.dismissed === true }
+    },
+
     /** doctor：数据体检 + 把宿主能力写进 diagnostics.json。 */
     'doctor.run': async (body) => {
       const ws = await root(body)

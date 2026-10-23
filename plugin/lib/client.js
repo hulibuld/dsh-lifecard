@@ -2430,8 +2430,24 @@ function ProposalPanel({ proposal, onClose, onApplied, applyBlocked, onBuildCard
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const [note, setNote] = useState(null)
+  // 「都不要」要按两次。第一次只是把按钮变成「确定都不要？」——
+  // 这一下会把整份建议从首页待办里撤掉，误触的代价是用户以为 AI 白读了一遍。
+  const [confirmDrop, setConfirmDrop] = useState(false)
   const adoptedBefore = all.filter((i) => i.adopted === true).length
   const checked = items.filter((i) => i.checked).length
+
+  // 剩下的一条都不要了：整份从待办里撤掉，文件还留着。
+  const dropAll = async () => {
+    if (confirmDrop !== true) { setConfirmDrop(true); return }
+    setBusy(true); setErr(null)
+    try {
+      const r = await call('proposal.dismiss', { json: proposal.json })
+      if (r.ok !== true) { setErr(r.error ?? '没能记下来'); return }
+      // 先让首页把这份摘掉，再关面板——反过来的话用户会看见它又回到列表里。
+      await onApplied(r)
+      onClose()
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
+  }
 
   // 勾选立刻写到后台。界面上的「选了 N 条」和真正会写进卡的东西必须是同一份，
   // 否则用户点了「就用这 N 条」却被告知一条都没勾。
@@ -2524,7 +2540,8 @@ function ProposalPanel({ proposal, onClose, onApplied, applyBlocked, onBuildCard
           )
         : h('div', { className: 'lc-row' },
             h(Btn, { tone: 'primary', onClick: apply, disabled: busy || checked === 0, icon: 'check' }, checked === 0 ? '先勾选要的' : `就用这 ${checked} 条`),
-            h(Btn, { onClick: onClose, icon: 'x' }, '都不要'),
+            h(Btn, { onClick: onClose, icon: 'x' }, '先留着'),
+            h(Btn, { tone: confirmDrop === true ? 'danger' : 'ghost', onClick: dropAll, disabled: busy, icon: 'check' }, confirmDrop === true ? '确定都不要？' : '都不要'),
             busy ? h(Spinner) : null,
           ),
   )
