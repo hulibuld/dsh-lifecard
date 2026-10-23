@@ -198,15 +198,23 @@ const TRACKER_HEADER = [
  */
 export async function readTracker(root) {
   const body = await readInside(root, APPLICATIONS)
-  if (body === null) return { ok: true, rows: [], exists: false }
+  if (body === null) return { ok: true, rows: [], exists: false, layout: [] }
   const rows = []
-  for (const line of body.split('\n')) {
+  // 除了表里的行，文件里还可能有用户自己写的东西：一段备注、一个空行、
+  // 一条不在格式里的记录。写回时要把它们原样放回去——整表重渲染会把
+  // 它们悄悄删掉，而文档里明写着「这张表你能自己在文件夹里打开改」。
+  const layout = []
+  for (const line of body.replace(/\n$/, '').split('\n')) {
     const t = line.trim()
-    if (!t.startsWith('|') || !t.endsWith('|')) continue
-    const cells = t.slice(1, -1).split('|').map((c) => c.trim())
-    if (cells.length < 4) continue
-    // 跳过表头与分隔行
-    if (cells[0] === '日期' || /^-+$/.test(cells[0])) continue
+    const isTable = t.startsWith('|') && t.endsWith('|')
+    const cells = isTable ? t.slice(1, -1).split('|').map((c) => c.trim()) : []
+    // 表头与分隔行属于「原样保留」，不算数据行
+    const isHeader = isTable && (cells[0] === '日期' || /^-+$/.test(cells[0] ?? ''))
+    if (!isTable || isHeader || cells.length < 4) {
+      layout.push({ kind: 'raw', line })
+      continue
+    }
+    layout.push({ kind: 'row' })
     rows.push({
       date: cells[0] ?? '',
       company: cells[1] ?? '',
@@ -215,12 +223,34 @@ export async function readTracker(root) {
       note: cells.slice(4).join(' ') ?? '',
     })
   }
-  return { ok: true, rows, exists: true }
+  return { ok: true, rows, exists: true, layout }
 }
 
-function renderTracker(rows) {
-  const body = rows.map((r) => `| ${r.date} | ${r.company} | ${r.role} | ${r.status} | ${r.note} |`).join('\n')
-  return `${TRACKER_HEADER}\n${body}\n`
+function trackerRowLine(r) {
+  return `| ${r.date} | ${r.company} | ${r.role} | ${r.status} | ${r.note} |`
+}
+
+/**
+ * 把行写回去，同时保住用户自己加的东西。
+ *
+ * 表格行的位置按 layout 原位替换；行数变多时多出来的接在末尾；
+ * 非表格行（标题、说明、手写备注）一字不动。新文件就从头铺一份表头。
+ */
+function renderTracker(rows, layout = []) {
+  if (layout.length === 0) {
+    const lines = TRACKER_HEADER.replace(/\n$/, '').split('\n')
+    return [...lines, ...rows.map(trackerRowLine)].join('\n') + '\n'
+  }
+  const out = []
+  let i = 0
+  for (const item of layout) {
+    if (item.kind !== 'row') { out.push(item.line); continue }
+    if (i >= rows.length) continue
+    out.push(trackerRowLine(rows[i]))
+    i += 1
+  }
+  while (i < rows.length) { out.push(trackerRowLine(rows[i])); i += 1 }
+  return out.join('\n') + '\n'
 }
 
 /**
@@ -244,7 +274,7 @@ export async function addApplication(root, row) {
     note: String(row?.note ?? '').trim(),
   }]
   if (rows[rows.length - 1].company === '') return { ok: false, error: '至少写一下是哪家公司。' }
-  const saved = await writeInside(root, APPLICATIONS, renderTracker(rows))
+  const saved = await writeInside(root, APPLICATIONS, renderTracker(rows, current.layout ?? []))
   if (!saved.ok) return saved
   return { ok: true, count: rows.length }
 }
@@ -269,7 +299,7 @@ export async function updateApplication(root, target, patch) {
   if (patch?.date !== undefined) next.date = String(patch.date)
   const rows = [...current.rows]
   rows[at] = next
-  const saved = await writeInside(root, APPLICATIONS, renderTracker(rows))
+  const saved = await writeInside(root, APPLICATIONS, renderTracker(rows, current.layout ?? []))
   if (!saved.ok) return saved
   return { ok: true, row: next }
 }

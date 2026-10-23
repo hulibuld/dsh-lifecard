@@ -2792,7 +2792,7 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
     const q = current
     setBusy(true); setErr(null)
     try {
-      await call('interview.record', {
+      const rec = await call('interview.record', {
         about: aboutId,
         q: q.id,
         ask: q.ask,
@@ -2801,6 +2801,13 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
         reason,
         fills: q.fills,
       })
+      // 记不下来就别往下走。以前这里不看结果：盘写不进去（文件夹被挪走、
+      // 变成只读）时界面照样把这一问答进对话、照样跳下一题，用户答了半小时，
+      // 回头一看一条都没有。宁可停在这里说清楚。
+      if (rec?.ok !== true) {
+        setErr(rec?.error ?? '这一句没记上。检查一下文件夹还在不在，再点一次。')
+        return
+      }
       if (status === 'answered') {
         setLog((prev) => [...prev, { role: 'bot', text: q.ask, options: q.options }, { role: 'me', text: answer.trim() }])
       } else {

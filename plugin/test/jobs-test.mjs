@@ -265,6 +265,18 @@ await store.openWorkspace(root, { create: true })
   const text = await fs.readFile(path.join(root, 'jobs/applications.md'), 'utf8')
   t('追踪表是能自己打开改的 Markdown', text.startsWith('# 投递记录') && text.includes('| 日期 | 公司 |'))
   t('追踪表里没有任何别的动作', !/投递按钮|自动投/.test(text))
+
+  // 用户会在文件夹里自己打开这张表改。他写的东西不能被程序重写时弄丢。
+  const withNote = text.replace(/\n$/, '') + '\n\n> 这家 HR 说月底前给消息，记得回电。\n'
+  await fs.writeFile(path.join(root, 'jobs/applications.md'), withNote, 'utf8')
+  await jobsStore.addApplication(root, { company: '另一家', role: '运维', status: 'applied' })
+  const after = await fs.readFile(path.join(root, 'jobs/applications.md'), 'utf8')
+  t('自己写的备注还在', after.includes('这家 HR 说月底前给消息'), after)
+  t('新记的那一行也进去了', after.includes('| 另一家 |'), after)
+  t('两行数据都在', (await jobsStore.readTracker(root)).rows.length === 2)
+  await jobsStore.updateApplication(root, { company: '某公司', role: '后端' }, { status: 'offer' })
+  const after2 = await fs.readFile(path.join(root, 'jobs/applications.md'), 'utf8')
+  t('改状态时自己写的备注也还在', after2.includes('这家 HR 说月底前给消息'), after2)
 }
 {
   const s0 = await jobsStore.readStories(root)
