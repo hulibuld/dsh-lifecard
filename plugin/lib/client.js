@@ -1162,6 +1162,13 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
   const allProposals = listing?.proposals ?? []
   const proposals = allProposals.filter((p) => (p.adopted ?? 0) < (p.accepted ?? 0))
   const materials = listing?.materials ?? []
+  // 搜索也要筛材料：搜一个人的名字，上面卡筛掉了、下面材料还整整齐齐列着，
+  // 看着像「搜到了这一份」，其实根本没筛。
+  const shownMaterials = useMemo(() => {
+    const needle = q.trim().toLowerCase()
+    if (needle === '') return materials
+    return materials.filter((m) => String(m.name ?? m.path ?? '').toLowerCase().includes(needle))
+  }, [materials, q])
   const avatars = listing?.avatars ?? {}
   // 世界书不是卡：它没有覆盖度、不参与体检打分，放在卡列表里会让人以为
   // 「这张卡才写了 20%」。单独一段，点进去能读条目。
@@ -1268,11 +1275,11 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
 
     // 材料单独一栏。以前材料只在「更多工具」里报个数字，用户从记忆里提出来
     // 一堆东西之后回首页找不到——不知道存哪了，也没法看、没法删。
-    materials.length === 0
+    shownMaterials.length === 0
       ? null
       : h('div', null,
-          h(GroupTitle, { tone: 'analyze', icon: 'list' }, `材料 · ${materials.length}`),
-          h('div', { className: 'lc-stack' }, materials.map((m) => h('div', { key: m.path, className: 'lc-card-item', style: { cursor: 'default' } },
+          h(GroupTitle, { tone: 'analyze', icon: 'list' }, `材料 · ${shownMaterials.length}`),
+          h('div', { className: 'lc-stack' }, shownMaterials.map((m) => h('div', { key: m.path, className: 'lc-card-item', style: { cursor: 'default' } },
             h('div', { className: 'lc-avatar', style: { background: 'var(--lc-analyze-soft)', color: 'var(--lc-analyze)' } }, h(Icon, { name: 'list', size: 14 })),
             h('div', { className: 'lc-grow', style: { minWidth: 0 } },
               h('div', { className: 'lc-ellipsis', style: { fontWeight: 600 } }, m.name),
@@ -1286,7 +1293,7 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
           ))),
         ),
 
-    q.trim() !== '' && filtered.length === 0 && worlds.length === 0
+    q.trim() !== '' && filtered.length === 0 && worlds.length === 0 && shownMaterials.length === 0
       ? h('div', { className: 'lc-meta', style: { textAlign: 'center', padding: 12 } }, '没找到。换个词试试？')
       : null,
 
@@ -1533,7 +1540,7 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
 
   const remove = async () => {
     const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
-      ? window.confirm(`确定删掉「${data.name}」吗？\n\n删掉之后，导出和 AI 都不会再看到它。`)
+      ? window.confirm(`确定删掉「${data.name}」吗？\n\n删掉之后，导出和 AI 都不会再看到它，界面上也收不回来。`)
       : true
     if (!ok) return
     setBusy('del'); setErr(null)

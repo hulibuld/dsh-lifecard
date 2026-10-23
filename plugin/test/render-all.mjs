@@ -491,6 +491,7 @@ renderRoot('添加', base('import'))
   t('有好几张卡时先让人自己选', joined.includes('先选一个人'), joined.slice(0, 200))
   t('说了为什么要自己选', joined.includes('免得材料整理到别人卡上'), joined.slice(0, 200))
 }
+
 renderRoot('让 AI 读材料（已有材料）', base('analyze', { 9: { id: 'mama', name: '妈妈' } }))
 // 「让 AI 读材料」跑完那个「看看读出了什么」以前是 setProposal + setView(card)，
 // 但那一页手上没有 activeCard（用户可能一张卡都没打开过），一样白点。
@@ -1144,6 +1145,18 @@ for (const [label, word] of [
 // 两栏并排，用户不知道该在哪一栏写「妈」。
 for (const gone of ['你们是什么关系', '这是谁']) {
   t(`旧说法「${gone}」不再出现`, !all.includes(gone), all.slice(0, 200))
+}
+
+{
+  // 搜索要一起筛材料：只筛卡不筛材料，看着像「筛过了」。
+  const nm = visibleText.length
+  renderOne('首页（搜「妈妈」）', seen.get('HomeView'), { state: STATE, listing: LISTING, onOpen: () => {}, onOpenWorld: () => {}, onNavigate: () => {}, onProposal: () => {}, busy: '', onDoDoctor: () => {}, showMore: false, onMore: () => {}, intro: true, onIntroDone: () => {}, onMaterial: () => {}, onDeleteMaterial: () => {} }, { 0: '妈妈' })
+  const only = visibleText.slice(nm).join('|')
+  t('搜「妈妈」时不相关的材料不列出来', only.includes('mama-interview') === false, only.slice(0, 260))
+  const nm2 = visibleText.length
+  renderOne('首页（搜「interview」）', seen.get('HomeView'), { state: STATE, listing: LISTING, onOpen: () => {}, onOpenWorld: () => {}, onNavigate: () => {}, onProposal: () => {}, busy: '', onDoDoctor: () => {}, showMore: false, onMore: () => {}, intro: true, onIntroDone: () => {}, onMaterial: () => {}, onDeleteMaterial: () => {} }, { 0: 'interview' })
+  const mats = visibleText.slice(nm2).join('|')
+  t('搜材料名也能把材料搜出来', mats.includes('mama-interview'), mats.slice(0, 260))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)
