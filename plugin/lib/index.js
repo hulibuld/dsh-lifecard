@@ -356,8 +356,16 @@ async function resolveRoute(llm, explicit) {
   }
 
   // 首选序列：按「本机实测能出文本」的经验排序。
-  // 注意 `buddy` 虽然能列出模型，但它的 transport 在本机会失败——所以不排在首位。
-  const preferred = ['deepseek-official', 'deepseek-account', 'deepseek', 'buddy']
+  //
+  // **`raccoon` 必须排在第一位**：这台机器上主 agent 用的就是
+  // `provider: raccoon / model: sn-deepseek-v4-1-flash-1017`（见 profile 的
+  // cordis.patch.yml）。早先这里没有 raccoon，于是 analyze 会去挑列表里
+  // 另一个 provider——那个 transport 接了请求却不回话，界面上就是「分析」
+  // 一直转，直到宿主 HTTP 层 5 分钟后断开（表现为 fetch failed）。
+  // 换句话说：插件用的模型，应该和用户正在用的那个是同一个。
+  //
+  // 注意 `buddy` 虽然能列出模型，但它的 transport 在本机会失败——所以排在后面。
+  const preferred = ['raccoon', 'deepseek-official', 'deepseek-account', 'deepseek', 'buddy']
   for (const want of preferred) {
     const hit = providers.find((p) => (p?.provider ?? p?.id ?? p?.name) === want)
     if (hit !== undefined) {

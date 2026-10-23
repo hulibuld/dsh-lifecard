@@ -367,5 +367,35 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   t('掐掉时说明等了多少秒', /\d+ 秒/.test(slowMsg), slowMsg)
 }
 
+// ── 模型路由：先用用户正在用的那个 provider ──
+// 真实事故：这台机器上主 agent 用 `provider: raccoon`，而插件首选列表里
+// 没有 raccoon，于是 analyze 去挑了另一个 transport——它接了请求不回话，
+// 界面上的「分析」一直转，直到宿主 HTTP 层 5 分钟后断开（fetch failed）。
+// 这里用一个假 llm 把顺序钉住：raccoon 在列表里就必须先用它。
+{
+  const seen = []
+  const fakeLlm = {
+    listProviders: async () => [
+      { provider: 'buddy', models: [{ id: 'hy3' }] },
+      { provider: 'raccoon', models: [{ id: 'sn-deepseek-v4-1-flash-1017' }] },
+    ],
+    listModels: async () => [],
+    stream: async (opts) => {
+      seen.push(`${opts.provider}/${opts.model}`)
+      return (async function* () {
+        yield { type: 'text-delta', text: '{"items":[],"gaps":[],"questions":[]}' }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })()
+    },
+  }
+  const ctx2 = { ...ctx, get: (name) => (name === 'llm' ? fakeLlm : undefined) }
+  const table2 = api.buildApi(ctx2, async () => ws, { workspace: ws })
+  await store.appendMaterial(ws, '路由试验材料', '甲说他十九岁进纱厂，手指头被机器压过一回。')
+  const r = await table2['analyze.run']({ about: 'jia', name: '甲' })
+  t('模型调用选了 raccoon（用户主 agent 用的那个）', String(seen[0] ?? '').startsWith('raccoon/'), seen)
+  t('没落到 buddy 那种会卡住的 transport 上', !String(seen[0] ?? '').startsWith('buddy/'), seen)
+  t('分析本身跑通（假模型回了合法 JSON）', r.ok === true, r.error)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
