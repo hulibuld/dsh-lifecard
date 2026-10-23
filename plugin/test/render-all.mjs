@@ -518,6 +518,16 @@ renderRoot('检查一下', base('doctor', { 8: DOCTOR }))
     ['一本世界书', base('world', { 11: WORLD })],
     ['检查一下', base('doctor', { 8: DOCTOR })],
     ['新建一张卡', base('newCard')],
+    // 「下一步」这一页以前没进这个清单：招聘说明没填、点评没跑、投递表空的时候，
+    // 里面有几处按钮是画出来但点不动的。
+    ['下一步', base('jobs')],
+    ['下一步（看过一份工作）', base('jobs', { 4: {
+      ok: true, company: '某公司', role: '后端', score: 72, blocked: [], gaps: [],
+      rows: [{ index: 0, requirement: '会 Go', importance: 'high', verdict: 'match', proof: '写了三年 Go' }],
+      dealbreakers: [], warnings: [], dropped: [], questions: [], at: '2026-10-23 10:00',
+    }, 14: false })],
+    ['从记忆里认人', base('memory')],
+    ['以前的样子', base('card', { 6: CARD_DETAIL })],
   ]
   const dead = []
   for (const [label, presets] of views) {
@@ -656,6 +666,27 @@ if (seen.has('CardForm')) {
 
 if (seen.has('ProposalPanel')) {
   renderOne('建议面板', seen.get('ProposalPanel'), { proposal: PROPOSAL, onClose: () => {}, onApplied: async () => {} })
+}
+
+if (seen.has('ProposalPanel')) {
+  // 用户报的：采纳过的条目还留在列表里，看着像没生效，再点一次就把同一段话
+  // 又写进卡里（「关系史复制成两段」）。这里断言写进去过的不再出现。
+  const ADOPTED = {
+    json: 'proposals/p3.json',
+    about: { id: 'jia', name: '建国' },
+    items: [
+      { index: 0, field: '关系史', value: '那年冬天他一个人去了南方。', checked: false, adopted: true },
+      { index: 1, field: '性格', value: '话少，但答应了就一定做。', checked: false },
+    ],
+    rejected: [],
+    md: 'proposals/p3.md',
+  }
+  const from = visibleText.length
+  renderOne('建议面板（有一条已经写进过卡）', seen.get('ProposalPanel'), { proposal: ADOPTED, onClose: () => {}, onApplied: async () => {} })
+  const text = visibleText.slice(from).join('\n')
+  t('写进过卡的那条不再列出来', !text.includes('那年冬天他一个人去了南方'), text)
+  t('还没写的那条照样列出来', text.includes('话少，但答应了就一定做'), text)
+  t('说了有几条已经写进去了', text.includes('1 条之前已经写进卡了'), text)
 }
 
 if (seen.has('ProposalPanel')) {

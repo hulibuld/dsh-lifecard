@@ -1125,15 +1125,28 @@ export async function readProposal(root, jsonRel) {
     checked.add(m[2].trim() + '\u0000' + (lines[i + 1] ?? '').trim())
   }
   const items = Array.isArray(record.accepted) ? record.accepted : []
+  // 已经写进卡的条目：界面不再列出来，也不许再采纳一次。
+  // 光靠「这份提案的已采纳记账」不够——同一份材料再整理一次会生成新提案，
+  // 那份新文件的记账是空的，同一条内容就又能被点一次。
+  const done = await readAppliedFile(root, jsonRel)
   const withChecked = items.map((item, index) => {
     const key = describeValue(item) + '\u0000' + `证据：${item.evidence?.material ?? ''}${item.evidence?.line_start !== undefined ? ' L' + item.evidence.line_start : item.verified_line !== undefined ? ' L' + item.verified_line : ''}「${truncate(item.evidence?.quote, 80)}」`
     // 只认精确指纹。曾经这里有一层「按描述前缀匹配」的宽松回退，
     // 结果只要有一条勾选行的描述是另一条的前缀，两条都会被判为已勾——
     // 没勾的条目被写进卡，等于绕过了「只读 [x]」这道闸门。
     const picked = sidecar === null ? checked.has(key) : sidecar.includes(index)
-    return { ...item, index, checked: picked }
+    return { ...item, index, checked: picked, adopted: done.has(itemFingerprint(item)) }
   })
-  return { ok: true, mdRel, record, items: withChecked, checkedCount: withChecked.filter((i) => i.checked).length }
+  return {
+    ok: true,
+    mdRel,
+    record,
+    items: withChecked,
+    checkedCount: withChecked.filter((i) => i.checked).length,
+    // 还没被采纳、也不是「卡里已经有了」的条数。界面用它决定这一份要不要
+    // 继续摆在待办里。
+    openCount: withChecked.filter((i) => i.adopted !== true).length,
+  }
 }
 
 /** 列出所有提案文件。 */
@@ -1218,7 +1231,20 @@ export async function applyProposal(root, jsonRel, options = {}) {
     // 全都是「之前已经采纳过」的：这不是失败。再点一次采纳应该什么都不发生，
     // 而不是弹一句「原文都已经不在材料里了」把人吓一跳。
     if (already.length > 0) {
-      return { ok: true, path: target, applied: 0, appliedLabels: [], skipped: 0, dropped: dropped.length, already: already.length }
+      // handledIndexes 要说全：界面据此把这几条从清单上摘掉。
+      // 不带的话，重开面板它们还在，用户会以为采纳从来没生效。
+      return {
+        ok: true,
+        path: target,
+        applied: 0,
+        appliedLabels: [],
+        handled: chosen.length,
+        handledIndexes: chosen.map((i) => i.index).filter((n) => n !== undefined),
+        duplicate: 0,
+        skipped: 0,
+        dropped: dropped.length,
+        already: already.length,
+      }
     }
     return {
       ok: false,
@@ -1230,26 +1256,64 @@ export async function applyProposal(root, jsonRel, options = {}) {
   const data = { ...card.data }
   const sections = (card.sections ?? []).map((s) => ({ ...s }))
   const applied = []
+  // 卡里本来就有、这次没再写的条目，以及它们在这份提案里的下标。
+  const duplicates = []
+  // 界面上要摘掉的条目：写进去的 + 卡里本来就有的。
+  // 不返回这个，界面就只能自己猜——猜错的表现就是「采纳完了它还在那儿，
+  // 再点一下又写一遍」，这正是用户报的那个 bug。
+  const handledIndexes = []
   for (const item of stillThere) {
-    const ok = applyItem(data, sections, item)
-    if (ok) applied.push(describeValue(item))
+    const status = applyItem(data, sections, item)
+    if (status === 'ok') {
+      applied.push(describeValue(item))
+      if (item.index !== undefined) handledIndexes.push(item.index)
+    } else if (status === 'duplicate') {
+      duplicates.push(item?.field ?? '')
+      if (item.index !== undefined) handledIndexes.push(item.index)
+    }
+    // blocked：不记指纹、也不列进 handled，下次还能再试
   }
-  const written = await writeCard(root, target, data, sections)
-  if (!written.ok) return written
-  // 记账只记真的写进卡的那些（applyItem 返回 true 的），否则下次会重写一遍。
-  const doneNow = stillThere.filter((i) => applied.includes(describeValue(i)))
+  // 一条新内容都没有（全是卡里本来就有的）就不写盘：没必要留一个空快照，
+  // 也没必要让 mtime 跳一下。
+  if (applied.length > 0) {
+    const written = await writeCard(root, target, data, sections)
+    if (!written.ok) return written
+  }
+  // 记账只记真的落进卡的，否则下次会重写一遍。
+  const doneNow = stillThere.filter((i) => applied.includes(describeValue(i)) || duplicates.includes(i?.field ?? ''))
   await writeAppliedFile(root, jsonRel, [...doneBefore, ...doneNow.map(itemFingerprint)])
   return {
     ok: true,
     path: target,
     applied: applied.length,
     appliedLabels: applied,
-    skipped: stillThere.length - applied.length,
+    // 写进去了 plus 卡里本来就有 —— 两条对用户都是「这条不用管了」。
+    handled: handledIndexes.length,
+    handledIndexes,
+    duplicate: duplicates.length,
+    skipped: stillThere.length - applied.length - duplicates.length,
     // 原文已经不在的条目单独报：它们不是「没勾」，是「勾了但证据没了」。
     dropped: dropped.length,
     // 之前已经采纳过、这次跳过的条数。
     already: already.length,
   }
+}
+
+/** 比正文内容用：把所有空白压成一个空格，免得换行/缩进不同就判成新内容。 */
+function normalizeText(s) {
+  return String(s ?? '').replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * 更狠一点的比较：只留字，标点符号和空白全部去掉。
+ *
+ * 同一段材料被同一个模型读两次，第二次常常只是多一个逗号、换个句号。
+ * 只比原文的话这种差别就躲过了判重，卡里照样长出两段几乎一样的正文。
+ * 长度不到 6 个字的不这么比——太短的话「他走了」能命中一大片。
+ */
+function bareText(s) {
+  const t = String(s ?? '').replace(/[\s\p{P}\p{S}]/gu, '')
+  return t.length >= 6 ? t : ''
 }
 
 /**
@@ -1262,17 +1326,35 @@ export async function applyProposal(root, jsonRel, options = {}) {
 function applyItem(data, sections, item) {
   const field = String(item?.field ?? '')
   const value = item?.value
-  if (field === '') return false
-  if (RESERVED_FIELDS.has(field)) return false
+  // 返回值有三种：ok = 这次真写进去了；duplicate = 卡里本来就有这一条；
+  // blocked = 这条不许提案改。分开报是为了让界面说人话——
+  // 「已经有的」和「写不进去的」是两件事，混在一起用户会以为卡坏了。
+  if (field === '') return 'blocked'
+  if (RESERVED_FIELDS.has(field)) return 'blocked'
 
   // 正文小节
   const sectionNames = ['自述', '性格', '场景', '开场白', '备选开场', '对话示例', '创作者备注', '关系史', '不会说的话', '不会做的事', '外貌', '口癖', '备注']
   if (sectionNames.includes(field)) {
-    const text = typeof value === 'string' ? value : describeValue(item)
+    const text = typeof value === 'string' ? value.trim() : describeValue(item)
+    if (text === '') return 'blocked'
     const found = sections.find((s) => s.title === field)
-    if (found === undefined) sections.push({ title: field, body: text })
-    else found.body = found.body.trim() === '' ? text : `${found.body.trim()}\n${text}`
-    return true
+    if (found === undefined) {
+      sections.push({ title: field, body: text })
+      return 'ok'
+    }
+    const body = String(found.body ?? '')
+    // 已经写过的小节不再写第二遍。
+    // 以前这里是无条件追加，于是同一段关系史会被写成两段：
+    // 用户采纳完一次，回头再整理一次材料（新提案、新文件，之前那份的
+    // 「已采纳」记账对不上），或者手滑连点两下，卡里就长出重复段落。
+    // 正文是给人读的，重复段落比字段里多一个 tag 明显得多——所以这里按
+    // 内容判重，而不是只靠「这一份提案的哪几条采纳过」。
+    const bareBody = bareText(body)
+    const bareNew = bareText(text)
+    if (normalizeText(body).includes(normalizeText(text))) return 'duplicate'
+    if (bareNew !== '' && bareBody.includes(bareNew)) return 'duplicate'
+    found.body = body.trim() === '' ? text : `${body.trim()}\n${text}`
+    return 'ok'
   }
 
   // 数组型字段：追加
@@ -1292,28 +1374,26 @@ function applyItem(data, sections, item) {
         added = true
       }
       data[field] = list
-      return added
+      return added ? 'ok' : 'duplicate'
     }
-    if (Array.isArray(value)) {
-      // 同理：competency/taboos 一次给一组也要能收
-      let added = false
-      for (const v of value) {
-        if (v === null || v === undefined) continue
-        const row = typeof v === 'object' && v !== null ? v : { label: String(v) }
-        list.push(row)
-        added = true
-      }
-      data[field] = list
-      return added
+    // competency / taboos：一次给一组也要能收，但已经在卡里的那一行不再加。
+    const incoming = Array.isArray(value) ? value : [value]
+    let added = false
+    for (const v of incoming) {
+      if (v === null || v === undefined) continue
+      const row = typeof v === 'object' ? v : { label: String(v) }
+      if (list.some((x) => JSON.stringify(x) === JSON.stringify(row))) continue
+      list.push(row)
+      added = true
     }
-    list.push(typeof value === 'object' && value !== null ? value : { label: String(value ?? describeValue(item)) })
     data[field] = list
-    return true
+    return added ? 'ok' : 'duplicate'
   }
 
   // 普通字段
+  if (JSON.stringify(data[field] ?? null) === JSON.stringify(value ?? null)) return 'duplicate'
   data[field] = value
-  return true
+  return 'ok'
 }
 
 /** 按 id 或相对路径找卡。 */

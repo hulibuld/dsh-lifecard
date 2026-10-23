@@ -1007,7 +1007,15 @@ function LifeCardTab(props) {
                   applyBlocked: true,
                   onBuildCard: () => { setPendingAbout(String(proposal.about ?? '')); setProposal(null); setView(VIEWS.newCard) },
                   onClose: () => { setProposal(null); setView(VIEWS.home) },
-                  onApplied: async () => { setProposal(null); await refresh(); setView(VIEWS.home); flash('存进卡里了') },
+                  onApplied: async (r) => {
+                    setProposal(null)
+                    await refresh()
+                    setView(VIEWS.home)
+                    // 报数要跟真的写进去的一致：一条都没新写时还说「存进卡里了」，
+                    // 下次打开发现卡没变，就会以为软件在骗人。
+                    const n = r?.applied ?? 0
+                    flash(n === 0 ? '这些卡里本来就有，没有重复写' : `写进卡里 ${n} 条`, n === 0 ? 'warn' : 'ok')
+                  },
                 }),
                 h(Btn, { block: true, onClick: () => { setProposal(null); setView(VIEWS.home) } }, '回列表'),
               )
@@ -1547,7 +1555,12 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
     err === null ? null : h(Err, { text: err }),
 
     proposal !== null
-      ? h(ProposalPanel, { proposal, onClose: () => setProposal(null), onApplied: async () => { setProposal(null); await onRefresh(); flash('存进卡里了') } })
+      ? h(ProposalPanel, { proposal, onClose: () => setProposal(null), onApplied: async (r) => {
+          setProposal(null)
+          await onRefresh()
+          const n = r?.applied ?? 0
+          flash(n === 0 ? '这些卡里本来就有，没有重复写' : `写进卡里 ${n} 条`, n === 0 ? 'warn' : 'ok')
+        } })
       : null,
 
     h('div', { className: 'lc-row' },
@@ -2397,9 +2410,14 @@ function HistoryPanel({ card, onClose, onRestored }) {
 }
 
 function ProposalPanel({ proposal, onClose, onApplied, applyBlocked, onBuildCard }) {
-  const [items, setItems] = useState(() => (proposal?.items ?? []).map((i) => ({ ...i })))
+  // 已经写进卡的条目不再列出来。以前它们会一直挂着，用户看着以为没生效，
+  // 再点一次就又把同一段话写进卡里——重复段落就是这么来的。
+  const all = proposal?.items ?? []
+  const [items, setItems] = useState(() => all.filter((i) => i.adopted !== true).map((i) => ({ ...i })))
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
+  const [note, setNote] = useState(null)
+  const adoptedBefore = all.filter((i) => i.adopted === true).length
   const checked = items.filter((i) => i.checked).length
 
   // 勾选立刻写到后台。界面上的「选了 N 条」和真正会写进卡的东西必须是同一份，
@@ -2407,7 +2425,9 @@ function ProposalPanel({ proposal, onClose, onApplied, applyBlocked, onBuildCard
   const toggle = (index) => {
     const next = items.map((item, n) => (n === index ? { ...item, checked: !item.checked } : item))
     setItems(next)
-    const picked = next.map((item, n) => (item.checked ? n : -1)).filter((n) => n >= 0)
+    // 用条目自己的下标，不能用它在界面列表里的位置：已采纳的条目被摘掉之后，
+    // 列表位置和提案里的位置就对不上了，勾 A 会写成 B。
+    const picked = next.filter((item) => item.checked).map((item) => item.index)
     call('proposal.check', { json: proposal.json, checked: picked }).catch(() => {
       // 记不下来也不拦着用户继续点；真正采纳时会以界面上这份为准再传一次
     })
@@ -2416,9 +2436,19 @@ function ProposalPanel({ proposal, onClose, onApplied, applyBlocked, onBuildCard
   const apply = async () => {
     setBusy(true); setErr(null)
     try {
-      const picked = items.map((item, n) => (item.checked ? n : -1)).filter((n) => n >= 0)
+      const picked = items.filter((item) => item.checked).map((item) => item.index)
       const r = await call('proposal.apply', { json: proposal.json, checked: picked })
       if (r.ok !== true) { setErr(r.error ?? '没存上'); return }
+      // 写进去的（和卡里本来就有的）立刻从列表上摘掉。留着它们，
+      // 用户会以为没生效，再点一次就重复了。
+      const gone = new Set(Array.isArray(r.handledIndexes) ? r.handledIndexes : [])
+      const left = items.filter((item) => gone.has(item.index) !== true)
+      setItems(left)
+      const bits = []
+      if ((r.applied ?? 0) > 0) bits.push(`写进卡里 ${r.applied} 条`)
+      if ((r.duplicate ?? 0) > 0) bits.push(`${r.duplicate} 条卡里本来就有，没再写`)
+      if (left.length === 0) bits.push('这一份都处理完了')
+      if (bits.length > 0) setNote(bits.join('，') + '。')
       // 有落不进卡里的条目要说清楚，不能只说「存进卡里了」。
       // 会走到这里的只有一类：提案里带了只有人能填的项（比如「对方知不知道」），
       // 那是模型的推断，不该由它替你声明。
@@ -2443,7 +2473,11 @@ function ProposalPanel({ proposal, onClose, onApplied, applyBlocked, onBuildCard
       h('span', { className: 'lc-meta' }, `选了 ${checked} 条`),
     ),
     h('div', { className: 'lc-meta' }, '每一条下面都引用了材料里的原话。它编不出来的——材料里找不到原文的，已经被丢掉了。'),
+    adoptedBefore > 0
+      ? h('div', { className: 'lc-meta' }, `其中 ${adoptedBefore} 条之前已经写进卡了，不再列在这里。`)
+      : null,
     err === null ? null : h(Err, { text: err }),
+    note === null ? null : h(Note, { tone: 'ok', icon: 'check' }, note),
     h('div', { className: 'lc-stack' }, items.map((item, n) => h('div', {
       key: n, className: `lc-proposal-item ${item.checked ? 'on' : ''}`,
       onClick: () => toggle(n), role: 'button', tabIndex: 0,
@@ -2469,11 +2503,17 @@ function ProposalPanel({ proposal, onClose, onApplied, applyBlocked, onBuildCard
             h(Btn, { onClick: onClose, icon: 'x' }, '先放着'),
           ),
         )
-      : h('div', { className: 'lc-row' },
-          h(Btn, { tone: 'primary', onClick: apply, disabled: busy || checked === 0, icon: 'check' }, checked === 0 ? '先勾选要的' : `就用这 ${checked} 条`),
-          h(Btn, { onClick: onClose, icon: 'x' }, '都不要'),
-          busy ? h(Spinner) : null,
-        ),
+      : items.length === 0
+        ? h('div', { className: 'lc-row' },
+            h(Note, { tone: 'ok', icon: 'check' }, '这一份里没有还没写进去的了。'),
+            h('span', { className: 'lc-grow' }),
+            h(Btn, { onClick: onClose, icon: 'x' }, '知道了'),
+          )
+        : h('div', { className: 'lc-row' },
+            h(Btn, { tone: 'primary', onClick: apply, disabled: busy || checked === 0, icon: 'check' }, checked === 0 ? '先勾选要的' : `就用这 ${checked} 条`),
+            h(Btn, { onClick: onClose, icon: 'x' }, '都不要'),
+            busy ? h(Spinner) : null,
+          ),
   )
 }
 
@@ -3517,6 +3557,18 @@ function JobsView({ onBack, flash }) {
     flash('存好了')
   }
 
+  // 记一笔之后立刻把「我的投递」也刷新：以前只把按钮置灰，那一栏还是旧的，
+  // 用户点开发现自己刚记的那条不在里面，会以为没记上又点一次。
+  const record = async (status) => {
+    const row = { company: report?.company ?? company, role: report?.role ?? '', status, note: '' }
+    const r = await call('job.tracker.add', { row })
+    if (r.ok !== true) { setErr(r.error ?? '没记上'); return }
+    setLogged(true)
+    flash('记上了')
+    const again = await call('job.tracker.list', {})
+    if (again.ok === true) setTracker(again.rows ?? [])
+  }
+
   const run = async () => {
     setBusy(true); setErr(null); setReport(null)
     try {
@@ -3634,18 +3686,14 @@ function JobsView({ onBack, flash }) {
 
     // 看完这一份，顺手记一笔：投了还是没投。这一栏是给自己看的，
     // 过一个月回来看「投了 20 家几家有回音」，答案从这里出。
-    report === null ? null : h('div', { className: 'lc-row', style: { marginTop: 8 } },
-      h(Btn, { size: 'sm', tone: 'primary', icon: 'check', disabled: logged, onClick: async () => {
-        const row = { company: report.company ?? company, role: report.role ?? '', status: 'applied', note: '' }
-        const r = await call('job.tracker.add', { row })
-        if (r.ok === true) { setLogged(true); flash('记上了') } else { setErr(r.error ?? '没记上') }
-      } }, logged ? '已经记过了' : '记一笔：我投了'),
-      h(Btn, { size: 'sm', ghost: true, icon: 'skip', disabled: logged, onClick: async () => {
-        const row = { company: report.company ?? company, role: report.role ?? '', status: 'skip', note: '' }
-        const r = await call('job.tracker.add', { row })
-        if (r.ok === true) { setLogged(true); flash('记上了') } else { setErr(r.error ?? '没记上') }
-      } }, logged ? '' : '不投，记一下'),
-    ),
+    report === null ? null : (logged
+      // 记过之后把那两个按钮换掉，而不是留一个禁用的、字还是空的按钮：
+      // 空按钮看起来像界面坏了。
+      ? h('div', { className: 'lc-meta', style: { marginTop: 8 } }, '已经记在「我的投递」里了。要改状态就去那一栏点。')
+      : h('div', { className: 'lc-row', style: { marginTop: 8 } },
+        h(Btn, { size: 'sm', tone: 'primary', icon: 'check', onClick: () => record('applied') }, '记一笔：我投了'),
+        h(Btn, { size: 'sm', ghost: true, icon: 'skip', onClick: () => record('skip') }, '不投，记一下'),
+      )),
 
     // 简历和求职信只在「看过一份工作」之后才给按钮：不知道照谁改，改了也没用。
     report === null ? null : h('div', { style: { marginTop: 12 } },

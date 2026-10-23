@@ -552,5 +552,89 @@ console.log('=== 14. 同一天再跑一次分析，不许覆盖上一轮 ===')
   await fs.rm(r16, { recursive: true, force: true })
 }
 
+// ── 21. 同一条建议不许写第二遍（用户报的「关系史复制成两段」） ──────────
+{
+  const r17 = path.join(tmpdir(), 'lifecard-test-dupapply-' + Date.now())
+  await store.openWorkspace(r17, { create: true })
+  await store.writeCard(
+    r17,
+    'people/jia.card.md',
+    { lifecard: '0.1', id: 'jia', kind: 'real', world: 'reality', name: '甲' },
+    [],
+    { force: true },
+  )
+  const mat = await store.appendMaterial(r17, '甲访谈', '甲说那年冬天他一个人去了南方，身上只有八十块钱。')
+  const quote = '那年冬天他一个人去了南方'
+  const ev = { material: mat.path, quote, line_start: 1 }
+  const sectionItem = { field: '关系史', value: quote, source_level: '自述', evidence: ev }
+  const tagItem = { field: 'tags', value: '南方', source_level: '自述', evidence: ev }
+  const writeProposal = async (name, items) => {
+    const rel = `proposals/${name}.json`
+    const record = {
+      spec: 'lifecard_proposal_v1',
+      about: { id: 'jia', name: '甲' },
+      generated_at: new Date().toISOString(),
+      accepted: items,
+      rejected: [],
+      gaps: [],
+      questions: [],
+    }
+    await fs.mkdir(path.join(r17, 'proposals'), { recursive: true })
+    await fs.writeFile(path.join(r17, rel), JSON.stringify(record, null, 2), 'utf8')
+    return rel
+  }
+
+  // 1) 第一次采纳：真写进去了
+  const p1 = await writeProposal('jia-1', [sectionItem, tagItem])
+  const first = await store.applyProposal(r17, p1, { checked: [0, 1] })
+  t('第一次采纳写了两条', first.ok === true && first.applied === 2, JSON.stringify(first))
+  t('第一次采纳回报了要摘掉哪几条', Array.isArray(first.handledIndexes) && first.handledIndexes.length === 2, JSON.stringify(first.handledIndexes))
+  let card = await store.readCard(r17, 'people/jia.card.md')
+  const sect = () => (card.sections ?? []).find((s) => s.title === '关系史')?.body ?? ''
+  t('关系史写进去了一段', sect().includes(quote), sect())
+  t('tags 写进去一条', JSON.stringify(card.data.tags) === JSON.stringify(['南方']), JSON.stringify(card.data.tags))
+
+  // 2) 同一份提案再点一次：什么都不该发生
+  card = await store.readCard(r17, 'people/jia.card.md')
+  const again = await store.applyProposal(r17, p1, { checked: [0, 1] })
+  card = await store.readCard(r17, 'people/jia.card.md')
+  t('同一份提案点第二次不算新写入', again.ok === true && again.applied === 0, JSON.stringify(again))
+  t('第二次也回报了要摘掉哪几条', Array.isArray(again.handledIndexes) && again.handledIndexes.length === 2, JSON.stringify(again.handledIndexes))
+  t('关系史没有变成两段', (sect().match(/那年冬天他一个人去了南方/g) ?? []).length === 1, sect())
+  t('tags 没有变成两条', JSON.stringify(card.data.tags) === JSON.stringify(['南方']), JSON.stringify(card.data.tags))
+
+  // 3) 再整理一次材料会生成**新的一份提案**（记账是空的）。
+  //    这才是用户真正踩到的路径：新文件、旧内容、点一下又写一遍。
+  const p2 = await writeProposal('jia-2', [sectionItem, tagItem])
+  const third = await store.applyProposal(r17, p2, { checked: [0, 1] })
+  card = await store.readCard(r17, 'people/jia.card.md')
+  t('新提案里的旧内容不算新写入', third.ok === true && third.applied === 0, JSON.stringify(third))
+  t('新提案会把「卡里本来就有」报成 duplicate', third.duplicate === 2, JSON.stringify(third))
+  t('关系史还是一段', (sect().match(/那年冬天他一个人去了南方/g) ?? []).length === 1, sect())
+  t('tags 还是一条', JSON.stringify(card.data.tags) === JSON.stringify(['南方']), JSON.stringify(card.data.tags))
+
+  // 4) 读提案时要标出「这条已经写进卡了」，界面靠它不再列出来
+  const reread = await store.readProposal(r17, p2)
+  t('采纳过的条目被标成 adopted', (reread.items ?? []).every((i) => i.adopted === true), JSON.stringify((reread.items ?? []).map((i) => i.adopted)))
+  t('没有还需要处理的条目', reread.openCount === 0, String(reread.openCount))
+
+  // 5) 真的新内容照样写得进去（不能因为判重把正常采纳挡了）
+  const fresh = await store.appendMaterial(r17, '甲访谈二', '他后来把那八十块钱寄回了家，附了一封信。')
+  const freshItem = {
+    field: '关系史',
+    value: '后来把那八十块钱寄回了家',
+    source_level: '自述',
+    evidence: { material: fresh.path, quote: '后来把那八十块钱寄回了家', line_start: 1 },
+  }
+  const p3 = await writeProposal('jia-3', [freshItem])
+  const fourth = await store.applyProposal(r17, p3, { checked: [0] })
+  card = await store.readCard(r17, 'people/jia.card.md')
+  t('新的一段照样写得进去', fourth.ok === true && fourth.applied === 1, JSON.stringify(fourth))
+  t('关系史现在有两段', (sect().match(/那年冬天他一个人去了南方/g) ?? []).length === 1 && sect().includes('寄回了家'), sect())
+  const reread3 = await store.readProposal(r17, p3)
+  t('新提案采纳后也标成 adopted', reread3.openCount === 0, String(reread3.openCount))
+  await fs.rm(r17, { recursive: true, force: true })
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
