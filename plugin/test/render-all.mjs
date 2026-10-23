@@ -482,7 +482,15 @@ renderRoot('卡片详情（虚拟角色卡）', base('card', {
   6: { ...CARD_DETAIL, data: { ...CARD_DATA, kind: 'fictional', world: 'north', name: '塞拉菲娜', consent: { basis: 'fictional' } } },
 }))
 renderRoot('添加', base('import'))
-renderRoot('让 AI 读材料', base('analyze'))
+{
+  // 有好几张卡的时候不许偷偷选第一张：没留意就点「开始读」，
+  // 材料会整理到别人卡上。
+  const before = visibleText.length
+  renderRoot('让 AI 读材料（还没选人）', base('analyze'))
+  const joined = visibleText.slice(before).join('|')
+  t('有好几张卡时先让人自己选', joined.includes('先选一个人'), joined.slice(0, 200))
+  t('说了为什么要自己选', joined.includes('免得材料整理到别人卡上'), joined.slice(0, 200))
+}
 renderRoot('让 AI 读材料（已有材料）', base('analyze', { 9: { id: 'mama', name: '妈妈' } }))
 // 「让 AI 读材料」跑完那个「看看读出了什么」以前是 setProposal + setView(card)，
 // 但那一页手上没有 activeCard（用户可能一张卡都没打开过），一样白点。

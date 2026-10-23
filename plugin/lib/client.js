@@ -786,6 +786,12 @@ function LifeCardTab(props) {
 
   useEffect(() => { refresh() }, [refresh])
 
+  // 每次回到首页都重新拿一遍：别处存完材料、改完卡、删完东西再回来，
+  // 如果首页还挂着进这一屏之前的旧列表，用户会以为刚才那一步没生效。
+  useEffect(() => {
+    if (view === VIEWS.home) refresh()
+  }, [view, refresh])
+
   // 第一次进来时那段简短介绍，看过没有。
   // 只有真的打开了库才问（还没选文件夹时问也问不出什么），问到一次就不再问。
   useEffect(() => {
@@ -3200,8 +3206,10 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
   const [showConcept, setShowConcept] = useState(false)
   const [savingConcept, setSavingConcept] = useState(false)
 
+  // 只有一张卡的时候不用问，直接就是它。有好几张的时候故意不选：
+  // 自动挑第一张，用户没注意就点了「开始读」，材料就整理到别人卡上了。
   useEffect(() => {
-    if (about === '' && cards.length > 0) setAbout(cards[0].id)
+    if (about === '' && cards.length === 1) setAbout(cards[0].id)
   }, [cards, about])
 
   useEffect(() => {
@@ -3281,10 +3289,14 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
       ? h(Note, { tone: 'warn', icon: 'warning' }, '这台机器上暂时没有可用的 AI。你可以直接手动填卡，效果一样。')
       : null,
 
-    h(Field, { label: '整理谁' },
+    h(Field, {
+      label: '整理谁',
+      hint: cards.length > 1 && about === '' ? '先选一个人。免得材料整理到别人卡上。' : undefined,
+    },
       cards.length === 0
         ? h('div', { className: 'lc-meta' }, '还没有卡。先建一张。')
         : h('select', { className: 'lc-select', value: about, onChange: (e) => setAbout(e.target.value) },
+            cards.length > 1 ? h('option', { key: '__none', value: '' }, '先选一个人') : null,
             cards.map((c) => h('option', { key: c.id, value: c.id }, c.name))),
     ),
 
