@@ -228,7 +228,7 @@ dsh plugin --profile desktop add /path/to/LifeCard/plugin
 ## 开发
 
 ```bash
-node test/all.mjs        # 全部测试（1478 项）
+node test/all.mjs        # 全部测试（1482 项）
 node test/roundtrip.mjs  # YAML ↔ Markdown 往返
 node test/codec-test.mjs # 酒馆卡编解码 + 双 chunk 同源
 node test/store-test.mjs # 文件层：墓碑、提案、引文门、采纳

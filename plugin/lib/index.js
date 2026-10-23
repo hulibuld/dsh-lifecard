@@ -216,6 +216,27 @@ function exportBlockedBy(data, format) {
 // ── 模型调用 ──────────────────────────────────────────────────────
 
 /**
+ * 一次模型请求最多等这么久。
+ *
+ * 为什么要有：模型偶尔会「不回话」——不出错，也不结束，就那么挂着。
+ * 没有上限的话界面上的「分析」会一直转，用户不知道是在算还是已经死了。
+ * 实测过一次两分钟以上没动静：那不是慢，那是断了，得让它自己认输。
+ */
+const MODEL_TIMEOUT_MS = 150000
+
+/** 给一个 Promise 加上限时。超时抛出来，由调用方当一次失败处理，去试下一条路由。 */
+function withTimeout(promise, ms, what) {
+  let timer = null
+  const limit = new Promise((_, reject) => {
+    // 不要把定时器 unref 掉：在脚本里（事件循环里没有别的东西）unref 的定时器
+    // 不会被等到，await 会永远悬着。定时器在 finally 里清，不会拖住进程。
+    timer = setTimeout(() => reject(new Error(`${what}等了 ${Math.round(ms / 1000)} 秒还没有回话`)), ms)
+  })
+  return Promise.race([promise, limit]).finally(() => { if (timer !== null) clearTimeout(timer) })
+}
+
+
+/**
  * 调宿主模型做一次分析。
  *
  * 真实 API 是 `ctx.llm.stream({ provider, model, messages, system })`——**必须显式给
@@ -250,25 +271,29 @@ async function callModel(ctx, input) {
   const candidates = [route]
   for (const p of await listCandidateRoutes(llm, route)) candidates.push(p)
   for (const candidate of candidates) {
+    let handle = null
     try {
-      const handle = await llm.stream({
+      handle = await withTimeout(llm.stream({
         provider: candidate.provider,
         model: candidate.model,
         system: input.system,
         messages,
         temperature: 0.2,
         maxTokens: 4000,
-      })
-      const text = await collectStream(handle)
+      }), MODEL_TIMEOUT_MS, 'AI ')
+      const text = await withTimeout(collectStream(handle), MODEL_TIMEOUT_MS, 'AI ')
       if (text !== '') return { ok: true, text, model: `${candidate.provider}/${candidate.model}`, attempts }
       attempts.push(`${candidate.provider}/${candidate.model}: 空响应`)
     } catch (error) {
+      // 超时也当一次失败，接着试下一条路由；顺手把这一条断掉，别让它
+      // 在后台继续占着连接。
+      try { if (typeof handle?.abort === 'function') handle.abort() } catch { /* 断不掉就算了 */ }
       attempts.push(`${candidate.provider}/${candidate.model}: ${String(error?.message ?? error)}`)
     }
   }
   return {
     ok: false,
-    error: 'AI 试了几次都没回上话。可以过一会儿再试，或者在卡片里直接手写。',
+    error: 'AI 试了几次都没回上话（有一次是等了很久没动静）。可以过一会儿再试，或者在卡片里直接手写。',
     attempts,
     details: attempts,
   }
@@ -2288,4 +2313,4 @@ export function apply(ctx, config) {
   )
 }
 
-export { defaultWorkspace, buildApi, callModel }
+export { defaultWorkspace, buildApi, callModel, withTimeout, MODEL_TIMEOUT_MS }

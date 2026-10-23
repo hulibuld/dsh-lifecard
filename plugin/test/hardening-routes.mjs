@@ -351,5 +351,21 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   t('验收脚本里这句解释了为什么必须指回去', /指回/.test(live) && /卡全没了/.test(live))
 }
 
+
+// ── 模型调用必须有上限 ──
+// 模型偶尔不回话：不出错也不结束。没有上限的话界面上那个「分析」会
+// 永远转圈，用户分不清是在算还是已经死了。这里钉住限时本身。
+{
+  t('限时是分钟级不是毫秒级', api.MODEL_TIMEOUT_MS >= 60000, String(api.MODEL_TIMEOUT_MS))
+  const fast = await api.withTimeout(Promise.resolve('好了'), 200, 'AI ')
+  t('按时回来的原样返回', fast === '好了', String(fast))
+  let slowMsg = ''
+  try {
+    await api.withTimeout(new Promise(() => {}), 30, 'AI ')
+  } catch (e) { slowMsg = String(e?.message ?? e) }
+  t('不回话的会被掐掉', slowMsg.includes('没有回话'), slowMsg)
+  t('掐掉时说明等了多少秒', /\d+ 秒/.test(slowMsg), slowMsg)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
