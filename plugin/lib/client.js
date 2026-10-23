@@ -1129,7 +1129,9 @@ function SetupView({ state, onDone }) {
       h('div', { className: 'lc-meta' }, '每个人会变成这里的一个文本文件。', h('br'), '你随时能在访达（Finder）里找到它们，也能用别的软件打开。'),
     ),
     h(Field, { label: '放在哪里', hint: '下面这个位置就行，直接点最下面的按钮。' },
-      h('input', { className: 'lc-input', value: target, onChange: (e) => setTarget(e.target.value), placeholder: '/Users/你/Documents/Life Cards', spellCheck: false }),
+      // 改了路径就把上一次「看看这个位置」的结论扔掉：不然下面还写着
+      // 「这里已经有你的东西了：5 张卡」，用户会以为新路径接得上旧档案。
+      h('input', { className: 'lc-input', value: target, onChange: (e) => { setTarget(e.target.value); setInspect(null) }, placeholder: '/Users/你/Documents/Life Cards', spellCheck: false }),
     ),
     h('div', { className: 'lc-row' },
       h(Btn, { onClick: check, disabled: busy || target.trim() === '', icon: 'folder' }, '看看这个位置'),
@@ -1208,7 +1210,10 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
         ),
       )
 
-  if (cards.length === 0 && allWorlds.length === 0) {
+  // 「还没有档案」这句只在真的什么都没有时说。以前只看卡和世界书，
+  // 于是刚把一段文字存成材料、还没建卡的人回首页会看到一片空白，
+  // 以为刚才没存上，又贴一遍——材料就多出一份重复的。
+  if (cards.length === 0 && allWorlds.length === 0 && materials.length === 0 && proposals.length === 0) {
     return h('div', { className: 'lc-pad lc-stack' },
       introBlock,
       h('div', { className: 'lc-empty', style: { padding: '18px 8px 10px' } },
@@ -3302,12 +3307,18 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
   const asLabels = (list) => (Array.isArray(list) ? list : []).map((x) => (typeof x === 'string' ? { label: x } : x))
   const asStrings = (list) => (Array.isArray(list) ? list : []).map((x) => (typeof x === 'string' ? x : x?.label ?? '')).filter((x) => String(x).trim() !== '')
 
+  // 勾选框默认全是勾上的（「全读」）。此时点某一份的意思是「这一份不要」，
+  // 不是「只要这一份」——以前就是后者，用户点一下想取消一份，结果只读了
+  // 那一份，还以为读的是全部。
   const toggleMaterial = (path) => {
-    setChosen((prev) => prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path])
+    setChosen((prev) => {
+      if (prev.length === 0) return materials.map((m) => m.path).filter((p) => p !== path)
+      if (prev.includes(path)) return prev.filter((p) => p !== path)
+      const next = [...prev, path]
+      // 全勾回来时收回「一个都没选」的表示，界面才会如实显示「全读」
+      return next.length === materials.length ? [] : next
+    })
   }
-
-  // 换了一份招聘说明，上一份的结论、记过的投递、改好的简历都不再对应当前这一份。
-  const dropReport = () => { setReport(null); setLogged(false); setWritten(null); setNet(null) }
 
   const run = async () => {
     setBusy(true); setErr(null); setResult(null)
@@ -3322,7 +3333,13 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
       setResult(r)
       flash(`读出了 ${r.accepted} 条${r.rejected > 0 ? `，${r.rejected} 条没能核实已丢掉` : ''}`)
     } catch (e) {
-      setErr(humanizeError(e))
+      // 「连不上后台」在等了几分钟之后出现，真实原因通常不是没启动，
+      // 而是 AI 那边卡住了、连接被断开。说实话比说套话有用。
+      const raw = String(e?.message ?? e ?? '')
+      const slow = /fetch failed|failed to fetch|networkerror|load failed/i.test(raw) && Date.now() - startedAt > 60000
+      setErr(slow
+        ? '这一趟等太久了，连接被断开了——多半是这台机器上的 AI 卡住了，不是你的材料有问题。过一会儿再点一次；一直这样的话，直接手写卡也一样能建。'
+        : humanizeError(e))
     } finally { setBusy(false) }
   }
 
@@ -3704,6 +3721,10 @@ function JobsView({ onBack, flash }) {
     })
   }
 
+  // 换了一份招聘说明，上一份的结论、记过的投递、改好的简历都不再对应当前这一份。
+  // 不收拾的话，新公司那一栏下面还挂着上一家的分数和「我投了」——那是别人家的记录。
+  const dropReport = () => { setReport(null); setLogged(false); setWritten(null); setNet(null) }
+
   const shownRoles = draftRoles !== null ? draftRoles : (profile?.target_roles ?? '')
   const shownPay = draftPay !== null ? draftPay : (profile?.compensation ?? '')
   const shownNo = draftNo !== null ? draftNo : (Array.isArray(profile?.dealbreakers) ? profile.dealbreakers.join('、') : '')
@@ -4064,7 +4085,10 @@ function MockView({ company, role, requirements, onBack, flash }) {
   const loadPast = async () => {
     if (past !== null) { setPast(null); return }
     const r = await call('job.interview.list', {})
-    setPast(r.ok === true ? (r.items ?? []) : [])
+    // 读失败和「真的没练过」长得一样，但意思完全不同：面试前一晚
+    // 看到「还没练过」，会以为记录丢了。
+    if (r.ok !== true) { setErr(r.error ?? '练过的记录读不出来。'); return }
+    setPast(r.items ?? [])
   }
 
   return h('div', { className: 'lc-pad lc-stack' },

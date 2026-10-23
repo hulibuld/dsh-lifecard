@@ -1163,5 +1163,48 @@ for (const gone of ['你们是什么关系', '这是谁']) {
   t('搜材料名也能把材料搜出来', mats.includes('mama-interview'), mats.slice(0, 260))
 }
 
+
+// ── 把界面上每个能点、能改的地方都点一遍 ──────────────────────
+// 为什么要有这一段：静态渲染只证明「画得出来」，不证明「点得动」。
+// 曾经有一处 onChange 调了别的函数里的局部变量（dropReport），画面上完全
+// 看不出问题，用户一打字就抛错、报告也不跟着清。这一段就是把每个
+// onClick / onChange / onSubmit 都真的调一次，看会不会当场炸。
+function pokeHandlers(tree, label) {
+  const fakeEvent = {
+    target: { value: 'x', checked: false, files: [] },
+    preventDefault() {}, stopPropagation() {}, key: 'Enter', shiftKey: false,
+  }
+  const errors = []
+  const walk = (node, depth) => {
+    if (node === null || node === undefined || depth > 30) return
+    if (Array.isArray(node)) { for (const n of node) walk(n, depth + 1); return }
+    if (typeof node !== 'object') return
+    for (const key of ['onClick', 'onChange', 'onSubmit', 'onFocus', 'onBlur']) {
+      const fn = node.props?.[key]
+      if (typeof fn !== 'function') continue
+      try {
+        const out = fn(fakeEvent)
+        if (out !== null && out !== undefined && typeof out.then === 'function') out.then(() => {}).catch(() => {})
+      } catch (e) {
+        errors.push(`${key}: ${e.message}`)
+      }
+    }
+    walk(node.children, depth + 1)
+  }
+  walk(tree, 0)
+  return errors
+}
+
+for (const [label, tree] of [
+  ['首页', homeTree],
+  ['下一步', renderRoot('再看一眼下一步', base('jobs'))],
+  ['整理材料', renderRoot('再看一眼整理材料', base('analyze'))],
+  ['从记忆里认人', renderRoot('再看一眼记忆页', base('memory'))],
+  ['体检', renderRoot('再看一眼体检页', base('doctor', { 8: DOCTOR }))],
+]) {
+  const errs = pokeHandlers(expand(tree), label)
+  t(`${label}上每个按钮都点得动`, errs.length === 0, errs.slice(0, 3).join(' / '))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
