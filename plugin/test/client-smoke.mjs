@@ -195,5 +195,11 @@ if (typeof api.apply === 'function') {
   t('没有 slots 时优雅退化', noSlotsError === null, noSlotsError?.message)
 }
 
+// 「都不要」之后提示不能说成「这些卡里本来就有」——那是采纳那条路的话。
+// 用户会以为自己点错了，再去点一遍。
+{
+  t('「不要了」的提示与采纳分开', source.includes("r?.dismissed === true"), '')
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

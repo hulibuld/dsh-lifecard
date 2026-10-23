@@ -1019,6 +1019,7 @@ function LifeCardTab(props) {
                     setView(VIEWS.home)
                     // 报数要跟真的写进去的一致：一条都没新写时还说「存进卡里了」，
                     // 下次打开发现卡没变，就会以为软件在骗人。
+                    if (r?.dismissed === true) { flash('这份不要了，已经不在待办里', 'ok'); return }
                     const n = r?.applied ?? 0
                     flash(n === 0 ? '这些卡里本来就有，没有重复写' : `写进卡里 ${n} 条`, n === 0 ? 'warn' : 'ok')
                   },
@@ -1321,6 +1322,11 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
                 ' · ', shortDate(p.generated_at)),
             ),
           ))),
+          // 一次只摆 6 份。不说明的话，第 7 份起就永远看不见——
+          // 用户会以为那些建议丢了。
+          proposals.length > 6
+            ? h('div', { className: 'lc-meta' }, `还有 ${proposals.length - 6} 份没列出来。处理掉上面任意一份，它就会顶上来。`)
+            : null,
         )
       : null,
 
@@ -1571,6 +1577,7 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
       ? h(ProposalPanel, { proposal, onClose: () => setProposal(null), onApplied: async (r) => {
           setProposal(null)
           await onRefresh()
+          if (r?.dismissed === true) { flash('这份不要了，已经不在待办里', 'ok'); return }
           const n = r?.applied ?? 0
           flash(n === 0 ? '这些卡里本来就有，没有重复写' : `写进卡里 ${n} 条`, n === 0 ? 'warn' : 'ok')
         } })
@@ -1943,6 +1950,9 @@ function CardForm({ card, onCancel, onSaved, worlds }) {
   const [draftAsked, setDraftAsked] = useState(false)
   // 上一次落盘的内容指纹，用来避免每敲一个字就发一次请求
   const [savedPrint, setSavedPrint] = useState('')
+  // 自动存草稿失败时要说一声。以前 `.then(() => setSavedPrint(print))` 不看结果，
+  // 盘写不进去也当成存上了：用户以为有草稿，退出再进来什么都没有。
+  const [draftErr, setDraftErr] = useState(null)
 
   useEffect(() => {
     let alive = true
@@ -1975,8 +1985,11 @@ function CardForm({ card, onCancel, onSaved, worlds }) {
     if (print === savedPrint) return () => {}
     const timer = setTimeout(() => {
       call('draft.save', { cardId, draft: { data, sections, avatarTouched, avatar } })
-        .then(() => setSavedPrint(print))
-        .catch(() => {})
+        .then((r) => {
+          if (r?.ok === true) { setSavedPrint(print); return }
+          setDraftErr(r?.error ?? '草稿没存上')
+        })
+        .catch(() => setDraftErr('草稿没存上'))
     }, 1500)
     return () => clearTimeout(timer)
   }, [cardId, data, sections, avatar, avatarTouched, draftAsked, savedPrint])
@@ -2062,6 +2075,7 @@ function CardForm({ card, onCancel, onSaved, worlds }) {
 
   return h('div', { className: 'lc-pad lc-stack' },
     err === null ? null : h(Err, { text: err }),
+    draftErr === null ? null : h(Note, { tone: 'warn', icon: 'warning' }, `写到一半的那份没存上：${draftErr}。先别关，接着写也行——但这一份退出就没了。`),
     draftBanner,
     h('div', { className: 'lc-row' },
       h('div', { className: 'lc-meta lc-grow' }, '写多少算多少。空着的地方不会影响别的东西，以后想起来再补。'),
@@ -2444,7 +2458,9 @@ function ProposalPanel({ proposal, onClose, onApplied, applyBlocked, onBuildCard
       const r = await call('proposal.dismiss', { json: proposal.json })
       if (r.ok !== true) { setErr(r.error ?? '没能记下来'); return }
       // 先让首页把这份摘掉，再关面板——反过来的话用户会看见它又回到列表里。
-      await onApplied(r)
+      // 带上 dismissed 标记：父层靠它决定提示说什么，否则会照着「采纳」那条
+      // 报「这些卡里本来就有」，用户会以为自己点错了。
+      await onApplied({ ...r, dismissed: true })
       onClose()
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
   }
@@ -2753,7 +2769,7 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
       const id = preset?.id ?? safeId(targetName)
       const existing = (listing?.cards ?? []).find((c) => c.id === id || c.name === targetName)
       if (existing === undefined) {
-        await call('card.save', {
+        const made = await call('card.save', {
           data: {
             lifecard: '0.1', id, kind: 'real', world: 'reality', name: targetName,
             relation: relationText,
@@ -2762,6 +2778,12 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
           },
           sections: [],
         })
+        // 卡没建成就不该开始聊：聊完的每一句都要落到这张卡上，卡不在，
+        // 用户会答上十几题，回头什么也没有。
+        if (made?.ok !== true) {
+          setErr(made?.error ?? '这张卡没能建起来。换个名字再试。')
+          return
+        }
       } else if (extras.length > 0 || relationText !== '') {
         // 已经有卡的话，把这次点的关系补进去（别把原来写的覆盖成空）
         const got = await call('card.get', { path: existing.path })
@@ -2777,6 +2799,10 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
       }
       setAboutId(existing?.id ?? id)
       const p = await call('interview.plan', { about: existing?.id ?? id, relation, limit: 3 })
+      if (p?.ok !== true) {
+        setErr(p?.error ?? '没法准备问题，稍后再试一次。')
+        return
+      }
       setPlan(p)
       setQueue(p.next ?? [])
       setCurrent((p.next ?? [])[0] ?? null)
