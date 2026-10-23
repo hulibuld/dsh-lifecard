@@ -3590,6 +3590,9 @@ function JobsView({ onBack, flash }) {
   const [writing, setWriting] = useState(null) // 'resume' | 'cover' | null
   const [newStoryBody, setNewStoryBody] = useState('')
   const [showMock, setShowMock] = useState(false)
+  // 这一页开头要读好几样东西（求职设置、以前读过的、投递表、故事）。
+  // 读失败时以前是静默吞掉——界面上就是「一片空」，跟「你还没填」长得一样。
+  const [loadFail, setLoadFail] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -3601,19 +3604,22 @@ function JobsView({ onBack, flash }) {
         // 而不是等用户填完三栏点「存一下」才告诉他没地方存。
         setProfileFound(r.found !== false)
       }
-    }).catch(() => {})
+    }).catch(() => { if (alive === true) setLoadFail(true) })
     call('job.evaluations', {}).then((r) => {
       if (alive !== true) return
       if (r.ok === true) setHistory(r.items ?? [])
-    }).catch(() => {})
+      else setLoadFail(true)
+    }).catch(() => { if (alive === true) setLoadFail(true) })
     call('job.tracker.list', {}).then((r) => {
       if (alive !== true) return
       if (r.ok === true) setTracker(r.rows ?? [])
-    }).catch(() => {})
+      else setLoadFail(true)
+    }).catch(() => { if (alive === true) setLoadFail(true) })
     call('job.stories', {}).then((r) => {
       if (alive !== true) return
       if (r.ok === true) setStories(r.stories ?? [])
-    }).catch(() => {})
+      else setLoadFail(true)
+    }).catch(() => { if (alive === true) setLoadFail(true) })
     return () => { alive = false }
   }, [])
 
@@ -3703,6 +3709,9 @@ function JobsView({ onBack, flash }) {
   const shownNo = draftNo !== null ? draftNo : (Array.isArray(profile?.dealbreakers) ? profile.dealbreakers.join('、') : '')
 
   return h('div', { className: 'lc-pad lc-stack' },
+    loadFail === true
+      ? h(Note, { tone: 'warn', icon: 'warning' }, '有几项内容这次没读出来。上面还是能用的，只是下面那几栏可能是空的——不是你没有，是没读到。过一会儿重开这一页就会再读一次。')
+      : null,
     h('div', { className: 'lc-meta' },
       '把一份招聘说明整段贴进来。它会告诉你：哪些要求你真的对得上，哪些是门就关着的，哪些只是你还没写进材料。'),
 
