@@ -3249,6 +3249,9 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
     setChosen((prev) => prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path])
   }
 
+  // 换了一份招聘说明，上一份的结论、记过的投递、改好的简历都不再对应当前这一份。
+  const dropReport = () => { setReport(null); setLogged(false); setWritten(null); setNet(null) }
+
   const run = async () => {
     setBusy(true); setErr(null); setResult(null)
     try {
@@ -3583,6 +3586,9 @@ function JobsView({ onBack, flash }) {
 
   const run = async () => {
     setBusy(true); setErr(null); setReport(null)
+    // 重新看一遍就是从头来过：上一份的投递记录、改好的简历、认识谁，
+    // 都是照着上一份结论做的，不能留在新结论旁边。
+    setLogged(false); setWritten(null); setNet(null)
     try {
       const r = await call('job.evaluate', { jd, company })
       if (r.ok !== true) { setErr(r.error ?? '没读出来'); return }
@@ -3676,14 +3682,16 @@ function JobsView({ onBack, flash }) {
     ),
 
     h(Field, { label: '公司（可以不填）' },
-      h('input', { className: 'lc-input', value: company, onChange: (e) => setCompany(e.target.value), placeholder: '某公司', spellCheck: false }),
+      h('input', { className: 'lc-input', value: company, onChange: (e) => { setCompany(e.target.value); dropReport() }, placeholder: '某公司', spellCheck: false }),
     ),
 
     h(Field, { label: '招聘说明', hint: '整段复制过来，包括职责和要求。越完整越准。' },
       h('textarea', {
         className: 'lc-textarea',
         value: jd,
-        onChange: (e) => setJd(e.target.value),
+        // 换了招聘说明就把上一份的结论收掉：不然左边是新的岗位，右边还是
+        // 上一个岗位的结论，人一急就会照着它点「记一笔」。
+        onChange: (e) => { setJd(e.target.value); dropReport() },
         placeholder: '把招聘要求整段贴在这里…',
         spellCheck: false,
         style: { minHeight: 150 },
@@ -3754,8 +3762,9 @@ function JobsView({ onBack, flash }) {
     ),
 
     // ── 模拟面试 ──
-    // 放在报告之后：看完整份评估的人，才知道自己哪几条最可能被问穿。
-    h('div', { className: 'lc-stack', style: { marginTop: 10 } },
+    // 放在报告之后、并且只在看过一份工作之后才给：它问的正是那份评估里
+    // 没对上的地方，手上没有评估就不知道要问什么。
+    report === null ? null : h('div', { className: 'lc-stack', style: { marginTop: 10 } },
       h(Btn, { size: 'sm', icon: 'mic', onClick: () => setShowMock(true) }, '练一轮面试'),
       h('div', { className: 'lc-meta' }, '它会针对刚才那些没对上的地方问你，然后咬住你的回答往下追。'),
     ),
