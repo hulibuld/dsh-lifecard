@@ -1763,5 +1763,33 @@ for (const [label, tree] of [
   t('虚构角色的第一问从怎么说话起', ficText.includes('TA 怎么说话'), ficText.slice(0, 400))
 }
 
+{
+  // 分析页那两栏「想突出的 / 不想要的」是边打边存的草稿：只有点「存一下」
+  // 或失焦才落盘。改了字直接点「开始读」，以前发出去的还是上一次存的那份，
+  // 读出来的东西跟屏幕上写的不一样。
+  const bodies = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    bodies.push(String(init?.body ?? ''))
+    return { ok: true, json: async () => ({ ok: true, accepted: 0, rejected: 0, json: { items: [] } }) }
+  }
+  const tree = renderOne('分析页（概念刚改完就点开始读）', seen.get('AnalyzeView'), {
+    listing: LISTING, state: { ok: true, workspace: '/tmp/x', exists: true }, flash: () => {},
+    onProposal: () => {}, presetAbout: { id: 'mama', name: '妈妈' }, presetMaterials: null,
+    onBack: () => {}, onNeedMaterial: () => {},
+  }, { 0: 'mama', 10: '把她说得倔一点，别写成温柔的' })
+  const go = flatButtons(expand(tree)).find((b) => textOf(b).includes('开始读'))
+  if (go === undefined) t('分析页有「开始读」', false)
+  else {
+    go.props.onClick()
+    await new Promise((r) => setTimeout(r, 30))
+    const analyze = bodies.find((b) => b.includes('"about"')) ?? ''
+    t('刚改完的概念会一起发出去', analyze.includes('倔一点'), JSON.stringify(bodies).slice(0, 400))
+    t('同时把改完的概念存下来', bodies.some((b) => b.includes('concept.set') || (b.includes('倔一点') && !b.includes('"about"'))), JSON.stringify(bodies).slice(0, 300))
+    t('发给后台的概念不会是上一次存的那份', !analyze.includes('上一次'), analyze.slice(0, 300))
+  }
+  globalThis.fetch = realFetch
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

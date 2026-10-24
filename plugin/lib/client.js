@@ -912,7 +912,13 @@ function LifeCardTab(props) {
   // 不这样清，刚看完某人的卡再回首页点「整理 N 份材料」，那一页会默默
   // 还选着刚才那个人。
   const go = useCallback((next) => {
+    // 离开那一屏就把带过去的东西清掉：不留着上一次的「整理谁」「读哪一份材料」，
+    // 也不留着「这张建议卡属于谁」。以前 pendingAbout 只写不清——点过一次
+    // 「给这个人建张卡」又退出来，之后从首页点「我自己填一张」，名字栏里还
+    // 预填着上一个人的名字，用户一眼就懵了。
     if (next === VIEWS.analyze || next === VIEWS.interview || next === VIEWS.home) { setInterviewFor(null); setMaterialFor(null) }
+    if (next !== VIEWS.newCard) setPendingAbout('')
+    if (next !== VIEWS.tavernChat) setChat(null)
     setView(next)
   }, [])
 
@@ -4017,6 +4023,11 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
     // 就在 catch 里抛 ReferenceError，setErr 永远走不到——用户只看到按钮弹回来，
     // 一句解释都没有。
     const startedAt = Date.now()
+    // 「想突出的 / 不想要的」那一栏是边打边存的草稿，只有点「存一下」或失焦
+    // 才落盘。改了字直接点「开始读」，以前用的还是上一次存的那份——读出来
+    // 的东西跟屏幕上写的不一样，用户会以为 AI 没看懂。
+    const conceptForRun = conceptDraft !== null ? conceptDraft : concept
+    if (conceptDraft !== null) flushConcept(conceptDraft)
     setBusy(true); setErr(null); setResult(null)
     try {
       const r = await call('analyze.run', {
@@ -4024,7 +4035,7 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
         // about 可能是卡 id，也可能只是个名字（还没建卡）。两种都照实传。
         name: cards.find((c) => c.id === about)?.name ?? about,
         materials: chosen.length > 0 ? chosen : undefined,
-        concept: concept === null ? undefined : concept,
+        concept: conceptForRun === null ? undefined : conceptForRun,
       })
       if (r.ok !== true) { setErr(r.error ?? '没跑成'); return }
       setResult(r)
