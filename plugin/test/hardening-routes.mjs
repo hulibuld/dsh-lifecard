@@ -397,6 +397,16 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   await api5['interview.record']({ about: 'zhangsan', q: q1.id, ask: q1.ask, status: 'skipped', reason: 'sealed' })
   const afterSeal = await api5['interview.plan']({ about: 'zhangsan', relation: 'friend', limit: 20 })
   t('说了不想说的题不再问', afterSeal.next.every((q) => q.id !== q1.id), afterSeal.next.map((q) => q.id))
+  // 只跳过一次的会再问一次；跳过两次就别再问了，不然同一题会一直转回来
+  const twice = afterSeal.next[0]
+  if (twice !== undefined) {
+    await api5['interview.record']({ about: 'zhangsan', q: twice.id, ask: twice.ask, status: 'skipped' })
+    const after1 = await api5['interview.plan']({ about: 'zhangsan', relation: 'friend', limit: 20 })
+    t('跳过一次的题还会再问一次', after1.next.some((q) => q.id === twice.id), after1.next.map((q) => q.id))
+    await api5['interview.record']({ about: 'zhangsan', q: twice.id, ask: twice.ask, status: 'skipped' })
+    const after2 = await api5['interview.plan']({ about: 'zhangsan', relation: 'friend', limit: 20 })
+    t('跳过两次的题就不再问了', after2.next.every((q) => q.id !== twice.id), after2.next.map((q) => q.id))
+  }
   t('不想说会进 sealed 名单', afterSeal.sealed.includes(q1.id), afterSeal.sealed)
   // 答过的题也不再问
   const q2 = afterSeal.next[0]

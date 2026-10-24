@@ -1996,10 +1996,18 @@ function buildApi(ctx, workspace, config) {
       // 永远填不上，完成页却还一直报「还空着：…」。
       const answeredIds = new Set(answered.filter((a) => a.status === 'answered').map((a) => a.q))
       const sealedIds = new Set(answered.filter((a) => a.reason === 'sealed' || a.status === 'sealed').map((a) => a.q))
+      // 同一题跳过两次就别再问了——用户显然是想不起来。只跳过一次的排到队尾
+      // 还会再问一次；没有这条，「跳过」要么等于永别，要么变成同一题反复出现。
+      const skipCount = new Map()
+      for (const a of answered) {
+        if (a.status !== 'skipped') continue
+        skipCount.set(a.q, (skipCount.get(a.q) ?? 0) + 1)
+      }
+      const giveUp = new Set([...skipCount].filter(([, n]) => n >= 2).map(([q]) => q))
       const cov = core.coverage(data, sections)
       const filled = new Set(cov.filled.map((f) => f.key))
       const todo = questions.filter((q) => {
-        if (answeredIds.has(q.id) || sealedIds.has(q.id)) return false
+        if (answeredIds.has(q.id) || sealedIds.has(q.id) || giveUp.has(q.id)) return false
         // fills 里还有空字段才问
         return q.fills.some((f) => !filled.has(f))
       })
