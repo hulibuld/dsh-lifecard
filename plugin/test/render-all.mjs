@@ -1031,6 +1031,17 @@ if (seen.has('CardRow')) {
   t('报告里有丢掉的那段', joined.includes('丢掉的'))
   t('报告页不出现「投」这种诱导', !joined.includes('建议投递'))
 
+  // 报告没能存进文件夹时，最上面要说清楚。以前这种情况接口照样返回成功、
+  // 只是没有 path，界面上什么都不显示，用户以为已经归档了。
+  const noSave = visibleText.length
+  renderOne('求职报告（没存进文件夹）', seen.get('JobReport'), {
+    report: { ...REPORT, path: undefined, saveFail: '这份报告没能存进文件夹（磁盘满了）。现在它只在屏幕上，翻篇就没了——先把下面这段复制走。' },
+  })
+  const joinedNoSave = visibleText.slice(noSave).join('|')
+  t('没存进文件夹时报告最上面会说', joinedNoSave.includes('没能存进文件夹'))
+  t('没存进文件夹时不会说「已经存下来了」', !joinedNoSave.includes('已经存下来了'))
+  t('没存进文件夹时报告内容还在', joinedNoSave.includes('硬要求没对上'))
+
   // 顺序：一票否决在最前，其次挡住，最后才是对得上的
   const iDeal = joined.indexOf('你写过不能接受这个')
   const iBlock = joined.indexOf('硬要求没对上')

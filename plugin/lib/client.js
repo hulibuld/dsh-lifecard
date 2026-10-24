@@ -3943,7 +3943,7 @@ function JobsView({ onBack, flash }) {
         h(Btn, { size: 'sm', ghost: true, icon: 'x', onClick: () => setWritten(null) }, '收起'),
       ),
       // 数字对不上是这里最要紧的提示：简历上编一个百分比，面试第一个问题就会问到它。
-      written.warning === null ? null : h(Note, { tone: 'warn', icon: 'warning' }, written.warning),
+      written.warning === null ? null : h(Note, { tone: 'warn', icon: 'warning' }, h('div', { style: { whiteSpace: 'pre-wrap' } }, written.warning)),
       h('div', { style: { whiteSpace: 'pre-wrap', fontSize: 12.5, lineHeight: 1.65, marginTop: 6 } }, written.markdown),
       written.path === null ? null : h('div', { className: 'lc-meta', style: { marginTop: 6 } }, '也存了一份在工作文件夹里，回头能找到。'),
     ),
@@ -4056,7 +4056,14 @@ function JobReport({ report }) {
   const deal = report.dealbreakers ?? []
   const soft = gaps.filter((g) => g.importance !== 'critical' && g.importance !== 'high')
 
+  // 报告没能存进文件夹：现在它只在这一屏上，翻篇就没了。这句话要放在
+  // 最前面——不然用户以为已经归档，回头在「以前看过的」里找不到。
+  const saveFail = typeof report.saveFail === 'string' && report.saveFail !== ''
+    ? h(Note, { tone: 'err', icon: 'warning' }, h('div', { style: { whiteSpace: 'pre-wrap' } }, report.saveFail))
+    : null
+
   return h('div', { className: 'lc-stack', style: { marginTop: 14 } },
+    saveFail,
     h('div', { className: 'lc-row' },
       h('h3', { style: { margin: 0, flex: '1 1 auto' } }, [report.company, report.role].filter((s) => String(s ?? '').trim() !== '').join(' · ') || '这份工作'),
       h(Tag, null, `${matched.length} 条对得上`),
