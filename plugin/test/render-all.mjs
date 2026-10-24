@@ -1599,6 +1599,52 @@ for (const [label, tree] of [
   t('没名字的时候用「TA」顶上', bareText.includes('TA'), bareText.slice(0, 120))
 }
 
+// ── 酒馆：收个尾 ──────────────────────────────────────────────────
+// 说得久了只带最近二十来轮给模型，再往前它就记不住。收尾就是把前面
+// 发生过的事写成几句，存进会话文件、之后每轮都带上。
+{
+  const CHAT = {
+    id: 'chat-20261024-1611-abcd',
+    card_name: '张三',
+    turns: [
+      { who: '张三', text: '来了？自己找地方坐。' },
+      { who: '我', text: '我路过，进来看看。' },
+    ],
+  }
+  const withMemory = { ...CHAT, notes: [{ title: '到这儿为止', body: '张三在门口遇到了我，说起厂里倒闭的事。' }] }
+  const tree = renderOne('酒馆（已经收过一次尾）', seen.get('TavernView'), { chat: withMemory, onChat: () => {}, onBack: () => {} })
+  const text = textOf(expand(tree))
+  t('收过尾的场次会亮出那段备忘', text.includes('前面这些已经收好了'), text.slice(0, 200))
+  t('备忘的内容在屏上', text.includes('厂里倒闭'), text.slice(0, 240))
+  t('有话可收时「收个尾」按得动', flatButtons(expand(tree)).some((b) => textOf(b).includes('收个尾')))
+
+  const plain = renderOne('酒馆（还没收过尾）', seen.get('TavernView'), { chat: CHAT, onChat: () => {}, onBack: () => {} })
+  t('没收过尾时不出现那段备忘', !textOf(expand(plain)).includes('前面这些已经收好了'), textOf(expand(plain)).slice(0, 160))
+
+  // 点「收个尾」：后台回一段备忘，界面要立刻接上
+  const posts = []
+  const realFetch = globalThis.fetch
+  let back = null
+  globalThis.fetch = async (url, init) => {
+    posts.push(String(url))
+    return {
+      ok: true,
+      json: async () => ({ ok: true, summary: '说到厂里倒闭，还没谈完。', notes: [{ title: '到这儿为止', body: '说到厂里倒闭，还没谈完。' }], turns: CHAT.turns }),
+    }
+  }
+  try {
+      const withCb = renderOne('酒馆（点收个尾）', seen.get('TavernView'), { chat: CHAT, onChat: (c) => { back = c }, onBack: () => {} })
+    const clicked = clickByText(withCb, '收个尾')
+    t('「收个尾」点得动', clicked === true)
+    await new Promise((r) => setTimeout(r, 30))
+    t('点了之后真的去收了', posts.some((u) => u.includes('tavern.summarize')), posts.join(' | '))
+    t('收完把新的备忘带回来了', Array.isArray(back?.notes) && back.notes.some((n) => n.title === '到这儿为止'), JSON.stringify(back?.notes))
+  } finally {
+    globalThis.fetch = realFetch
+  }
+  void back
+}
+
 // ── 酒馆：说过的那几场要能回去 ────────────────────────────────────
 // 退出一场之后就找不回来了，等于每场都只活一次——列表是回来的路。
 {

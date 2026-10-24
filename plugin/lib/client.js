@@ -1784,11 +1784,15 @@ function TavernView({ chat, onChat, onBack }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  // 「到这儿为止」那段备忘。它存在会话文件里，跟着 chat 一起下发。
+  const [notes, setNotes] = useState(Array.isArray(chat?.notes) ? chat.notes : [])
   const scrollRef = useRef(null)
   const turns = Array.isArray(chat?.turns) ? chat.turns : []
   const rawName = String(chat?.card_name ?? '').trim()
   const name = rawName === '' ? 'TA' : rawName
   const me = '我'
+  const memoryNote = notes.find((n) => String(n?.title ?? '').trim() === '到这儿为止')
+  const memoryText = memoryNote === undefined ? '' : String(memoryNote.body ?? '').trim()
 
   const say = async (text) => {
     if (busy || chat?.id === undefined) return
@@ -1801,6 +1805,30 @@ function TavernView({ chat, onChat, onBack }) {
       if (Array.isArray(r?.turns)) onChat({ ...chat, turns: r.turns })
       if (r?.ok !== true) { setErr(r?.error ?? 'TA 没接上话，过一会儿再试一次'); return }
       setDraft('')
+    } catch (e) {
+      setErr(humanizeError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /**
+   * 把前面那些收一收。
+   *
+   * 说得久了只能带最近二十来轮给模型，再往前它就记不住了。让 TA 用几句
+   * 话把「到这儿为止」记下来存进会话文件，之后每轮都带上——这不是什么
+   * 高深功能，就是让它在第一千句的时候还记得第三句发生过什么。
+   */
+  const summarize = async () => {
+    if (busy || chat?.id === undefined) return
+    setBusy(true)
+    setErr(null)
+    try {
+      const r = await call('tavern.summarize', { id: chat.id })
+      if (r?.ok !== true) { setErr(r?.error ?? '这次没收成，过一会儿再试一次'); return }
+      const next = Array.isArray(r.notes) ? r.notes : []
+      setNotes(next)
+      onChat({ ...chat, turns: Array.isArray(r.turns) ? r.turns : chat.turns, notes: next })
     } catch (e) {
       setErr(humanizeError(e))
     } finally {
@@ -1865,6 +1893,10 @@ function TavernView({ chat, onChat, onBack }) {
       className: 'lc-stack',
       style: { gap: 7, maxHeight: '52vh', overflowY: 'auto', padding: '2px 1px' },
     }, turns.map(bubble)),
+    memoryText === '' ? null : h(Note, { icon: 'book' },
+      h('div', { style: { fontWeight: 650, marginBottom: 3 } }, '前面这些已经收好了'),
+      h('div', { style: { whiteSpace: 'pre-wrap' } }, memoryText),
+    ),
     err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
     h('textarea', {
       className: 'lc-textarea',
@@ -1895,6 +1927,12 @@ function TavernView({ chat, onChat, onBack }) {
         title: `让「${name}」自己往下说`,
       }, `让 ${name} 先说`),
       h('div', { className: 'lc-grow' }),
+      h(Btn, {
+        size: 'sm', tone: 'analyze', icon: 'history',
+        disabled: busy,
+        onClick: summarize,
+        title: '把前面发生过的事记成几句，之后每轮都带上',
+      }, '收个尾'),
       h(Btn, { size: 'sm', ghost: true, icon: 'trash', disabled: busy, onClick: () => setConfirmDelete(true) }, '这一场不要了'),
     ),
     confirmDelete === true

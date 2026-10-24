@@ -238,5 +238,82 @@ console.log('\n=== 7. TA 没回话时，我说的话不许丢 ===')
   t('太长的会话会拦住', tooLong.ok === false && /太长了/.test(String(tooLong.error ?? '')), tooLong)
 }
 
+console.log('\n=== 8. 收个尾：把前面发生过的事记下来，之后每轮都带上 ===')
+{
+  const lines = []
+  let lastUser = ''
+  const sumLlm = {
+    listProviders: async () => [{ provider: 'raccoon', models: [{ id: 'm' }] }],
+    listModels: async () => [],
+    stream: async (opt) => {
+      lastUser = JSON.stringify(opt ?? {})
+      return (async function* () {
+        yield { type: 'text-delta', text: '张三在门口遇到了我，两个人说起厂里倒闭的事，还没谈完。' }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })()
+    },
+  }
+  const ctxSum = {
+    webServer: { register: () => () => {} },
+    reflect: { get: () => undefined },
+    effect: (fn) => { fn(); return () => {} },
+    logger: { warn: () => {} },
+    get: (name) => (name === 'llm' ? sumLlm : undefined),
+  }
+  const table = api.buildApi(ctxSum, async () => ws, { workspace: ws })
+  await store.writeCard(ws, 'people/wang.card.md', { lifecard: '0.1', id: 'wang', kind: 'fictional', world: 'reality', name: '张三' }, [
+    { title: '自述', body: '钳工。' },
+  ])
+  const started = await table['tavern.start']({ card: 'people/wang.card.md' })
+  const id = started.id
+
+  // 才两轮：不该收，且要说清为什么
+  const early = await table['tavern.summarize']({ id })
+  t('才说两句时先不收', early.ok === false && /先不急着收/.test(String(early.error)), early)
+
+  // 补到够长
+  const many = []
+  for (let i = 0; i < 10; i++) many.push(i % 2 === 0 ? { who: '我', text: `第${i}句我说的话` } : { who: '张三', text: `第${i}句他说的话` })
+  await tavern.writeChat(ws, id, { ...started, card_name: '张三' }, many)
+
+  const done = await table['tavern.summarize']({ id })
+  t('说够十句就能收', done.ok === true, done)
+  t('收出来一段备忘', typeof done.summary === 'string' && done.summary.length > 0, done.summary)
+  t('提示词里带着对话原文', lastUser.includes('第0句我说的话'), lastUser.slice(0, 200))
+  t('提示词明说了不要评论、不要写成散文', lastUser.includes('不要评论'), lastUser.slice(0, 400))
+
+  const back = await tavern.readChat(ws, id)
+  const note = (back.notes ?? []).find((n) => n.title === tavern.MEMORY_TITLE)
+  t('备忘写进了会话文件', note !== undefined, back.notes)
+  t('备忘的小节标题叫「到这儿为止」', note?.title === '到这儿为止', note?.title)
+  t('原来那些话一句没丢', (back.turns ?? []).length === many.length, (back.turns ?? []).length)
+
+  // 收第二次：旧的那段要被换掉，不许叠成两段
+  const again = await table['tavern.summarize']({ id })
+  t('可以再收一次', again.ok === true, again)
+  const back2 = await tavern.readChat(ws, id)
+  t('再收一次不会叠成两段', (back2.notes ?? []).filter((n) => n.title === tavern.MEMORY_TITLE).length === 1, back2.notes)
+
+  // 之后每轮的系统提示里要带上这段备忘
+  let seenSystem = ''
+  const sayLlm = {
+    listProviders: async () => [{ provider: 'raccoon', models: [{ id: 'm' }] }],
+    listModels: async () => [],
+    stream: async (opt) => {
+      seenSystem = String(opt?.system ?? opt?.messages?.map((m) => m.content).join('\n') ?? '')
+      return (async function* () {
+        yield { type: 'text-delta', text: '嗯。' }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })()
+    },
+  }
+  const ctxSay = { ...ctxSum, get: (name) => (name === 'llm' ? sayLlm : undefined) }
+  const table2 = api.buildApi(ctxSay, async () => ws, { workspace: ws })
+  await table2['tavern.say']({ id, text: '接着说' })
+  t('之后每一轮都把备忘带上了', seenSystem.includes('到这儿为止'), seenSystem.slice(0, 200))
+  t('带的是备忘的内容', seenSystem.includes('厂里倒闭') || seenSystem.includes('还没谈完'), seenSystem.slice(0, 400))
+  void lines
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

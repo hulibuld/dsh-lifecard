@@ -2237,7 +2237,12 @@ function buildApi(ctx, workspace, config, options) {
           worldNotes.push(...tavern.pickWorldEntries(entries, tavern.recentContextText(turns)))
         }
       }
-      const system = tavern.buildRoleplaySystem({ cardName, persona: persona.text, worldNotes })
+      // 「收个尾」收到的那段备忘，每轮都带上：不带的话说得久了它会开始
+      // 把前面发生过的事记错（历史只带最近二十来轮）。
+      const memoryNote = (Array.isArray(got.notes) ? got.notes : [])
+        .find((n) => String(n?.title ?? '').trim() === tavern.MEMORY_TITLE)
+      const memory = memoryNote === undefined ? '' : String(memoryNote.body ?? '')
+      const system = tavern.buildRoleplaySystem({ cardName, persona: persona.text, worldNotes, memory })
       const user = tavern.buildRoleplayUser({ cardName, turns })
       const called = await callModel(ctx, { system, user, model: body?.model })
       const now = tavernStamp()
@@ -2258,6 +2263,38 @@ function buildApi(ctx, workspace, config, options) {
         return { ok: false, error: `TA 回了，但这一场没存下来：${saved.error}`, reply, turns }
       }
       return { ok: true, id, reply, turns, used: { card: card.ok === true, world: worldNotes.length } }
+    },
+
+    /**
+     * 酒馆：把前面那些收一收。
+     *
+     * 说得久了历史只能带最近二十来轮，再往前就丢了。这不是"记忆库"，
+     * 只是在会话文件里补一段「到这儿为止」，之后每轮都带上，
+     * 让它别把之前发生过的事记错。
+     */
+    'tavern.summarize': async (body) => {
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '这一场找不到了' }
+      const got = await tavern.readChat(ws, id)
+      if (got.ok !== true) return got
+      const turns = Array.isArray(got.turns) ? got.turns.slice() : []
+      if (turns.length < tavern.MIN_TURNS_TO_SUMMARIZE) {
+        return { ok: false, error: `才说了 ${turns.length} 句，先不急着收；说满 ${tavern.MIN_TURNS_TO_SUMMARIZE} 句再收才划算。`, turns }
+      }
+      const cardName = String(got.data?.card_name ?? '').trim()
+      const prompt = tavern.buildSummaryPrompt({ cardName, turns })
+      const called = await callModel(ctx, { system: prompt.system, user: prompt.user, model: body?.model })
+      if (called.ok !== true) return { ok: false, error: `收尾没收成：${called.error ?? '过一会儿再试一次'}`, turns }
+      const summary = String(called.text ?? '').trim()
+      if (summary === '') return { ok: false, error: 'TA 这次没说出个所以然，过一会儿再收一次。', turns }
+      // 旧的那段换掉，不叠加：两段备忘放在一起，模型会挑着信其中一段。
+      const notes = (Array.isArray(got.notes) ? got.notes : [])
+        .filter((n) => String(n?.title ?? '').trim() !== tavern.MEMORY_TITLE)
+      notes.push({ title: tavern.MEMORY_TITLE, body: summary })
+      const saved = await tavern.writeChat(ws, id, { ...got.data, notes, turns: turns.length, updated_at: tavernStamp() }, turns)
+      if (saved.ok !== true) return { ok: false, error: `收好了，但没存下来：${saved.error}`, summary, turns }
+      return { ok: true, id, summary, notes, turns }
     },
 
     /** 酒馆：这一场不要了。 */

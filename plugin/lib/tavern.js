@@ -36,6 +36,12 @@ export const MAX_WORLD_CHARS = 2200
 /** 一条回复最多多少字——给模型的建议值，写在提示词里。 */
 export const MAX_REPLY_HINT = 160
 
+/** 收尾那段记忆在小节里的标题。 */
+export const MEMORY_TITLE = '到这儿为止'
+
+/** 少于这么多轮，收尾没意义（三五句都记不住，那就不该开这一场）。 */
+export const MIN_TURNS_TO_SUMMARIZE = 8
+
 /** 正文小节里属于「这个人是谁」的那几节，按这个顺序拼。 */
 const PERSONA_SECTIONS = ['自述', '性格', '外貌', '口癖', '不会说的话', '不会做的事', '关系史']
 
@@ -312,7 +318,7 @@ export function pickWorldEntries(entries, recentText) {
  * 刻意写死几句约束：不替对方说话、不跳出角色解释、不加括号注释。
  * 这三样是角色扮演最容易崩的地方，不写清楚模型每次都会犯。
  */
-export function buildRoleplaySystem({ cardName, persona, worldNotes }) {
+export function buildRoleplaySystem({ cardName, persona, worldNotes, memory }) {
   const name = cardName === '' ? '这个人' : cardName
   const lines = [
     `你正在演一个角色扮演对话。你只演「${name}」这一个人，对方是「我」。`,
@@ -322,6 +328,12 @@ export function buildRoleplaySystem({ cardName, persona, worldNotes }) {
   ]
   if (Array.isArray(worldNotes) && worldNotes.length > 0) {
     lines.push('', '【这个世界】', worldNotes.join('\n\n'))
+  }
+  // 说是「收个尾」，其实就是一句记忆：说得久了前面那些轮次会被挤掉，
+  // 不给它一段「到这儿为止」的交代，它会开始把之前发生过的事记错。
+  const remember = String(memory ?? '').trim()
+  if (remember !== '') {
+    lines.push('', '【到这儿为止】', remember, '', '（上面这些是之前真的发生过的，别和它矛盾；没说过的别编。）')
   }
   lines.push(
     '',
@@ -359,6 +371,31 @@ export function buildRoleplayUser({ cardName, turns }) {
 /**
  * 挑「这一轮该带上哪些世界书条目」时需要看的文字：最近几轮 + 这一句。
  */
+/**
+ * 拼「把前面这些收一收」的那两段话。
+ *
+ * 只让它记事实：发生过什么、关系有什么变化、什么事还没了。不要它评论、
+ * 不要它抒情——收尾一旦变成总结陈词，下一轮它会照着那个腔调演。
+ */
+export function buildSummaryPrompt({ cardName, turns }) {
+  const name = cardName === '' ? '这个人' : cardName
+  const lines = []
+  for (const turn of Array.isArray(turns) ? turns : []) {
+    const who = String(turn?.who ?? '').trim()
+    const text = String(turn?.text ?? '').trim()
+    if (who === '' || text === '') continue
+    lines.push(`${who}：${text}`)
+  }
+  const system = [
+    '你要把一段角色扮演的对话压缩成一份「备忘」。',
+    '只写到这里为止真的发生过的事：谁说了什么要紧的、两个人的关系有什么变化、还有什么没解决。',
+    '不要评论，不要总结「这段对话体现了什么」，不要写成信或者散文。',
+    '用三到六句话，用第三人称陈述，不用引号复述原话。',
+  ].join('\n')
+  const user = `扮演的是「${name}」，对面是「我」。下面是这一段对话：\n\n${lines.join('\n')}\n\n请写成备忘。`
+  return { system, user }
+}
+
 export function recentContextText(turns) {
   return (Array.isArray(turns) ? turns : [])
     .slice(-6)
@@ -370,6 +407,12 @@ export default {
   CHAT_DIR,
   MAX_HISTORY_TURNS,
   MAX_TURNS,
+  MAX_PERSONA_CHARS,
+  MAX_WORLD_CHARS,
+  MAX_REPLY_HINT,
+  MEMORY_TITLE,
+  MIN_TURNS_TO_SUMMARIZE,
+  buildSummaryPrompt,
   chatRelPath,
   newChatId,
   renderChatMarkdown,
