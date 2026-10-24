@@ -11,8 +11,8 @@
 - 项目：`/Users/joyfon620/Documents/deepseek-harness/default-workspace/LifeCard/`
 - 是什么：DSH（DeepSeek Harness）的侧边栏插件，本地优先的人物档案库——把身边的人写成 Markdown+YAML 的「卡」，带关系网、题料、AI 抽取（**每条断言必须有原文引文**）、求职与模拟面试。
 - 代码在哪：全部在 `plugin/`。`plugin/lib/` 12 个模块（新增 `tavern.js` 387 行），`plugin/test/` 20 个文件。
-- 当前状态：`main` 分支，工作区干净，HEAD = `14309f3`，共 98 次提交。
-- 测试：全量 **1869 项**通过（18 个测试文件）；对一个真实运行的实例做端到端验收 **22 项全过**（`test/live.mjs`，含两次真模型调用：分析 + 酒馆里让 TA 回一句）。
+- 当前状态：`main` 分支，工作区干净，HEAD = `a12f9b7`，共 99 次提交。
+- 测试：全量 **1891 项**通过（19 个测试文件）；对一个真实运行的实例做端到端验收 **22 项全过**（`test/live.mjs`，含两次真模型调用：分析 + 酒馆里让 TA 回一句）。
 - 发布：**没有发到 GitHub，也不许由你发**（用户明确「不发，我自己发」）。`research/` 已被 `.gitignore` 排除（用户说「调研报告不要发」）。
 - 给朋友用的试用包：`dist/LifeCard-试用版.zip`（已拷到 `~/Desktop/`），里面有 `先看这里.md` 和 `install.command`。
 
@@ -23,7 +23,7 @@
 ```bash
 cd /Users/joyfon620/Documents/deepseek-harness/default-workspace/LifeCard/plugin
 
-# ① 全量单元/渲染测试。期望「合计 1754 项，全部通过。」
+# ① 全量单元/渲染测试。期望「合计 1891 项，全部通过。」
 node test/all.mjs
 
 # ② 端到端验收（打一个真实运行的 DSH 实例）。期望 15 passed, 0 failed。
@@ -213,6 +213,31 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:<端口>/api/d
 - 新增回归测试 40 项（`tavern-test.mjs` 8→92、`hardening-routes.mjs` →159、`render-all.mjs` →457），其中「小标题吃对话」「备忘被抹」「400 句丢字」「并发吞一轮」「同名卡记错人」「死按钮」六条都验过会红。
 - 审查员 A 还提醒了一个**测试盲区**：`render-all.mjs` 的假 React 里 `useEffect` 只占槽位、从不执行，所以「自动开始」「卸载补存」这类逻辑它测不到——那部分只能靠 `draft-flush-test.mjs`（会跑 effect）或人工验。下一轮如果要钉 prep 的自动开始，得把 `InterviewView` 加进那个文件的 `EFFECTED` 白名单。
 - 审查员 B 提的「快照里跑测试只有 1484 项、5 个文件失败」不是仓库的问题：`git archive` 出来的 `plugin/` 没有 `node_modules`，`@deepseek-ai/schemastery` 找不到。真仓库里 1869 项全过。
+
+### 2026-10-24 深夜这一段（`a12f9b7`，1869 → 1891 项）
+
+用户在使用中报：「开酒馆还是写小说，点聊着建，它都说『你在记录一个现实中的人』」。
+
+**真因**：`mode`（我在哪扇门）是从「当前在哪一屏」推出来的：
+
+```js
+const mode = view === VIEWS.novel ? 'novel' : (view === VIEWS.tavern || view === VIEWS.tavernChat) ? 'tavern' : 'real'
+```
+
+一进「聊着建」，`view` 就变成 `interview`，于是不管从哪扇门进来都退回 `real`。**子页面不是门，门要跟着人走。**
+
+修法：门改成独立状态 `const [door, setDoor] = useState('real')`，`pickDoor` 里 `setDoor(next)`；`mode` 只在门自己的两屏用 `view` 判断，其余屏一律用 `door`。
+
+同批还改了：
+
+- 三扇门改成**竖排大卡、撑满整屏**（`minHeight:'100%'` + 每块 `flex:'1 1 0'` + `minHeight:104`），每块带图标、标题、一句说明和三条「里面有什么」。
+- 三扇门的「聊着建」都给出来了（以前空库时，小说/酒馆门第一块是「先立一个人」的空白表）：标题按门变（陪我聊聊 / 聊着立一个小说角色 / 聊着立一个能演的角色），配色也跟着门走（紫/蓝/黄）。
+
+**新增 `plugin/test/doors-test.mjs`（20 项，必须单独一个文件）**：它从根组件点下去——点门 → 点「聊着建」→ 看那一屏说的是哪扇门的话。为什么不能塞进 `render-all.mjs`：那边是「给组件直接塞 mode」的写法，测不出「点门之后 mode 有没有跟上」。**这条 bug 在 1869 项全绿的情况下存在，就是活证据。**
+
+变异验证过：把 `mode` 改回旧的 `: 'real'`，这个文件立刻红 5 条，失败文案正是用户看到的那句。
+
+注意根组件的 hook 槽位（实测 25 个）：0 view / 1 state / 2 listing / 3 busy / 4 error / 5 toast / 6 activeCard / 7 proposal / 8 doctor / 9 interviewFor / 10 showMore / 11 activeWorld / 12 pendingAbout / 13 introSeen / 14 materialFor / 15 ref / 16 chat / 17 chats / **23 door** / 18-22 是后续 effect 占的。`render-all.mjs` 的 `base()` 只预设到 10，其余靠默认。
 
 ## 6. 还没修的问题（本节已清空：上一轮的 5 条全修完，见第 5 节）
 
