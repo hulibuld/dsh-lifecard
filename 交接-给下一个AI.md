@@ -12,7 +12,7 @@
 - 是什么：DSH（DeepSeek Harness）的侧边栏插件，本地优先的人物档案库——把身边的人写成 Markdown+YAML 的「卡」，带关系网、题料、AI 抽取（**每条断言必须有原文引文**）、求职与模拟面试。
 - 代码在哪：全部在 `plugin/`。`plugin/lib/` 12 个模块（新增 `tavern.js` 387 行），`plugin/test/` 20 个文件。
 - 当前状态：`main` 分支，工作区干净，HEAD = `aa5b92d`，共 95 次提交。
-- 测试：全量 **1829 项**通过（18 个测试文件）；对一个真实运行的实例做端到端验收 **15 项**（`test/live.mjs`，含一次真模型调用；当前跑着的那个实例是旧代码，`分析跑通` 那一条会红，重启后的第一件事就是验它，见第 6 节）。
+- 测试：全量 **1829 项**通过（18 个测试文件）；对一个真实运行的实例做端到端验收 **22 项全过**（`test/live.mjs`，含两次真模型调用：分析 + 酒馆里让 TA 回一句）。**2026-10-24 19:2x 实测已全绿**，说明 `analyze.run` 那个 500 确实修好了。
 - 发布：**没有发到 GitHub，也不许由你发**（用户明确「不发，我自己发」）。`research/` 已被 `.gitignore` 排除（用户说「调研报告不要发」）。
 - 给朋友用的试用包：`dist/LifeCard-试用版.zip`（已拷到 `~/Desktop/`），里面有 `先看这里.md` 和 `install.command`。
 
@@ -196,7 +196,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:<端口>/api/d
 
 真因是 `callModel` 里的 `pending.then is not a function`：宿主 `llm.stream()` 有时直接返回一个建好的 handle，不是 Promise（stack 见 `<tmpdir>/dsh-lifecard-errors.log`，`da30537` 已修）。本地假 llm 全都写成 `async () => (async function*(){…})()`，永远 thenable，所以这条路只在真宿主上走过——`test/hardening-routes.mjs` 现在两种形状都测。
 
-重启后复验：`node test/live.mjs http://127.0.0.1:<端口>` 应该是 **15 passed**。假如还有别的瞬时 500，日志文件还在那儿，`tail -40` 就能拿到 stack。
+复验过：`node test/live.mjs http://127.0.0.1:50084` → **22 passed, 0 failed**（含酒馆开一场、让 TA 回话、复制一份来演）。假如以后又出现瞬时 500，日志文件还在那儿，`tail -40` 就能拿到 stack。
 
 ### 酒馆还差的（按价值排序）
 

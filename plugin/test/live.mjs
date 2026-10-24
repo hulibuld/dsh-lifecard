@@ -89,6 +89,44 @@ try {
     t('采纳成功', ap.ok === true, ap)
   }
 
+  // 酒馆：拿上面那张卡开一场，让真模型说一句。
+  // 这一条在旧代码上会「没有这个功能」，所以先探一下：探不到就当跳过，
+  // 不算失败（否则没重启的实例会一路红，看不出别的问题）。
+  let canTavern = false
+  try {
+    const probe = await call('tavern.list', {})
+    canTavern = probe.ok === true
+  } catch (e) {
+    console.log('  SKIP 酒馆（这个实例还没有这条路：重启后应该就有了）')
+  }
+  if (canTavern) {
+    const started = await call('tavern.start', { card: list.cards[0].path })
+    t('酒馆能开一场', started.ok === true, started.error)
+    if (started.ok === true) {
+      const said = await call('tavern.say', { id: started.id, text: '你今天怎么这么晚才回来。' }, MODEL_TIMEOUT_MS)
+      t('酒馆里 TA 回话了', said.ok === true, said.error)
+      t('我说那句也记下来了', (said.turns ?? []).some((x) => String(x.text).includes('这么晚')), said.turns)
+      const sum = await call('tavern.summarize', { id: started.id })
+      t('说得太少时「收个尾」会拦一下、并说清为什么', sum.ok === false && String(sum.error ?? '').includes('再'), sum.error)
+      const del = await call('tavern.delete', { id: started.id })
+      t('这一场能删掉', del.ok === true, del)
+    }
+  }
+
+  // 复制一份来演：改副本不能动原卡
+  let canFork = false
+  try {
+    const probe = await call('card.fork', { path: list.cards[0].path })
+    canFork = probe.ok === true
+    if (canFork) {
+      t('复制出一份独立的角色卡', probe.path !== list.cards[0].path && String(probe.id).includes('role'), probe)
+      const after = await call('workspace.list', {})
+      t('原卡还在、副本另算一张', after.cards.length === 2, after.cards.map((c) => c.name))
+    }
+  } catch (e) {
+    console.log('  SKIP 复制一份来演（这个实例还没有这条路：重启后应该就有了）')
+  }
+
   // 导出
   const target = list.cards[0]
   const ex = await call('export.card', { path: target.path })
