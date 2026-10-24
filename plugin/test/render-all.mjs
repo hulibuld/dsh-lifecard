@@ -1472,5 +1472,54 @@ for (const [label, tree] of [
   t('路径前面写着「档案在：」', !words.includes('/tmp/') || words.includes('档案在：'), words.includes('档案在：'))
 }
 
+// ── 三扇门：一进来先问「你要用哪个」 ────────────────────────────
+// 这个插件的三件事不一样：写身边的真人、写虚构人物、拿角色卡跟 AI 演。
+// 以前三者共用一屏，写小说的人看到「贴一份招聘说明」只会莫名其妙。
+{
+  const doors = expand(renderRoot('进门（三扇门）', base('doors')))
+  const text = textOf(doors)
+  t('进门先问用哪个', text.includes('你要用哪个'), text.slice(0, 120))
+  t('有「真实人物记录」这扇门', text.includes('真实人物记录'))
+  t('有「写小说」这扇门', text.includes('写小说'))
+  t('有「酒馆（角色扮演）」这扇门', text.includes('酒馆'))
+  t('进门这一屏不列卡（还没选门）', !text.includes('认识的人'))
+
+  // 真实人物那扇门：找工作的入口在
+  const real = expand(renderRoot('真实人物门首页', base('home')))
+  const realText = textOf(real)
+  t('真实人物门里有「下一步」', realText.includes('下一步'))
+  t('真实人物门里有「从记忆里认人」', realText.includes('从记忆里认人'))
+  t('真实人物门里列出认识的人', realText.includes('认识的人'))
+  t('每扇门都能换', flatButtons(real).some((b) => textOf(b).includes('换门')))
+
+  // 写小说那扇门：找工作的入口不许出现，材料栏也不许
+  const novel = expand(renderRoot('写小说门首页', base('novel')))
+  const novelText = textOf(novel)
+  t('写小说门里没有「下一步」（找工作只属于真实人物那扇门）', !novelText.includes('下一步'), novelText.slice(0, 160))
+  t('写小说门里没有「从记忆里认人」', !novelText.includes('从记忆里认人'))
+  t('写小说门里没有材料栏', !novelText.includes('材料 ·'))
+  t('写小说门里把真人的卡说清在哪儿', !novelText.includes('认识的人') || novelText.includes('真实人物记录'))
+  t('写小说门里能换门', flatButtons(novel).some((b) => textOf(b).includes('换门')))
+
+  // 酒馆那扇门：同样没有找工作
+  const tavern = expand(renderRoot('酒馆门首页', base('tavern')))
+  const tavernText = textOf(tavern)
+  t('酒馆门里没有「下一步」', !tavernText.includes('下一步'), tavernText.slice(0, 160))
+  t('酒馆门里能换门', flatButtons(tavern).some((b) => textOf(b).includes('换门')))
+  t('进门那一屏没有换门按钮（已经在门口了）', !flatButtons(doors).some((b) => textOf(b).includes('换门')))
+
+  // 点一扇门，要真的进那一屏
+  const picked = []
+  renderOne('选门（点写小说）', seen.get('DoorsView'), { state: STATE, onPick: (m) => picked.push(m) }, {})
+  const doorButtons = flatButtons(expand(renderOne('选门（再渲染一次拿按钮）', seen.get('DoorsView'), { state: STATE, onPick: (m) => picked.push(m) }, {})))
+  const novelBtn = doorButtons.find((b) => textOf(b).includes('写小说'))
+  t('找得到「写小说」那个按钮', novelBtn !== undefined)
+  if (novelBtn !== undefined) {
+    novelBtn.props.onClick()
+    t('点「写小说」带出的是 novel', picked[0] === 'novel', JSON.stringify(picked))
+  }
+  void picked
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

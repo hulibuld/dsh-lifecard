@@ -726,14 +726,16 @@ const SECTIONS_REL = [
 
 // ── 主界面 ────────────────────────────────────────────────────────
 
-const VIEWS = { home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs' }
+const VIEWS = { doors: 'doors', novel: 'novel', tavern: 'tavern', home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs' }
 
 /**
  * tab 组件。接收宿主给的 props（ctx / store / scope / tab / visible）。
  * 只用到 `visible`，其余一律不碰——插件不该依赖宿主内部状态。
  */
 function LifeCardTab(props) {
-  const [view, setView] = useState(VIEWS.home)
+  // 一进来先问「你要用哪个」，三扇门选一扇再进去。以前直接落到首页，
+  // 想写小说的人和想记录真人的人看到的是同一屏，谁也找不到自己的入口。
+  const [view, setView] = useState(VIEWS.doors)
   const [state, setState] = useState(null)
   const [listing, setListing] = useState(null)
   const [busy, setBusy] = useState('')
@@ -935,6 +937,21 @@ function LifeCardTab(props) {
   // render-all 里那些按号码摆状态的地方就全错位了。
   // 这三处（首页两种形态 + 世界那一页）原本各抄了一份一模一样的处理，
   // 而且都不接异常：后台一断，点「删掉」「检查一下」就是毫无反应。
+  // 三扇门：真实人物 / 写小说 / 酒馆。门不是另存一份状态，而是「当前在哪一屏」
+  // 推出来的——首页就是真实人物那扇门，写小说、酒馆各占一屏。这样少一个
+  // 要维护的开关，也不会出现「门选中了但视图没跟上」的两份真相。
+  const mode = view === VIEWS.novel ? 'novel' : view === VIEWS.tavern ? 'tavern' : 'real'
+
+  const pickDoor = (next) => {
+    setError(null)
+    setProposal(null)
+    setActiveCard(null)
+    setActiveWorld(null)
+    setInterviewFor(null)
+    setMaterialFor(null)
+    setView(next === 'novel' ? VIEWS.novel : next === 'tavern' ? VIEWS.tavern : VIEWS.home)
+  }
+
   const deleteMaterial = async (m) => {
     const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
       ? window.confirm(`确定删掉「${m.name}」吗？\n\n删了就真没了，AI 以后也读不到这一份。`)
@@ -960,7 +977,10 @@ function LifeCardTab(props) {
 
   const header = () => {
     const titles = {
-      [VIEWS.home]: 'Life Cards',
+      [VIEWS.doors]: '你要用哪个？',
+      [VIEWS.home]: '真实人物记录',
+      [VIEWS.novel]: '写小说',
+      [VIEWS.tavern]: '酒馆',
       [VIEWS.card]: activeCard?.data?.name ?? '这张卡',
       [VIEWS.interview]: '陪他聊聊',
       [VIEWS.import]: '添加',
@@ -973,7 +993,8 @@ function LifeCardTab(props) {
     }
     // 「选个文件夹」页一般不该有返回按钮（还没地方可回），
     // 但已经选过文件夹、是从首页主动进来换的时候要能退回去。
-    const canBack = view !== VIEWS.home && (view !== VIEWS.setup || state?.exists === true)
+    const atDoor = view === VIEWS.home || view === VIEWS.novel || view === VIEWS.tavern
+    const canBack = view !== VIEWS.doors && !atDoor && (view !== VIEWS.setup || state?.exists === true)
     return h('div', { className: 'lc-head' },
       // 顶部返回一律当成「回首页」：上次打开的是谁、刚才点的是哪份材料、
       // 看的是哪本世界书，到这里都作废。不这样清，从 A 的卡退回来再点别人的
@@ -981,10 +1002,22 @@ function LifeCardTab(props) {
       canBack ? h('button', { className: 'lc-btn ghost sm', onClick: () => { go(VIEWS.home); setError(null); setProposal(null); setActiveWorld(null) }, title: '回到列表', type: 'button' }, h(Icon, { name: 'back', size: 14 })) : null,
       h('div', { className: 'lc-grow lc-ellipsis' },
         h('div', { className: 'lc-title lc-ellipsis' }, titles[view] ?? 'Life Cards'),
-        view === VIEWS.home
+        mode === 'real' && view !== VIEWS.doors
           ? h('div', { className: 'lc-sub lc-ellipsis' }, '你的人物档案')
-          : null,
+          : mode === 'novel'
+            ? h('div', { className: 'lc-sub lc-ellipsis' }, '虚构的人物和世界')
+            : mode === 'tavern'
+              ? h('div', { className: 'lc-sub lc-ellipsis' }, '拿一张卡，开始演')
+              : null,
       ),
+      view === VIEWS.doors
+        ? null
+        : h('button', {
+            className: 'lc-btn ghost sm',
+            onClick: () => { setView(VIEWS.doors); setError(null); setProposal(null); setActiveWorld(null); setActiveCard(null) },
+            title: '换成另一扇门',
+            type: 'button',
+          }, '换门'),
       busy === '' ? null : h(Spinner),
     )
   }
@@ -1010,11 +1043,14 @@ function LifeCardTab(props) {
           const r = await call('workspace.init', { workspace: ws })
           if (r?.ok !== true) throw new Error(r?.error ?? '这个文件夹没能用起来')
           await refresh(ws)
-          setView(VIEWS.home)
+          // 刚建好库的人还不知道这里有三种用法，先让他选门。
+          setView(VIEWS.doors)
           flash(r?.remembered === false ? '好了，可以开始了。不过这次选的文件夹没记住，下次还得再选一遍' : '好了，可以开始了')
         },
       })
     }
+    // 门还没选：先问「你要用哪个」。选完才进首页，首页再按门决定露出什么。
+    if (view === VIEWS.doors) return h(DoorsView, { state, onPick: pickDoor })
     switch (view) {
       case VIEWS.import:
         return h(ImportView, {
@@ -1066,7 +1102,7 @@ function LifeCardTab(props) {
         // 直接退回首页，用户点了没反应，还以为坏了。现在把清单单独摊开。
         return activeCard === null
           ? proposal === null
-            ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor() })
+            ? h(HomeView, { state, listing, mode, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor() })
             : h('div', { className: 'lc-pad lc-stack' },
                 proposal.about === undefined || String(proposal.about).trim() === ''
                   ? null
@@ -1125,7 +1161,7 @@ function LifeCardTab(props) {
         })
       case VIEWS.world:
         return activeWorld === null
-          ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor() })
+          ? h(HomeView, { state, listing, mode, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor() })
           : h(WorldView, {
               world: activeWorld,
               listing,
@@ -1136,7 +1172,7 @@ function LifeCardTab(props) {
       case VIEWS.jobs:
         return h(JobsView, { onBack: () => setView(VIEWS.home), flash })
       default:
-        return h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor() })
+        return h(HomeView, { state, listing, mode, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor() })
     }
   }
 
@@ -1222,7 +1258,51 @@ function SetupView({ state, onDone }) {
 
 // ── 首页 ──────────────────────────────────────────────────────────
 
-function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial }) {
+// ── 三扇门：先问「你要用哪个」 ──────────────────────────────────
+//
+// 这个插件的三件事其实不一样：写身边真人的、写虚构人物的、拿角色卡跟 AI
+// 角色扮演的。它们共用同一套卡和世界书，但首页该露出的动作完全不同——
+// 「贴一份招聘说明，看看该不该投」只属于真实人物那扇门，写小说的人看到
+// 只会觉得莫名其妙。所以一进来先分门，选完再进去。
+const DOORS = [
+  {
+    id: 'real', icon: 'people', tone: 'interview',
+    title: '真实人物记录',
+    desc: '身边的人：他做过什么、怎么说话、你们之间发生过什么。访谈、材料、找工作都在这扇门里。',
+  },
+  {
+    id: 'novel', icon: 'book', tone: 'import',
+    title: '写小说',
+    desc: '虚构的角色和世界：先把人立起来，再一章一章往下写。',
+  },
+  {
+    id: 'tavern', icon: 'chat', tone: 'analyze',
+    title: '酒馆（角色扮演）',
+    desc: '拿一张角色卡，和 TA 你一句我一句地演。世界书决定场景和规矩。',
+  },
+]
+
+function DoorsView({ onPick, state }) {
+  const workspace = String(state?.workspace ?? '')
+  return h('div', { className: 'lc-pad lc-stack' },
+    h('h2', { style: { margin: '2px 0 0', fontSize: 17 } }, '你要用哪个？'),
+    h('div', { className: 'lc-meta' }, '先选一扇门。进去之后随时能换——卡和世界书都在同一个文件夹里，不会丢。'),
+    DOORS.map((door) => h(Action, {
+      key: door.id,
+      tone: door.tone,
+      icon: door.icon,
+      title: door.title,
+      desc: door.desc,
+      onClick: () => onPick(door.id),
+    })),
+    workspace === '' ? null : h('div', { className: 'lc-meta', style: { marginTop: 4 } }, `档案在：${workspace}`),
+  )
+}
+
+function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial }) {
+  // 这扇门是不是「真实人物记录」。写小说、酒馆那两扇门里不该出现
+  // 「贴一份招聘说明」「从记忆里认人」这类动作——那是记录真人才用得上的。
+  const isReal = mode !== 'novel' && mode !== 'tavern'
   const [q, setQ] = useState('')
   const cards = listing?.cards ?? []
   const filtered = useMemo(() => {
@@ -1284,31 +1364,48 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
   // 于是刚把一段文字存成材料、还没建卡的人回首页会看到一片空白，
   // 以为刚才没存上，又贴一遍——材料就多出一份重复的。
   if (cards.length === 0 && allWorlds.length === 0 && materials.length === 0 && proposals.length === 0) {
+    // 同一个空库，三扇门该给三条不同的路：写小说的人不需要「访谈」，
+    // 记录真人的人也不需要「先写一章」。
     return h('div', { className: 'lc-pad lc-stack' },
       introBlock,
       h('div', { className: 'lc-empty', style: { padding: '18px 8px 10px' } },
-        h('div', { className: 'lc-empty-icon' }, h(Icon, { name: 'book', size: 22 })),
-        h('h3', null, '还没有档案'),
+        h('div', { className: 'lc-empty-icon' }, h(Icon, { name: isReal ? 'book' : mode === 'tavern' ? 'chat' : 'pencil', size: 22 })),
+        h('h3', null, isReal ? '还没有档案' : '还什么都没有'),
         h('div', { className: 'lc-meta' }, '选一个开始的方式，随时可以换别的：'),
       ),
-      h(Action, {
-        tone: 'interview', icon: 'chat',
-        title: '陪我聊聊，边聊边建',
-        desc: '它会问几个具体的问题。答不上来就跳过，一句也不想说也行。',
-        onClick: () => onNavigate(VIEWS.interview),
-      }),
+      isReal
+        ? h(Action, {
+            tone: 'interview', icon: 'chat',
+            title: '陪我聊聊，边聊边建',
+            desc: '它会问几个具体的问题。答不上来就跳过，一句也不想说也行。',
+            onClick: () => onNavigate(VIEWS.interview),
+          })
+        : h(Action, {
+            key: 'new',
+            tone: 'import', icon: 'pencil',
+            title: '先立一个人',
+            desc: '空白表，把这个人是谁、怎么说话、想要什么写下来。',
+            onClick: () => onNavigate(VIEWS.newCard),
+          }),
       h(Action, {
         tone: 'import', icon: 'import',
         title: '把已有的角色卡拖进来',
         desc: '别人给你的角色卡，图片或导出的文件都行，放进来就能看。',
         onClick: () => onNavigate(VIEWS.import),
       }),
-      h(Action, {
-        icon: 'pencil',
-        title: '我自己填',
-        desc: '一张空表，一个字段一个字段地写。',
-        onClick: () => onNavigate(VIEWS.newCard),
-      }),
+      isReal
+        ? h(Action, {
+            icon: 'pencil',
+            title: '我自己填',
+            desc: '一张空表，一个字段一个字段地写。',
+            onClick: () => onNavigate(VIEWS.newCard),
+          })
+        : h(Action, {
+            icon: 'book',
+            title: '先写一个世界',
+            desc: '地方、规矩、里面还有谁——角色的话才有地方可说。',
+            onClick: () => onNavigate(VIEWS.import),
+          }),
     )
   }
 
@@ -1322,22 +1419,30 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
     h('div', { className: 'lc-row', style: { marginTop: 2 } },
       h(Btn, { tone: 'interview', size: 'sm', icon: 'chat', onClick: () => onNavigate(VIEWS.interview) }, '聊着建'),
       h(Btn, { tone: 'import', size: 'sm', icon: 'import', onClick: () => onNavigate(VIEWS.import) }, '导入'),
-      h(Btn, { tone: 'analyze', size: 'sm', icon: 'person', onClick: () => onNavigate(VIEWS.memory), title: '从你写过的记忆里认出身边的人' }, '从记忆里认人'),
-      h(Btn, { tone: 'primary', size: 'sm', icon: 'briefcase', onClick: () => onNavigate(VIEWS.jobs), title: '贴一份招聘说明，看看该不该投；或者练一轮面试' }, '下一步'),
+      isReal
+        ? h(Btn, { tone: 'analyze', size: 'sm', icon: 'person', onClick: () => onNavigate(VIEWS.memory), title: '从你写过的记忆里认出身边的人' }, '从记忆里认人')
+        : null,
+      isReal
+        ? h(Btn, { tone: 'primary', size: 'sm', icon: 'briefcase', onClick: () => onNavigate(VIEWS.jobs), title: '贴一份招聘说明，看看该不该投；或者练一轮面试' }, '下一步')
+        : null,
       h('div', { className: 'lc-grow' }),
-      materials.length === 0 ? null : h(Btn, { tone: 'analyze', size: 'sm', icon: 'spark', onClick: () => onNavigate(VIEWS.analyze) }, `整理 ${materials.length} 份材料`),
+      isReal && materials.length > 0 ? h(Btn, { tone: 'analyze', size: 'sm', icon: 'spark', onClick: () => onNavigate(VIEWS.analyze) }, `整理 ${materials.length} 份材料`) : null,
     ),
 
     byKind.real.length > 0
-      ? h('div', null,
-          h(GroupTitle, { icon: 'people' }, `认识的人 · ${byKind.real.length}`),
-          h('div', { className: 'lc-stack' }, byKind.real.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id] }))),
-        )
+      ? (isReal
+          ? h('div', null,
+              h(GroupTitle, { icon: 'people' }, `认识的人 · ${byKind.real.length}`),
+              h('div', { className: 'lc-stack' }, byKind.real.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id] }))),
+            )
+          // 同一个文件夹里可能两样都有。这扇门不列真人，但也不能装作没有——
+          // 用户会以为卡丢了。说清它们在哪儿、怎么过去。
+          : h('div', { className: 'lc-meta' }, `另外还有 ${byKind.real.length} 张写的是现实里的人，在「真实人物记录」那扇门里。`))
       : null,
 
     byKind.fic.length > 0
       ? h('div', null,
-          h(GroupTitle, { tone: 'interview', icon: 'book' }, `虚构角色 · ${byKind.fic.length}`),
+          h(GroupTitle, { tone: 'interview', icon: 'book' }, `${isReal ? '虚构角色' : (mode === 'tavern' ? '可以拿来演的角色' : '角色')} · ${byKind.fic.length}`),
           h('div', { className: 'lc-stack' }, byKind.fic.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id] }))),
         )
       : null,
@@ -1351,7 +1456,7 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
 
     // 材料单独一栏。以前材料只在「更多工具」里报个数字，用户从记忆里提出来
     // 一堆东西之后回首页找不到——不知道存哪了，也没法看、没法删。
-    shownMaterials.length === 0
+    !isReal || shownMaterials.length === 0
       ? null
       : h('div', null,
           h(GroupTitle, { tone: 'analyze', icon: 'list' }, `材料 · ${shownMaterials.length}`),
