@@ -11,8 +11,8 @@
 - 项目：`/Users/joyfon620/Documents/deepseek-harness/default-workspace/LifeCard/`
 - 是什么：DSH（DeepSeek Harness）的侧边栏插件，本地优先的人物档案库——把身边的人写成 Markdown+YAML 的「卡」，带关系网、题料、AI 抽取（**每条断言必须有原文引文**）、求职与模拟面试。
 - 代码在哪：全部在 `plugin/`。`plugin/lib/` 12 个模块（新增 `tavern.js` 387 行），`plugin/test/` 20 个文件。
-- 当前状态：`main` 分支，工作区干净，HEAD = `a7ac9b1`，共 92 次提交（最新一次是「酒馆」那一整块）。
-- 测试：全量 **1754 项**通过（18 个测试文件）；对一个真实运行的实例做端到端验收 **15 项**（`test/live.mjs`，含一次真模型调用；当前跑着的那个实例是旧代码，`分析跑通` 那一条会红，见第 6 节）。
+- 当前状态：`main` 分支，工作区干净，HEAD = `aa5b92d`，共 95 次提交。
+- 测试：全量 **1829 项**通过（18 个测试文件）；对一个真实运行的实例做端到端验收 **15 项**（`test/live.mjs`，含一次真模型调用；当前跑着的那个实例是旧代码，`分析跑通` 那一条会红，重启后的第一件事就是验它，见第 6 节）。
 - 发布：**没有发到 GitHub，也不许由你发**（用户明确「不发，我自己发」）。`research/` 已被 `.gitignore` 排除（用户说「调研报告不要发」）。
 - 给朋友用的试用包：`dist/LifeCard-试用版.zip`（已拷到 `~/Desktop/`），里面有 `先看这里.md` 和 `install.command`。
 
@@ -171,21 +171,32 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:<端口>/api/d
 - 世界书：`constant: true` 或没有 keys 的每轮都带；其余按最近六句命中关键词才带；总量 ≤ `MAX_WORLD_CHARS`。
 - 「TA 没回话」是常态（网/模型）：`tavern.say` 失败时**先把我说的话写盘**再返回 `ok:false`，前端把 `r.turns` 照画，避免用户重打一遍最后出现两份。
 
+### 2026-10-24 傍晚这一段（`12a3bf4` → `da30537` → `aa5b92d`，1754 → 1829 项）
+
+用户在使用中报了六条，原话是「用户使用时困惑越少越好，容易出 bug、起冲突的地方越少越好。集成到一块儿更好。用户要操作的事情也越少越好。」：
+
+| commit | 做了什么 |
+|---|---|
+| `12a3bf4` | ①「接着聊」不再问一遍关系（`InterviewView` 新增 `prep` 相位）②酒馆门里现实人物的卡默认折叠 ③新增 `card.fork`——拿去演的是**独立副本**，改副本动不到原卡 ④「聊着建」按门分题库与配色（现实问关系、紫；虚构问性格口癖、蓝/橙）⑤三扇门改成大卡片 |
+| `da30537` | **`analyze.run` 一直是 500 的真因**：宿主 `llm.stream()` 有时直接返回建好的 handle，不是 Promise，我上一轮为修 abort 写的 `pending.then(...)` 必抛。现在两种形状都认 |
+| `aa5b92d` | 改完「想突出的/不想要的」直接点「开始读」会带上新写的（以前发的是上一次存的那份）；换页时清掉上一次待建卡的人名 |
+
+这一段的关键约定：
+
+- `InterviewView` 的相位是 `prep | pick | talk | done`。`prep` 只在「从一张已有的卡点『接着聊』进来」（`preset.id` 非空）时出现，自动调 `interview.plan`，失败退回 `pick`。
+- `interview.plan` 现在收 `kind`（`real` / `fictional`）；虚构题库在 `prompts.CHARACTER_QUESTIONS`，`fills` 的字段名必须存在于 `core.coverage` 那张表里，否则完成页会报「还空着」却填不上。
+- `card.fork`：复制 `data`，`id` 加 `-role`（重名就 `-2`…`-40`），`kind: 'fictional'`、`forked_from` 记原卡路径、**`delete data.cc`**（不带走酒馆/ST 的嵌入数据）。原卡一个字节都不动。
+- 三扇门不是另存的状态，是「当前在哪一屏」：`mode` 由 `view` 推出来（`novel` / `tavern` / 其它都算 `real`）。
+
 ## 6. 还没修的问题（本节已清空：上一轮的 5 条全修完，见第 5 节）
 
 上一轮遗留的 P0-1 / P0-2 / P0-3 / P1-1 / P1-2 五条已在 `a2c8f5a` 全部修完并补了断言，行号也随之变了，别再照旧行号找。**要接着改，先按第 1 节跑一遍验证，再 `grep -n` 重新定位。**
 
-### 最要紧的一条：先把 `analyze.run` 那个 500 定位掉
+### `analyze.run` 那个 500（**已定位、已修，重启后要复验**）
 
-现象：任何带 `about` 的 `analyze.run` 都**瞬时**（0.02s）返回 500，界面上只有一句「后台没做成这一步」。已经排掉的：库路径、`readMaterials`、`readConcept`、提示词拼装（用真数据拷贝在本地跑通）、`resolveRoute`（旧代码也包了 try/catch）。拿不到 stack 的原因是桌面版把插件进程的 stdout 丢进 `/dev/null`。
+真因是 `callModel` 里的 `pending.then is not a function`：宿主 `llm.stream()` 有时直接返回一个建好的 handle，不是 Promise（stack 见 `<tmpdir>/dsh-lifecard-errors.log`，`da30537` 已修）。本地假 llm 全都写成 `async () => (async function*(){…})()`，永远 thenable，所以这条路只在真宿主上走过——`test/hardening-routes.mjs` 现在两种形状都测。
 
-现在兜底 catch 已经会写 `<tmpdir>/dsh-lifecard-errors.log`（macOS 上是 `/var/folders/.../T/dsh-lifecard-errors.log`）。所以：
-
-1. 让用户**完全退出 DSH App 再打开**（库代码改动只有重启才生效，见第 2 节）；
-2. `curl -s -X POST http://127.0.0.1:<端口>/api/dsh-lifecard/analyze.run -H 'content-type: application/json' -d '{"about":"某人"}'`；
-3. `tail -40 /var/folders/*/*/T/dsh-lifecard-errors.log` —— 里面有方法名和 stack。
-
-（顺手一提：`tavern.say` 走的是同一个 `callModel`，如果重启后酒馆里点「让 TA 先说」也瞬时失败，那八成是同一处根因，一次就能一起修。）
+重启后复验：`node test/live.mjs http://127.0.0.1:<端口>` 应该是 **15 passed**。假如还有别的瞬时 500，日志文件还在那儿，`tail -40` 就能拿到 stack。
 
 ### 酒馆还差的（按价值排序）
 
