@@ -1373,65 +1373,80 @@ const DOORS = [
 
 function DoorsView({ onPick, state }) {
   const workspace = String(state?.workspace ?? '')
-  // 三扇门是进这个插件之后唯一的动作，所以让它们真的占满一屏：
-  // 竖着排三块大卡，每块自己撑开、中间留白，而不是一列细横栏吊在顶上。
-  // 以前那三条加起来还没有一屏的三分之一高，底下全是空的。
+  // 三扇**立着的门**并排站满整屏：每一块都是一个竖长的门框，
+  // 高度撑到整屏、宽度三等分。不是三个横躺的卡片叠着——那样看着像
+  // 一列设置项，不像「推门进去」。
   const tint = {
     real: { fg: 'var(--lc-interview)', bg: 'var(--lc-interview-soft)', icon: 'people' },
     novel: { fg: 'var(--lc-import)', bg: 'var(--lc-import-soft)', icon: 'book' },
     tavern: { fg: 'var(--lc-analyze)', bg: 'var(--lc-analyze-soft)', icon: 'chat' },
   }
   return h('div', {
-    className: 'lc-pad',
     style: {
-      // 撑满 header 之外的全部高度：三块门均分，看不出「上面一小坨、下面一大片白」
-      display: 'flex', flexDirection: 'column', gap: 10,
-      minHeight: '100%', boxSizing: 'border-box',
+      display: 'flex', flexDirection: 'column', gap: 0,
+      minHeight: '100%', boxSizing: 'border-box', padding: 12,
     },
   },
-    h('div', { style: { flex: '0 0 auto', paddingBottom: 2 } },
+    h('div', { style: { flex: '0 0 auto', paddingBottom: 10 } },
       h('h2', { style: { margin: '2px 0 0', fontSize: 20 } }, '你要用哪个？'),
-      h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '选一扇门进去。随时能换——卡和世界书都在同一个文件夹里。'),
+      h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '推一扇门进去。随时能换——卡和世界书都在同一个文件夹里。'),
     ),
-    DOORS.map((door) => {
-      const t = tint[door.id] ?? tint.real
-      return h('button', {
-        key: door.id,
-        type: 'button',
-        className: 'lc-door',
-        onClick: () => onPick(door.id),
-        style: {
-          // flex:1 = 三块把剩下的高度均分；minHeight 保证窄窗口下也不塌成一条
-          flex: '1 1 0', minHeight: 104,
-          display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 8,
-          width: '100%', padding: '16px 16px', textAlign: 'left', cursor: 'pointer',
-          border: '1px solid var(--lc-line)', borderRadius: 16,
-          background: 'var(--lc-panel)', boxShadow: 'var(--lc-shadow)',
-          font: 'inherit', color: 'inherit',
-        },
+    // 三扇门横向并排；窄窗口时自动换行（flexWrap），免得挤成三条缝
+    h('div', {
+      style: {
+        flex: '1 1 auto', display: 'flex', gap: 10,
+        alignItems: 'stretch', flexWrap: 'wrap', minHeight: 260,
       },
-        h('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+    },
+      DOORS.map((door) => {
+        const t = tint[door.id] ?? tint.real
+        return h('button', {
+          key: door.id,
+          type: 'button',
+          className: 'lc-door',
+          onClick: () => onPick(door.id),
+          style: {
+            // 每扇门平分宽度、各自撑满整高（门是竖的，高度要顶天立地）
+            flex: '1 1 30%', minWidth: 150, minHeight: 240,
+            display: 'flex', flexDirection: 'column', alignItems: 'center',
+            justifyContent: 'flex-start', gap: 10,
+            padding: '18px 12px', textAlign: 'center', cursor: 'pointer',
+            border: '1px solid var(--lc-line)', borderRadius: 16,
+            background: 'var(--lc-panel)', boxShadow: 'var(--lc-shadow)',
+            font: 'inherit', color: 'inherit',
+          },
+        },
+          // 门顶上的那块色：像一个门楣
           h('div', {
             style: {
-              flex: '0 0 auto', width: 42, height: 42, borderRadius: 12,
+              flex: '0 0 auto', width: 52, height: 52, borderRadius: 14,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: t.bg, color: t.fg,
+              background: t.bg, color: t.fg, marginTop: 4,
             },
-          }, h(Icon, { name: t.icon, size: 22 })),
-          h('div', { style: { fontSize: 17, fontWeight: 700, minWidth: 0 } }, door.title),
+          }, h(Icon, { name: t.icon, size: 26 })),
+          h('div', { style: { fontSize: 16, fontWeight: 700, lineHeight: 1.35 } }, door.title),
+          h('div', { className: 'lc-meta', style: { lineHeight: 1.6 } }, door.desc),
           h('div', { style: { flex: '1 1 auto' } }),
-          h('div', { style: { color: t.fg, fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap' } }, '进去 →'),
-        ),
-        h('div', { className: 'lc-meta', style: { lineHeight: 1.6 } }, door.desc),
-        (door.bullets ?? []).length === 0 ? null : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2 } },
-          door.bullets.map((line, i) => h('div', {
-            key: i,
-            className: 'lc-meta',
-            style: { display: 'flex', gap: 6, lineHeight: 1.55 },
-          }, h('span', { style: { color: t.fg } }, '·'), h('span', null, line)))),
-      )
-    }),
-    workspace === '' ? null : h('div', { className: 'lc-meta', style: { flex: '0 0 auto', paddingTop: 2 } }, `档案在：${workspace}`),
+          (door.bullets ?? []).length === 0 ? null : h('div', {
+            style: { display: 'flex', flexDirection: 'column', gap: 3, textAlign: 'left', width: '100%' },
+          },
+            door.bullets.map((line, i) => h('div', {
+              key: i,
+              className: 'lc-meta',
+              style: { display: 'flex', gap: 5, lineHeight: 1.5 },
+            }, h('span', { style: { color: t.fg, flex: '0 0 auto' } }, '·'), h('span', null, line)))),
+          // 门底那道横杠：推门的那一下
+          h('div', {
+            style: {
+              flex: '0 0 auto', marginTop: 4, paddingTop: 10, width: '100%',
+              borderTop: '1px solid var(--lc-line)',
+              color: t.fg, fontWeight: 700, fontSize: 13,
+            },
+          }, '推门进去 →'),
+        )
+      }),
+    ),
+    workspace === '' ? null : h('div', { className: 'lc-meta', style: { flex: '0 0 auto', paddingTop: 10 } }, `档案在：${workspace}`),
   )
 }
 

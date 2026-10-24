@@ -1690,13 +1690,17 @@ for (const [label, tree] of [
   const doors = expand(renderRoot('进门那一屏（三扇门都是大卡）', base('doors')))
   const doorText = textOf(doors)
   const doorJson = JSON.stringify(doors)
-  t('进门那一屏有三句「进去」', (doorText.match(/进去 →/g) ?? []).length === 3, [(doorText.match(/进去 →/g) ?? []).length, doorText.slice(0, 200)])
+  t('进门那一屏有三扇门（三句「推门进去」）', (doorText.match(/推门进去/g) ?? []).length === 3, [(doorText.match(/推门进去/g) ?? []).length, doorText.slice(0, 200)])
   t('三扇门名字都在', ['真实人物记录', '写小说', '酒馆'].every((x) => doorText.includes(x)), doorText.slice(0, 200))
   t('门卡是大卡片（圆角 16）', doorJson.includes('"borderRadius":16'), doorJson.slice(0, 200))
-  // 三块门卡各占一份（「进去 →」那个 div 也有 flex:1 1 auto，所以不是精确 3，
-  // 只要每块门卡都带 flex 1 1 0 就算数）
-  t('三扇门竖着均分整屏（flex 1，不是细横栏）', (doorJson.match(/"flex":"1 1 0"/g) ?? []).length >= 3, (doorJson.match(/"flex":"1 1 0"/g) ?? []).length)
-  t('门卡整块占满高度', doorJson.includes('"minHeight":"100%"'), doorJson.slice(0, 160))
+  // 门是竖着的：三扇并排、每扇各自撑到整高（不是三个横躺的卡片叠着）
+  t('三扇门横向并排', doorJson.includes('"flexWrap":"wrap"') && doorJson.includes('"alignItems":"stretch"'), doorJson.slice(0, 200))
+  // 门本身是 3 块；里面的元素（图标/标题/说明/推门）也带 flex，所以只数 ≥3
+  const doorWidths = (doorJson.match(/"flex":"1 1 30%"/g) ?? []).length
+  t('每扇门各自平分宽度（至少三扇）', doorWidths >= 3, doorWidths)
+  t('每扇门是竖长的（有最低高度，不是一条横栏）', (doorJson.match(/"minHeight":24[0-9]/g) ?? []).length >= 3 && doorJson.includes('"minHeight":260'), doorJson.slice(0, 200))
+  t('门里竖着排（图标在上、说明在中、推门在底）', doorJson.includes('"flexDirection":"column"') && doorJson.includes('"alignItems":"center"'), doorJson.slice(0, 160))
+  t('整屏高度被占满', doorJson.includes('"minHeight":"100%"'), doorJson.slice(0, 160))
 }
 
 {
