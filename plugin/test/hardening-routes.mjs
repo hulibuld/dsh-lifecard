@@ -323,6 +323,43 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   await fs.rm(path.join(ws, 'people', 'only-temp.card.md'), { force: true })
 }
 
+// ── 符号链接不能把读写带出工作区 ────────────────────────────────
+// 字面包含判断只管得住 `../` 和前缀。工作区里放一个指向别处的软链，
+// 以前 card.get / card.save 照那个路径读写，就真的落在工作区外面了。
+{
+  const outside = await fs.mkdtemp(path.join(tmpdir(), 'lifecard-outside-'))
+  await fs.writeFile(path.join(outside, 'secret.card.md'), '---\nname: 别人的卡\n---\n\n不该被读到\n', 'utf8')
+  const linkName = 'people-link'
+  await fs.symlink(outside, path.join(ws, linkName))
+  const apiLink = api.buildApi({}, async () => ws, {})
+
+  const read = await apiLink['card.get']({ path: `${linkName}/secret.card.md` })
+  t('顺着软链读工作区外的卡被拒', read.ok === false, read)
+  t('拒绝时不会把外面的内容带出来', !JSON.stringify(read).includes('不该被读到'), read)
+
+  const write = await apiLink['card.save']({
+    path: `${linkName}/new.card.md`,
+    data: { lifecard: '0.1', id: 'new', kind: 'real', world: 'reality', name: '新卡' },
+    sections: [],
+  })
+  t('顺着软链往工作区外写卡被拒', write.ok === false, write)
+  const landedOutside = await fs.stat(path.join(outside, 'new.card.md')).then(() => true).catch(() => false)
+  t('工作区外没有真的落下文件', landedOutside === false)
+
+  // 底层也一样：store 的读写闸不认符号链接
+  t('store 读卡也认得出这是越界', (await store.readCard(ws, `${linkName}/secret.card.md`)).ok === false)
+
+  // 软链本身指回工作区内部时不许误伤
+  await fs.symlink(path.join(ws, 'people'), path.join(ws, 'people-self'))
+  const inside = await apiLink['card.get']({ path: 'people-self/../people-self/' + 'nope.card.md' })
+  const insideText = JSON.stringify(inside)
+  t('指回工作区内部的软链不被误判成越界', inside.ok === false && !insideText.includes('不在当前文件夹') && insideText.includes('不存在'), inside)
+
+  await fs.rm(path.join(ws, linkName), { force: true })
+  await fs.rm(path.join(ws, 'people-self'), { force: true })
+  await fs.rm(outside, { recursive: true, force: true })
+}
+
 // ── 访谈账本：名字带前缀的另一个人，不能算成同一个人回答过 ──────────
 // 张三 与 张三丰 只是示例；真实场景是「老王」和「老王的儿子」这类 id。
 {
@@ -339,6 +376,34 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   t('已问过的那题不再问', plain.next.every((q) => q.id !== 'friend.q01'), plain.next)
   t('另一个人一题都不该被算成已问', neighbor.next.some((q) => q.id === 'friend.q01'), neighbor.next)
   t('两个人的已问数不同', plain.askedAlready === 1 && neighbor.askedAlready === 0, { plain: plain.askedAlready, neighbor: neighbor.askedAlready })
+}
+
+// ── 访谈：跳过 ≠ 不想说 ────────────────────────────────────────
+// 「跳过」的意思是这题现在想不起来，回头还能问；「不想说」才是永别。
+// 以前台账里只要有一行就按「问过了」砍掉，两个按钮于是变成同一件事：
+// 跳过的题永远不再问，而它对应的字段永远填不上，完成页还一直报「还空着」。
+{
+  const api5 = api.buildApi({}, async () => ws, {})
+  await api5['card.save']({ data: { lifecard: '0.1', id: 'zhangsan', kind: 'real', world: 'reality', name: '老王', relation: '朋友' }, sections: [] })
+  const first = await api5['interview.plan']({ about: 'zhangsan', relation: 'friend', limit: 20 })
+  const q1 = first.next[0]
+  t('朋友这类问题出得来人', q1 !== undefined && typeof q1.id === 'string', first.next)
+  // 跳过第一题（skipped，没有 sealed）
+  await api5['interview.record']({ about: 'zhangsan', q: q1.id, ask: q1.ask, status: 'skipped' })
+  const afterSkip = await api5['interview.plan']({ about: 'zhangsan', relation: 'friend', limit: 20 })
+  t('跳过的题还在队列里，没被当成永别', afterSkip.next.some((q) => q.id === q1.id), afterSkip.next.map((q) => q.id))
+  t('跳过的题排到最后，不挡别的题', afterSkip.next[0].id !== q1.id, afterSkip.next.map((q) => q.id))
+  // 再把它记成「不想说」
+  await api5['interview.record']({ about: 'zhangsan', q: q1.id, ask: q1.ask, status: 'skipped', reason: 'sealed' })
+  const afterSeal = await api5['interview.plan']({ about: 'zhangsan', relation: 'friend', limit: 20 })
+  t('说了不想说的题不再问', afterSeal.next.every((q) => q.id !== q1.id), afterSeal.next.map((q) => q.id))
+  t('不想说会进 sealed 名单', afterSeal.sealed.includes(q1.id), afterSeal.sealed)
+  // 答过的题也不再问
+  const q2 = afterSeal.next[0]
+  await api5['interview.record']({ about: 'zhangsan', q: q2.id, ask: q2.ask, answer: '在单位食堂认识的，坐一桌' })
+  const afterAnswer = await api5['interview.plan']({ about: 'zhangsan', relation: 'friend', limit: 20 })
+  t('答过的题不再问', afterAnswer.next.every((q) => q.id !== q2.id), afterAnswer.next.map((q) => q.id))
+  t('问过的题数把跳过和不想说都算进去', afterAnswer.askedAlready === 2, afterAnswer.askedAlready)
 }
 
 // ── 验收脚本不许把用户正在用的工作区指走 ────────────────────────

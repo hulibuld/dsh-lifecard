@@ -279,6 +279,63 @@ await store.openWorkspace(root, { create: true })
   t('改状态时自己写的备注也还在', after2.includes('这家 HR 说月底前给消息'), after2)
 }
 {
+  // 表是整表重写的：读不出来被当成空表，一次「记一笔」就能把三个月的记录
+  // 顶掉。所以读失败必须说读失败，写之前也必须先确认读到了。
+  const r2 = path.join(tmpdir(), 'lifecard-jobs-broken-' + Date.now())
+  await store.openWorkspace(r2, { create: true })
+  await jobsStore.addApplication(r2, { company: '某公司', role: '后端', status: 'applied', note: '内推' })
+  const before = await fs.readFile(path.join(r2, 'jobs/applications.md'), 'utf8')
+  // 把表换成同名目录：读它就是 EISDIR，是一个稳定可复现的「读不出来」
+  await fs.rm(path.join(r2, 'jobs/applications.md'))
+  await fs.mkdir(path.join(r2, 'jobs/applications.md'), { recursive: true })
+  const broken = await jobsStore.readTracker(r2)
+  t('表读不出来时不说「还没有投递记录」', broken.ok === false, JSON.stringify(broken))
+  const tried = await jobsStore.addApplication(r2, { company: '另一家', role: '运维', status: 'applied' })
+  t('表读不出来时拒绝记，不拿一行顶掉整张表', tried.ok === false, JSON.stringify(tried))
+  t('读不出来时原来的表一个字节都没动', (await fs.readdir(path.join(r2, 'jobs'))).includes('applications.md'))
+  const upd = await jobsStore.updateApplication(r2, { company: '某公司' }, { status: 'offer' })
+  t('改行也拒绝而不是瞎写', upd.ok === false, JSON.stringify(upd))
+  const evals = await jobsStore.listEvaluations(r2)
+  t('评估目录不存在时仍是空表', evals.ok === true && evals.items.length === 0)
+  // 工作区打开时已经建了这个目录，得先删掉才能把它换成同名文件
+  await fs.rm(path.join(r2, 'jobs/evaluations'), { recursive: true, force: true })
+  await fs.writeFile(path.join(r2, 'jobs/evaluations'), 'x', 'utf8')
+  const evalsBad = await jobsStore.listEvaluations(r2)
+  t('评估目录读不出来时不说「你还没有评估记录」', evalsBad.ok === false, JSON.stringify(evalsBad))
+  const draftsBad = await jobsStore.listDrafts(r2, 'resume')
+  t('草稿目录不存在时仍是空表', draftsBad.ok === true && draftsBad.items.length === 0)
+  await fs.rm(path.join(r2, 'jobs/resumes'), { recursive: true, force: true })
+  await fs.writeFile(path.join(r2, 'jobs/resumes'), 'x', 'utf8')
+  t('草稿目录读不出来时也直说', (await jobsStore.listDrafts(r2, 'resume')).ok === false)
+  // 存评估时「读不出来」不许当空位：那会盖掉同一天同一家公司原来那份
+  const clash = path.posix.join('jobs/evaluations', `${new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10)}-某公司-后端工程师.md`)
+  await fs.rm(path.join(r2, 'jobs/evaluations'))
+  await fs.mkdir(path.join(r2, clash), { recursive: true })
+  const wrote = await jobsStore.saveEvaluation(r2, { company: '某公司', role: '后端工程师' }, { markdown: '# 新的一份\n' })
+  t('同名位置读不出来时不覆盖，直接说存不了', wrote.ok === false, JSON.stringify(wrote))
+  t('原来那份的位置还在', (await fs.stat(path.join(r2, clash))).isDirectory())
+  t('表被顶掉之前那份记录还在文本里', before.includes('| 某公司 |'))
+}
+
+{
+  // 公司名和岗位是模型从招聘说明里抄的，里面可能带竖线或者换行。
+  // 竖线会让这一行多切出几列，后面每一列错位挤进备注；换行会把一行变成两行。
+  const r3 = path.join(tmpdir(), 'lifecard-jobs-escape-' + Date.now())
+  await store.openWorkspace(r3, { create: true })
+  await jobsStore.addApplication(r3, { company: '某|公司', role: '后端\n工程师', status: 'applied', note: '内推|老张' })
+  const tr3 = await jobsStore.readTracker(r3)
+  t('带竖线的公司名读回来还是同一个公司', tr3.rows.length === 1 && tr3.rows[0].company === '某|公司', JSON.stringify(tr3.rows))
+  t('换行被压成空格，没把一行拆成两行', tr3.rows[0].role === '后端 工程师', JSON.stringify(tr3.rows))
+  t('备注里的竖线也保住了', tr3.rows[0].note === '内推|老张', JSON.stringify(tr3.rows))
+  t('列数没乱：状态还是状态', tr3.rows[0].status === 'applied', JSON.stringify(tr3.rows))
+  await jobsStore.addApplication(r3, { company: '另一家', status: 'applied' })
+  const tr3b = await jobsStore.readTracker(r3)
+  t('再记一笔也不会把上一行读错', tr3b.rows.length === 2 && tr3b.rows[0].company === '某|公司' && tr3b.rows[1].company === '另一家', JSON.stringify(tr3b.rows))
+  const text3 = await fs.readFile(path.join(r3, 'jobs/applications.md'), 'utf8')
+  t('写进文件的竖线是转义过的', text3.includes('某\\|公司'), text3)
+}
+
+{
   const s0 = await jobsStore.readStories(root)
   t('故事银行还没有时是空的', s0.ok === true && s0.stories.length === 0)
   t('没标题不许存', (await jobsStore.addStory(root, { body: '发生了什么' })).ok === false)

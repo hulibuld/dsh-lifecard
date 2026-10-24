@@ -138,7 +138,7 @@ function humanizeHostError(input) {
  * @param {unknown} rel - 请求里给的相对路径。
  * @returns {{ ok: true, rel: string } | { ok: false, error: { code: string, message: string } }}
  */
-function insideWorkspace(ws, rel) {
+async function insideWorkspace(ws, rel) {
   const raw = String(rel ?? '')
   const bad = (message) => ({ ok: false, error: { code: 'bad-path', message } })
   if (raw.trim() === '') return bad('路径不合法：没有给出文件。')
@@ -149,6 +149,13 @@ function insideWorkspace(ws, rel) {
   // 判「相等或以 base + 分隔符开头」，不能用裸 startsWith(base)：
   // /tmp/ws-evil 会被 /tmp/ws 的前缀匹配放过（HANDOFF 坑 #6 的同一个形状）。
   if (abs !== base && !abs.startsWith(base + path.sep)) {
+    return bad('路径不合法：这个文件不在当前文件夹里。')
+  }
+  // 字面包含判断只管得住 `../` 和前缀，管不住符号链接：工作区里有个指向
+  // 别处的软链，下面照这个路径读写就真的出界了。按实体路径再判一次。
+  const realBase = await store.realpathLoose(base)
+  const realTarget = await store.realpathLoose(abs)
+  if (realTarget !== realBase && !realTarget.startsWith(realBase + path.sep)) {
     return bad('路径不合法：这个文件不在当前文件夹里。')
   }
   return { ok: true, rel: path.relative(base, abs).split(path.sep).join('/') }
@@ -272,22 +279,33 @@ async function callModel(ctx, input) {
   for (const p of await listCandidateRoutes(llm, route)) candidates.push(p)
   for (const candidate of candidates) {
     let handle = null
+    let pending = null
     try {
-      handle = await withTimeout(llm.stream({
+      pending = llm.stream({
         provider: candidate.provider,
         model: candidate.model,
         system: input.system,
         messages,
         temperature: 0.2,
         maxTokens: 4000,
-      }), MODEL_TIMEOUT_MS, 'AI ')
+      })
+      // withTimeout 是 Promise.race：超时是在**赋值之前**抛出来的，那时候
+      // handle 还是 null，catch 里的 abort 就永远打不中，被丢下的那条请求
+      // 会一直挂着占连接和配额。所以先挂一个 then，把它真正交出来的 handle
+      // 接住——不管我们来不来得及等。
+      pending.then((h) => { if (handle === null) handle = h }, () => {})
+      handle = await withTimeout(pending, MODEL_TIMEOUT_MS, 'AI ')
       const text = await withTimeout(collectStream(handle), MODEL_TIMEOUT_MS, 'AI ')
       if (text !== '') return { ok: true, text, model: `${candidate.provider}/${candidate.model}`, attempts }
       attempts.push(`${candidate.provider}/${candidate.model}: 空响应`)
     } catch (error) {
       // 超时也当一次失败，接着试下一条路由；顺手把这一条断掉，别让它
-      // 在后台继续占着连接。
-      try { if (typeof handle?.abort === 'function') handle.abort() } catch { /* 断不掉就算了 */ }
+      // 在后台继续占着连接。手里还没有 handle 就等它交出来再断。
+      const stop = (h) => {
+        try { if (typeof h?.abort === 'function') h.abort() } catch { /* 断不掉就算了 */ }
+      }
+      if (handle !== null) stop(handle)
+      else if (pending !== null) pending.then(stop, () => {})
       attempts.push(`${candidate.provider}/${candidate.model}: ${String(error?.message ?? error)}`)
     }
   }
@@ -689,7 +707,7 @@ function buildApi(ctx, workspace, config) {
       const ws = await root(body)
       let rel
       if (typeof body?.path === 'string') {
-        const safe = insideWorkspace(ws, body.path)
+        const safe = await insideWorkspace(ws, body.path)
         if (safe.ok !== true) return { ok: false, error: safe.error }
         rel = safe.rel
       } else {
@@ -716,7 +734,7 @@ function buildApi(ctx, workspace, config) {
       const ws = await root(body)
       let rel
       if (typeof body?.path === 'string') {
-        const safe = insideWorkspace(ws, body.path)
+        const safe = await insideWorkspace(ws, body.path)
         if (safe.ok !== true) return { ok: false, error: safe.error }
         rel = safe.rel
       } else {
@@ -747,7 +765,7 @@ function buildApi(ctx, workspace, config) {
       data.lifecard = core.DATA_VERSION
       let rel
       if (typeof body?.path === 'string' && body.path.endsWith('.card.md')) {
-        const safe = insideWorkspace(ws, body.path)
+        const safe = await insideWorkspace(ws, body.path)
         if (safe.ok !== true) return { ok: false, error: safe.error }
         rel = safe.rel
       } else {
@@ -770,7 +788,7 @@ function buildApi(ctx, workspace, config) {
     /** 看某张卡以前的样子（快照在每次保存时自动留，只是以前没露出来）。 */
     'card.history': async (body) => {
       const ws = await root(body)
-      const safe = insideWorkspace(ws, body?.path)
+      const safe = await insideWorkspace(ws, body?.path)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
       if (!rel.endsWith('.card.md')) return { ok: false, error: '这个位置不是一张卡。' }
@@ -780,7 +798,7 @@ function buildApi(ctx, workspace, config) {
     /** 读某一版历史原文（只用来看看和找回，不会被当成当前卡）。 */
     'card.version': async (body) => {
       const ws = await root(body)
-      const safe = insideWorkspace(ws, body?.path)
+      const safe = await insideWorkspace(ws, body?.path)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
       if (!rel.endsWith('.card.md')) return { ok: false, error: '这个位置不是一张卡。' }
@@ -790,7 +808,7 @@ function buildApi(ctx, workspace, config) {
     /** 把某个历史版本恢复成当前内容。恢复前会再留一份新快照，所以这一步本身也能撤销。 */
     'card.restore': async (body) => {
       const ws = await root(body)
-      const safe = insideWorkspace(ws, body?.path)
+      const safe = await insideWorkspace(ws, body?.path)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
       if (!rel.endsWith('.card.md')) return { ok: false, error: '这个位置不是一张卡。' }
@@ -804,7 +822,7 @@ function buildApi(ctx, workspace, config) {
     /** 删除一张卡（写墓碑，不真删文件——真删就不可审计了）。 */
     'card.delete': async (body) => {
       const ws = await root(body)
-      const safe = insideWorkspace(ws, body?.path)
+      const safe = await insideWorkspace(ws, body?.path)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
       if (!rel.endsWith('.card.md')) return { ok: false, error: '这个位置不是一张卡。' }
@@ -933,7 +951,7 @@ function buildApi(ctx, workspace, config) {
     /** 设头像。body.base64 应当是已经裁成 2:3 的 PNG。 */
     'avatar.set': async (body) => {
       const ws = await root(body)
-      const safe = insideWorkspace(ws, body?.path)
+      const safe = await insideWorkspace(ws, body?.path)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
       const card = await store.readCard(ws, rel)
@@ -946,7 +964,7 @@ function buildApi(ctx, workspace, config) {
     /** 去头像，回到首字方块。 */
     'avatar.remove': async (body) => {
       const ws = await root(body)
-      const safe = insideWorkspace(ws, body?.path)
+      const safe = await insideWorkspace(ws, body?.path)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
       const card = await store.readCard(ws, rel)
@@ -972,7 +990,7 @@ function buildApi(ctx, workspace, config) {
 
     'export.card': async (body) => {
       const ws = await root(body)
-      const safe = insideWorkspace(ws, body?.path)
+      const safe = await insideWorkspace(ws, body?.path)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
       const card = await store.readCard(ws, rel)
@@ -986,7 +1004,7 @@ function buildApi(ctx, workspace, config) {
       let base = null
       const rawRel = card.data?.cc?.source_file
       if (typeof rawRel === 'string' && rawRel.endsWith('.png')) {
-        const safeRaw = insideWorkspace(ws, rawRel)
+        const safeRaw = await insideWorkspace(ws, rawRel)
         if (safeRaw.ok === true) base = await fs.readFile(path.join(ws, safeRaw.rel)).catch(() => null)
       }
       if (base === null) base = blankPng()
@@ -1004,7 +1022,7 @@ function buildApi(ctx, workspace, config) {
     /** 导出成 JSON（CCv3）。 */
     'export.json': async (body) => {
       const ws = await root(body)
-      const safe = insideWorkspace(ws, body?.path)
+      const safe = await insideWorkspace(ws, body?.path)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
       const card = await store.readCard(ws, rel)
@@ -1222,6 +1240,11 @@ function buildApi(ctx, workspace, config) {
       if (saved.ok === true) {
         result.path = saved.path
         result.markdown = `${result.markdown}\n\n---\n\n存成了 \`${saved.path}\`。`
+      } else {
+        // 分析出来了，但没存进文件夹。以前这里一声不响：界面看见没有 path 就
+        // 什么都不说，用户以为已经归档，回头在「以前看过的」里找不到，
+        // 而这份报告翻篇就没了。报告本身别丢，先让他看见并抄走。
+        result.saveFail = `这份报告没能存进文件夹（${String(saved.error ?? '原因不明').replace(/。$/, '')}）。现在它只在屏幕上，翻篇就没了——先把下面这段复制走。`
       }
       return result
     },
@@ -1356,14 +1379,21 @@ function buildApi(ctx, workspace, config) {
       const matText = Object.values(materials).join('\n')
       const invented = numbers.filter((n) => !matText.includes(n))
       const saved = await jobsStore.saveDraft(ws, 'resume', String(profile?.target_roles ?? body?.company ?? '简历'), text)
+      // 两条提示都得说出来：数字对不上要说，没存进文件夹也要说（以前只把
+      // path 降成 null，界面上什么都不显示，用户以为存好了）。
+      const notes = []
+      if (invented.length > 0) {
+        notes.push(`这版里有 ${invented.length} 个数字在你材料里找不到：${invented.slice(0, 8).join('、')}。投之前自己核一遍，拿不出处的最好删掉。`)
+      }
+      if (saved.ok !== true) {
+        notes.push(`这版没能存进文件夹（${String(saved.error ?? '原因不明').replace(/。$/, '')}），现在只在屏幕上，先复制走。`)
+      }
       return {
         ok: true,
         markdown: text,
         path: saved.ok === true ? saved.path : null,
         unsupportedNumbers: invented,
-        warning: invented.length === 0
-          ? null
-          : `这版里有 ${invented.length} 个数字在你材料里找不到：${invented.slice(0, 8).join('、')}。投之前自己核一遍，拿不出处的最好删掉。`,
+        warning: notes.length === 0 ? null : notes.join('\n'),
       }
     },
 
@@ -1852,7 +1882,7 @@ function buildApi(ctx, workspace, config) {
     /** 读一份提案（含勾选状态）。 */
     'proposal.get': async (body) => {
       const ws = await root(body)
-      const safe = insideWorkspace(ws, body?.json)
+      const safe = await insideWorkspace(ws, body?.json)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
       if (!rel.endsWith('.json')) return { ok: false, error: '这个位置不是一份建议。' }
@@ -1864,7 +1894,7 @@ function buildApi(ctx, workspace, config) {
     /** 采纳勾选。 */
     'proposal.apply': async (body) => {
       const ws = await root(body)
-      const safe = insideWorkspace(ws, body?.json)
+      const safe = await insideWorkspace(ws, body?.json)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
       if (!rel.endsWith('.json') || rel.endsWith('.checked.json')) return { ok: false, error: '这个位置不是一份建议。' }
@@ -1877,7 +1907,7 @@ function buildApi(ctx, workspace, config) {
     /** 只记勾选，不采纳。界面每点一下都能立刻落盘。 */
     'proposal.check': async (body) => {
       const ws = await root(body)
-      const safe = insideWorkspace(ws, body?.json)
+      const safe = await insideWorkspace(ws, body?.json)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
       if (!rel.endsWith('.json') || rel.endsWith('.checked.json')) return { ok: false, error: '这个位置不是一份建议。' }
@@ -1895,7 +1925,7 @@ function buildApi(ctx, workspace, config) {
      */
     'proposal.dismiss': async (body) => {
       const ws = await root(body)
-      const safe = insideWorkspace(ws, body?.json)
+      const safe = await insideWorkspace(ws, body?.json)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
       if (!rel.endsWith('.json') || rel.endsWith('.checked.json') || rel.endsWith('.applied.json')) {
@@ -1960,17 +1990,23 @@ function buildApi(ctx, workspace, config) {
           answered = await collectAnswered(ws, aboutId).catch(() => [])
         }
       }
-      const answeredIds = new Set(answered.map((a) => a.q))
+      // 台账里一行有三种来路：答了（answered）、跳过（skipped）、不想说
+      // （skipped + reason=sealed）。以前一律按「问过了」砍掉，于是「跳过」
+      // 和「不想说」变成同义词——跳过的那题永远不再问，而它对应的字段也
+      // 永远填不上，完成页却还一直报「还空着：…」。
+      const answeredIds = new Set(answered.filter((a) => a.status === 'answered').map((a) => a.q))
+      const sealedIds = new Set(answered.filter((a) => a.reason === 'sealed' || a.status === 'sealed').map((a) => a.q))
       const cov = core.coverage(data, sections)
       const filled = new Set(cov.filled.map((f) => f.key))
       const todo = questions.filter((q) => {
-        if (answeredIds.has(q.id)) return false
-        const sealed = answered.find((a) => a.q === q.id && a.reason === 'sealed')
-        if (sealed !== undefined) return false
+        if (answeredIds.has(q.id) || sealedIds.has(q.id)) return false
         // fills 里还有空字段才问
         return q.fills.some((f) => !filled.has(f))
       })
-      const deferred = answered.filter((a) => a.status === 'deferred').map((a) => a.q)
+      // 跳过的排到队尾：先把没问过的问完，别一上来就再问同一题。
+      const deferred = answered
+        .filter((a) => a.status === 'deferred' || (a.status === 'skipped' && a.reason !== 'sealed'))
+        .map((a) => a.q)
       const ordered = [
         ...todo.filter((q) => !deferred.includes(q.id)),
         ...todo.filter((q) => deferred.includes(q.id)),
@@ -1987,8 +2023,8 @@ function buildApi(ctx, workspace, config) {
         empty: cov.empty.map((e) => e.label),
         next: ordered.slice(0, limit),
         remaining: ordered.length,
-        askedAlready: answeredIds.size,
-        sealed: answered.filter((a) => a.reason === 'sealed').map((a) => a.q),
+        askedAlready: new Set(answered.map((a) => a.q)).size,
+        sealed: [...sealedIds],
       }
     },
 
@@ -2000,7 +2036,9 @@ function buildApi(ctx, workspace, config) {
       const answer = String(body?.answer ?? '')
       const status = String(body?.status ?? 'answered')
       if (aboutId === '' || questionId === '') return { ok: false, error: '这一条访谈记录不完整，跳过就好。' }
-      const date = new Date().toISOString().slice(0, 10)
+      // 和 store.js 一致用本地日期：toISOString 是 UTC，东八区早上八点前
+      // 记的东西会被落成前一天，跟 materials/ 里别的文件名对不上。
+      const date = store.localDate()
       const materialName = `${date}-${core.safeId(aboutId)}访谈`
       let saved = null
       if (status === 'answered' && answer.trim() !== '') {

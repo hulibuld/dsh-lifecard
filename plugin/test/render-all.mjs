@@ -492,6 +492,41 @@ renderRoot('添加', base('import'))
   t('说了为什么要自己选', joined.includes('免得材料整理到别人卡上'), joined.slice(0, 200))
 }
 
+// 刚存完一段文字、那个人还没有卡：「让 AI 读一读」不能跳过去就断了线。
+// 以前这两头是分开的——按钮不传人，父层也不记人，到了分析页「整理谁」是空的，
+// 用户得在一张空选择框里自己再想一遍刚才写的是谁。
+{
+  const flatSelects = (tree, out = []) => {
+    if (tree === null || tree === undefined) return out
+    if (Array.isArray(tree)) { for (const n of tree) flatSelects(n, out); return out }
+    if (typeof tree !== 'object') return out
+    if (tree.type === 'select') out.push(tree)
+    flatSelects(tree.children, out)
+    return out
+  }
+
+  // TextImport 只在「一段文字」那一页才出现，先把它渲染出来登记一下
+  // TextImport 只在「一段文字」那一页才出现：把 ImportView 本身按那页渲染一次，登记一下
+  renderOne('添加（一段文字）', seen.get('ImportView'), { busy: '', listing: LISTING, onImport: () => {}, onAnalyze: () => {} }, { 1: 'text' })
+
+  let got = null
+  const saved = renderOne('添加（一段文字，刚存好了）', seen.get('TextImport'), { onAnalyze: (x) => { got = x } }, {
+    0: '爷爷', 1: '', 2: false,
+    3: { tone: 'ok', text: '存好了（120 字）。', path: 'materials/2026-10-24-爷爷.md' },
+  })
+  t('存完之后有「让 AI 读一读」', clickByText(saved, '让 AI 读一读'))
+  t('带过去的是刚存的那个人', got !== null && got.name === '爷爷', JSON.stringify(got))
+  t('也带上了刚存的那份材料', got !== null && got.path === 'materials/2026-10-24-爷爷.md', JSON.stringify(got))
+
+  const before = visibleText.length
+  const tree = renderRoot('让 AI 读材料（那个人还没有卡）', base('analyze', { 9: { name: '爷爷' } }))
+  const joined = visibleText.slice(before).join('|')
+  t('只有名字也能直接开始读', joined.includes('爷爷'), joined.slice(0, 200))
+  t('说清楚会先进建议、不是写进空卡', joined.includes('先放进「建议」'), joined.slice(0, 300))
+  t('选择框里选中的就是这个人', flatSelects(expand(tree)).some((sel) => sel.props?.value === '爷爷'), JSON.stringify(flatSelects(expand(tree)).map((x) => x.props?.value)))
+  t('还是能开始读（按钮没被禁用）', flatButtons(expand(tree)).some((b) => textOf(b).includes('开始读') && b.props.disabled !== true))
+}
+
 renderRoot('让 AI 读材料（已有材料）', base('analyze', { 9: { id: 'mama', name: '妈妈' } }))
 // 「让 AI 读材料」跑完那个「看看读出了什么」以前是 setProposal + setView(card)，
 // 但那一页手上没有 activeCard（用户可能一张卡都没打开过），一样白点。
@@ -508,6 +543,111 @@ renderRoot('陪他聊聊（从卡片进来）', base('interview', { 9: { id: 'ma
 // InterviewView 的 hook 槽：0 phase / 1 name / 2 relation / 3 customRelation / 4 showExtras / 5 extrasText
 renderOne('陪他聊聊（把「还有什么」点开了）', seen.get('InterviewView'), { state: STATE, listing: LISTING }, { 0: 'pick', 4: true })
 renderOne('陪他聊聊（已经在横线里写了爷爷）', seen.get('InterviewView'), { state: STATE, listing: LISTING }, { 0: 'pick', 3: '爷爷' })
+{
+  // 「结束这次访谈」（以前叫「今天到这」）挤在「跳过 / 不想说」旁边，
+  // 手一滑整场就结束、输入框里写了半页的话跟着丢，结束页还说「你说的都记下来了」。
+  // 现在：稿子非空先问一句；问了不该没人敢继续，所以「不结束」要真的不结束。
+  // InterviewView 的 hook 槽（续上）：6 customFocus / 7 plan / 8 queue / 9 current /
+  // 10 answer / 11 log / 12 busy / 13 err / 14 aboutId / 15 dropped / 16 ref
+  const Q = { id: 'cooking-1', ask: '你妈做饭的时候有什么固定动作？', options: ['先把菜全切好'], fills: ['habit'] }
+  const asked = []
+  const realConfirm = fakeWindow.confirm
+  fakeWindow.confirm = (msg) => { asked.push(String(msg)); return false }
+  const tree = renderOne('陪他聊聊（写了半句还没点记下）', seen.get('InterviewView'), { state: STATE, listing: LISTING }, { 0: 'talk', 9: Q, 10: '她喜欢先把菜都切好再下锅' })
+  const clicked = clickByText(tree, '结束这次访谈')
+  t('访谈页的「结束这次访谈」点得动', clicked === true)
+  t('有没记下的话时，结束会先问一句', asked.length === 1 && asked[0].includes('记下'), JSON.stringify(asked))
+  t('问了之后回答「先不结束」就留在这一题', hookStore[0] === 'talk', String(hookStore[0]))
+  fakeWindow.confirm = (msg) => { asked.push(String(msg)); return true }
+  clickByText(tree, '结束这次访谈')
+  t('确认结束才走到结束页', hookStore[0] === 'done', String(hookStore[0]))
+  t('结束页知道刚才那一题没存进去', hookStore[15] === true, String(hookStore[15]))
+  fakeWindow.confirm = realConfirm
+  // 结束页不能一边丢了稿子一边说「你说的都记下来了」。
+  const before = visibleText.length
+  renderOne('陪他聊聊（结束页：刚才那题没记下）', seen.get('InterviewView'), { state: STATE, listing: LISTING },
+    { 0: 'done', 7: { coverage: 62, empty: ['口癖', '不会做的事'] }, 15: true })
+  const joined = visibleText.slice(before).join('|')
+  t('结束页照实说那一题没存进去', joined.includes('没有存进去'), joined.slice(0, 240))
+  t('结束页不再说「你说的都记下来了」', !joined.includes('都记下来了'), joined.slice(0, 240))
+  const before2 = visibleText.length
+  renderOne('陪他聊聊（结束页：都记下了）', seen.get('InterviewView'), { state: STATE, listing: LISTING },
+    { 0: 'done', 7: { coverage: 62, empty: ['口癖', '不会做的事'] }, 15: false })
+  const joined2 = visibleText.slice(before2).join('|')
+  t('正常结束还是说「都记下来了」', joined2.includes('都记下来了'), joined2.slice(0, 240))
+  t('正常结束会列出还空着什么', joined2.includes('口癖'), joined2.slice(0, 240))
+}
+// 「开始聊」按下去这一下：卡会不会被悄悄改掉 / 空卡会不会留下来。
+// 这两件事都只在请求失败或重名的时候才现形，静态渲染看不出来，所以要把
+// 按钮真的点一次、等 Promise 落地，再把发出去的请求对一遍。
+{
+  const realFetch = globalThis.fetch
+  const realConfirm = fakeWindow.confirm
+  const swap = (handler) => { globalThis.fetch = handler }
+  const wait = () => new Promise((r) => setTimeout(r, 30))
+
+  // ① 问题没准备出来（AI 那边不响应）：刚建的空卡要收回去
+  {
+    const calls = []
+    swap(async (url, opts = {}) => {
+      calls.push({ url: String(url), body: JSON.parse(opts.body ?? '{}') })
+      if (String(url).includes('interview.plan')) return { ok: true, status: 200, json: async () => ({ ok: false, error: 'AI 那边没响应' }) }
+      if (String(url).includes('card.save')) return { ok: true, status: 200, json: async () => ({ ok: true, path: 'cards/wang-shu.card.md' }) }
+      return { ok: true, status: 200, json: async () => ({ ok: true }) }
+    })
+    const tree = renderOne('陪他聊聊（问题没准备出来）', seen.get('InterviewView'),
+      { state: STATE, listing: { ...LISTING, cards: [] }, preset: null, onRecorded: () => {}, flash: () => {}, onDone: () => {}, onAnalyze: () => {} },
+      { 0: 'pick', 1: '王叔' })
+    t('点得到「开始聊」', clickByText(tree, '开始聊'))
+    await wait()
+    const del = calls.filter((c) => c.url.includes('card.delete'))
+    t('问题没准备出来时把刚建的空卡撤掉了', del.length === 1 && del[0].body.path === 'cards/wang-shu.card.md', JSON.stringify(calls.map((c) => c.url)))
+    t('撤卡时说了为什么', del.length === 1 && String(del[0].body.reason ?? '').includes('访谈'), JSON.stringify(del.map((c) => c.body.reason)))
+  }
+
+  // ② 名字撞上已有的卡：要么先问一句，要么不许动旧卡上已经写过的关系
+  {
+    const calls = []
+    const asks = []
+    fakeWindow.confirm = (msg) => { asks.push(String(msg)); return true }
+    swap(async (url, opts = {}) => {
+      calls.push({ url: String(url), body: JSON.parse(opts.body ?? '{}') })
+      if (String(url).includes('card.get')) {
+        return { ok: true, status: 200, json: async () => ({ ok: true, path: 'cards/mama.card.md', data: { id: 'mama', name: '妈妈', relation: '母亲' }, sections: [] }) }
+      }
+      if (String(url).includes('interview.plan')) return { ok: true, status: 200, json: async () => ({ ok: true, next: [], coverage: { percent: 0, empty: [] } }) }
+      return { ok: true, status: 200, json: async () => ({ ok: true }) }
+    })
+    const tree = renderOne('陪他聊聊（名字撞上已有的卡）', seen.get('InterviewView'),
+      { state: STATE, listing: LISTING, preset: null, onRecorded: () => {}, flash: () => {}, onDone: () => {}, onAnalyze: () => {} },
+      { 0: 'pick', 1: '妈妈', 2: 'father' })
+    t('点得到「开始聊」', clickByText(tree, '开始聊'))
+    await wait()
+    t('名字撞上了会先问一句', asks.length === 1 && asks[0].includes('已经有一张'), JSON.stringify(asks))
+    const save = calls.filter((c) => c.url.includes('card.save'))
+    t('旧卡上写着的关系没被这次点的改掉', save.length === 1 && save[0].body.data.relation === '母亲', JSON.stringify(save.map((c) => c.body.data?.relation)))
+  }
+
+  // ③ 名字撞上了但用户点了「取消」：什么都不该写
+  {
+    const calls = []
+    fakeWindow.confirm = () => false
+    swap(async (url, opts = {}) => {
+      calls.push({ url: String(url), body: JSON.parse(opts.body ?? '{}') })
+      return { ok: true, status: 200, json: async () => ({ ok: true }) }
+    })
+    const tree = renderOne('陪他聊聊（重名但说要换名字）', seen.get('InterviewView'),
+      { state: STATE, listing: LISTING, preset: null, onRecorded: () => {}, flash: () => {}, onDone: () => {}, onAnalyze: () => {} },
+      { 0: 'pick', 1: '妈妈' })
+    clickByText(tree, '开始聊')
+    await wait()
+    t('说不换了就一个请求都不发', calls.length === 0, JSON.stringify(calls.map((c) => c.url)))
+  }
+
+  fakeWindow.confirm = realConfirm
+  swap(realFetch)
+}
+
 renderRoot('一本世界书', base('world', { 11: WORLD }))
 renderRoot('一本世界书（空的）', base('world', { 11: { ...WORLD, entries: [] } }))
 renderRoot('一本世界书（没拿到）', base('world'))

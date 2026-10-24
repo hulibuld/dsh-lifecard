@@ -60,7 +60,8 @@ const RESERVED_FIELDS = new Set(['id', 'lifecard', 'kind', 'world', 'consent'])
  * @param {Date} [now]
  * @returns {string}
  */
-function localDate(now = new Date()) {
+/** 本地日期（YYYY-MM-DD）。别用 toISOString：那是 UTC，东八区早上八点前会差一天。 */
+export function localDate(now = new Date()) {
   const d = new Date(now.getTime() - now.getTimezoneOffset() * 60_000)
   return d.toISOString().slice(0, 10)
 }
@@ -400,13 +401,49 @@ function hitsRedaction(redactions, relPath, content) {
  * `path.join(root, '../x')` 会安静地写到工作区外。
  * 越界返回 `{ok:false}` 而不抛异常——上层路由是按返回值处理的。
  */
-function resolveIn(root, rel) {
+async function resolveIn(root, rel) {
   const base = path.resolve(root)
   const abs = path.resolve(base, String(rel ?? ''))
   if (abs !== base && !abs.startsWith(base + path.sep)) {
     return { ok: false, error: '路径在工作区外面，拒绝访问' }
   }
+  // 上面只判了字面。符号链接能绕过去：工作区里放一个指向别处的软链，
+  // 读写就真的落在工作区外面了。所以按实体路径再判一次。
+  const realBase = await realpathLoose(base)
+  const realTarget = await realpathLoose(abs)
+  if (realTarget !== realBase && !realTarget.startsWith(realBase + path.sep)) {
+    return { ok: false, error: '路径在工作区外面，拒绝访问' }
+  }
   return { ok: true, abs }
+}
+
+/**
+ * 求实体路径：从最深的、已经存在的那一层往上找到第一个存在的祖先，
+ * 对它 realpath，再把还不存在的那几段拼回去。
+ *
+ * 目标文件往往还不存在（新建卡、新存一份材料），所以不能直接 realpath 整个
+ * 路径；但它的父目录一般存在，那里才是软链可能藏身的地方。
+ *
+ * @param {string} abs
+ * @returns {Promise<string>}
+ */
+export async function realpathLoose(abs) {
+  const rest = []
+  let head = abs
+  for (;;) {
+    try {
+      const real = await fs.realpath(head)
+      return rest.length === 0 ? real : path.join(real, ...rest.slice().reverse())
+    } catch (err) {
+      // 不存在（或中间某一级是文件）就往上退一层；别的原因（EACCES）就
+      // 原样返回，让真正的读写去报那个错，这里不冒充结论。
+      if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') return abs
+      const parent = path.dirname(head)
+      if (parent === head) return abs
+      rest.push(path.basename(head))
+      head = parent
+    }
+  }
 }
 
 export function sha256(text) {
@@ -430,7 +467,7 @@ export function cardRelPath(id, world) {
  * @returns {Promise<{ok: boolean, path?: string, text?: string, data?: object, sections?: object[], error?: string}>}
  */
 export async function readCard(root, relPath) {
-  const at = resolveIn(root, relPath)
+  const at = await resolveIn(root, relPath)
   if (!at.ok) return { ok: false, path: relPath, error: at.error }
   const abs = at.abs
   let text
@@ -485,7 +522,7 @@ export async function writeCard(root, relPath, data, sections, options = {}) {
   if (!validation.ok && options.force !== true) {
     return { ok: false, error: '校验未通过', validation }
   }
-  const at = resolveIn(root, relPath)
+  const at = await resolveIn(root, relPath)
   if (!at.ok) return { ok: false, path: relPath, error: at.error }
   const abs = at.abs
   await fs.mkdir(path.dirname(abs), { recursive: true })
@@ -715,7 +752,7 @@ export async function appendMaterial(root, name, content, options = {}) {
   const date = localDate()
   const fileName = safe.startsWith(date) ? `${safe}.md` : `${date}-${safe}.md`
   const rel = path.posix.join('materials', fileName)
-  const at = resolveIn(root, rel)
+  const at = await resolveIn(root, rel)
   if (!at.ok) return { ok: false, error: at.error }
   const abs = at.abs
   const body = content.endsWith('\n') ? content : content + '\n'
@@ -748,7 +785,7 @@ export async function deleteMaterial(root, rel) {
   const norm = p.replace(/\\/g, '/')
   if (!norm.startsWith('materials/')) return { ok: false, error: '只能删材料夹里的东西' }
   if (norm.includes('..')) return { ok: false, error: '这个位置不对' }
-  const at = resolveIn(root, norm)
+  const at = await resolveIn(root, norm)
   if (!at.ok) return { ok: false, error: at.error }
   try {
     await fs.unlink(at.abs)
@@ -1433,7 +1470,7 @@ function applyItem(data, sections, item) {
 export async function findCardByRelOrId(root, relOrId) {
   if (relOrId.endsWith('.card.md')) {
     // 路径来自外部时可能带 ../ 或绝对路径，先确认它没跑出工作区
-    const at = resolveIn(root, relOrId)
+    const at = await resolveIn(root, relOrId)
     if (!at.ok) return null
     try {
       await fs.access(at.abs)

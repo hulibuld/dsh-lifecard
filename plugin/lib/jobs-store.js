@@ -63,10 +63,29 @@ async function writeInside(root, rel, body) {
 }
 
 async function readInside(root, rel) {
+  const got = await readInsideState(root, rel)
+  return got.ok === true ? got.body : null
+}
+
+/**
+ * 读一个文件，并说清楚「没有这个文件」和「有这个文件但读不出来」。
+ *
+ * 以前两种都返回 null。上面那几张表是整表重写的：读失败被当成空表，
+ * 用户攒了三个月的投递记录就被一行新记录顶掉了；存评估报告时也一样，
+ * 读不出来就当这个文件名空着，直接盖掉原来那份。
+ *
+ * @returns {Promise<{ok: true, exists: boolean, body: string|null} | {ok: false, error: string}>}
+ */
+async function readInsideState(root, rel) {
   const base = path.resolve(root)
   const abs = path.resolve(base, rel)
-  if (abs !== base && !abs.startsWith(base + path.sep)) return null
-  try { return await fs.readFile(abs, 'utf8') } catch { return null }
+  if (abs !== base && !abs.startsWith(base + path.sep)) return { ok: false, error: '路径在工作区外面，拒绝访问' }
+  try {
+    return { ok: true, exists: true, body: await fs.readFile(abs, 'utf8') }
+  } catch (err) {
+    if (err?.code === 'ENOENT') return { ok: true, exists: false, body: null }
+    return { ok: false, error: `这个文件读不出来（${rel}）。可能是权限、磁盘，或者文件正被别的软件占着。` }
+  }
 }
 
 /**
@@ -85,7 +104,11 @@ export async function saveEvaluation(root, result, meta = {}) {
   for (let n = 1; n <= 999; n += 1) {
     const suffix = n === 1 ? '' : `-${n}`
     const candidate = path.posix.join(dir, `${date}-${company}-${role}${suffix}.md`)
-    if ((await readInside(root, candidate)) === null) { rel = candidate; break }
+    // 判空位要判「在不在」，不是「读不读得出来」：读不出来多半说明它在，
+    // 换个名字；真是别的错就直说，别拿它当空位把原来那份盖掉。
+    const probe = await readInsideState(root, candidate)
+    if (probe.ok !== true) return probe
+    if (probe.exists !== true) { rel = candidate; break }
   }
   // 一天看过一千个同名岗位是不可能的，真撞上就用时间戳
   if (rel === '') rel = path.posix.join(dir, `${date}-${company}-${role}-${Date.now()}.md`)
@@ -105,7 +128,12 @@ export async function listEvaluations(root) {
   const abs = path.resolve(base, dir)
   if (!abs.startsWith(base)) return { ok: true, items: [] }
   let names = []
-  try { names = await fs.readdir(abs) } catch { return { ok: true, items: [] } }
+  // 读不出来（权限、磁盘、目录被换成文件）不等于「一条都没有」：以前一律
+  // 返回空数组，界面就显示「你还没有…」，用户以为东西丢了。
+  try { names = await fs.readdir(abs) } catch (err) {
+    if (err?.code === 'ENOENT') return { ok: true, items: [] }
+    return { ok: false, error: '这个文件夹读不出来。可能是权限、磁盘，或者它被挪走了。' }
+  }
   const items = []
   for (const name of names.filter((n) => n.endsWith('.md')).sort().reverse()) {
     const rel = path.posix.join(dir, name)
@@ -148,7 +176,9 @@ export async function saveDraft(root, kind, company, body) {
   for (let n = 1; n <= 999; n += 1) {
     const suffix = n === 1 ? '' : `-${n}`
     const candidate = path.posix.join(dir, `${date}-${name}${suffix}.md`)
-    if ((await readInside(root, candidate)) === null) { rel = candidate; break }
+    const probe = await readInsideState(root, candidate)
+    if (probe.ok !== true) return probe
+    if (probe.exists !== true) { rel = candidate; break }
   }
   if (rel === '') rel = path.posix.join(dir, `${date}-${name}-${Date.now()}.md`)
   return writeInside(root, rel, body)
@@ -160,7 +190,12 @@ export async function listDrafts(root, kind) {
   const abs = path.resolve(base, dir)
   if (!abs.startsWith(base)) return { ok: true, items: [] }
   let names = []
-  try { names = await fs.readdir(abs) } catch { return { ok: true, items: [] } }
+  // 读不出来（权限、磁盘、目录被换成文件）不等于「一条都没有」：以前一律
+  // 返回空数组，界面就显示「你还没有…」，用户以为东西丢了。
+  try { names = await fs.readdir(abs) } catch (err) {
+    if (err?.code === 'ENOENT') return { ok: true, items: [] }
+    return { ok: false, error: '这个文件夹读不出来。可能是权限、磁盘，或者它被挪走了。' }
+  }
   const items = []
   for (const name of names.filter((n) => n.endsWith('.md')).sort().reverse()) {
     const rel = path.posix.join(dir, name)
@@ -197,8 +232,10 @@ const TRACKER_HEADER = [
  * 用 Markdown 表格而不是 JSON：用户要能自己在编辑器里加一行。
  */
 export async function readTracker(root) {
-  const body = await readInside(root, APPLICATIONS)
-  if (body === null) return { ok: true, rows: [], exists: false, layout: [] }
+  const got = await readInsideState(root, APPLICATIONS)
+  if (got.ok !== true) return got
+  const body = got.body
+  if (got.exists !== true) return { ok: true, rows: [], exists: false, layout: [] }
   const rows = []
   // 除了表里的行，文件里还可能有用户自己写的东西：一段备注、一个空行、
   // 一条不在格式里的记录。写回时要把它们原样放回去——整表重渲染会把
@@ -207,7 +244,11 @@ export async function readTracker(root) {
   for (const line of body.replace(/\n$/, '').split('\n')) {
     const t = line.trim()
     const isTable = t.startsWith('|') && t.endsWith('|')
-    const cells = isTable ? t.slice(1, -1).split('|').map((c) => c.trim()) : []
+    // 按「没被转义的竖线」切，再把 \| 还原成 |：不然公司名里带一个竖线，
+    // 后面每一列都会错位挤进备注里。
+    const cells = isTable
+      ? t.slice(1, -1).split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'))
+      : []
     // 表头与分隔行属于「原样保留」，不算数据行
     const isHeader = isTable && (cells[0] === '日期' || /^-+$/.test(cells[0] ?? ''))
     if (!isTable || isHeader || cells.length < 4) {
@@ -226,8 +267,16 @@ export async function readTracker(root) {
   return { ok: true, rows, exists: true, layout }
 }
 
+/**
+ * 一格表格文字。竖线会把这一行切成多列，换行会把一行变成两行——公司名和
+ * 岗位是模型从招聘说明里抄的，里面什么都有。所以竖线转义、换行压成空格。
+ */
+function cell(raw) {
+  return String(raw ?? '').replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ')
+}
+
 function trackerRowLine(r) {
-  return `| ${r.date} | ${r.company} | ${r.role} | ${r.status} | ${r.note} |`
+  return `| ${cell(r.date)} | ${cell(r.company)} | ${cell(r.role)} | ${cell(r.status)} | ${cell(r.note)} |`
 }
 
 /**
@@ -266,6 +315,8 @@ export async function addApplication(root, row) {
     return { ok: false, error: `「${status}」不是一个能记的状态。` }
   }
   const current = await readTracker(root)
+  // 读不出来就别写：这一写是整表重写，等于用一行顶掉用户记过的所有投递。
+  if (current.ok !== true) return current
   const rows = [...current.rows, {
     date: String(row?.date ?? '').trim() === '' ? localDate() : String(row.date).trim(),
     company: String(row?.company ?? '').trim(),
@@ -285,6 +336,7 @@ export async function addApplication(root, row) {
  */
 export async function updateApplication(root, target, patch) {
   const current = await readTracker(root)
+  if (current.ok !== true) return current
   const company = String(target?.company ?? '').trim()
   const role = String(target?.role ?? '').trim()
   const at = current.rows.findIndex((r) => r.company === company && (role === '' || r.role === role))
@@ -415,7 +467,12 @@ export async function listInterviews(root) {
   const abs = path.resolve(base, INTERVIEW_DIR)
   if (abs !== base && !abs.startsWith(base + path.sep)) return { ok: true, items: [] }
   let names = []
-  try { names = await fs.readdir(abs) } catch { return { ok: true, items: [] } }
+  // 读不出来（权限、磁盘、目录被换成文件）不等于「一条都没有」：以前一律
+  // 返回空数组，界面就显示「你还没有…」，用户以为东西丢了。
+  try { names = await fs.readdir(abs) } catch (err) {
+    if (err?.code === 'ENOENT') return { ok: true, items: [] }
+    return { ok: false, error: '这个文件夹读不出来。可能是权限、磁盘，或者它被挪走了。' }
+  }
   const items = []
   for (const name of names.filter((n) => n.endsWith('.json')).sort().reverse()) {
     const rel = path.posix.join(INTERVIEW_DIR, name)

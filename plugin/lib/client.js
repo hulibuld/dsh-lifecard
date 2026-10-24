@@ -904,7 +904,7 @@ function LifeCardTab(props) {
   // 不这样清，刚看完某人的卡再回首页点「整理 N 份材料」，那一页会默默
   // 还选着刚才那个人。
   const go = useCallback((next) => {
-    if (next === VIEWS.analyze || next === VIEWS.interview) setInterviewFor(null)
+    if (next === VIEWS.analyze || next === VIEWS.interview) { setInterviewFor(null); setMaterialFor(null) }
     setView(next)
   }, [])
 
@@ -967,11 +967,26 @@ function LifeCardTab(props) {
     }
     switch (view) {
       case VIEWS.import:
-        return h(ImportView, { busy, onImport: doImport, onAnalyze: () => setView(VIEWS.analyze), listing })
+        return h(ImportView, {
+          busy, onImport: doImport, listing,
+          // 刚存完材料的人是谁，分析页要接着用。以前这里直接 setView，
+          // 「这是关于谁」到那边就空了——用户得自己再挑一遍，或者以为丢了。
+          onAnalyze: (info) => {
+            const name = String(info?.name ?? '').trim()
+            const id = String(info?.id ?? '').trim()
+            const cards = listing?.cards ?? []
+            const hit = id !== ''
+              ? cards.find((c) => c.id === id)
+              : cards.find((c) => String(c.name ?? '').trim() === name)
+            setMaterialFor(typeof info?.path === 'string' && info.path !== '' ? info.path : null)
+            setInterviewFor(hit !== undefined ? { id: hit.id, name: hit.name } : (name === '' ? null : { name }))
+            setView(VIEWS.analyze)
+          },
+        })
       case VIEWS.interview:
         return h(InterviewView, {
           state, listing, preset: interviewFor, onRecorded: refresh, flash,
-          onDone: () => { setInterviewFor(null); setView(VIEWS.home); refresh() },
+          onDone: () => { setInterviewFor(null); setMaterialFor(null); setView(VIEWS.home); refresh() },
           onAnalyze: (about) => { setInterviewFor(about ?? null); setView(VIEWS.analyze) },
         })
       case VIEWS.memory:
@@ -986,7 +1001,7 @@ function LifeCardTab(props) {
         return h(AnalyzeView, {
           listing, state, flash, presetAbout: interviewFor, presetMaterials: materialFor,
           onProposal: showProposal,
-          onBack: () => { setInterviewFor(null); setView(VIEWS.home) },
+          onBack: () => { setInterviewFor(null); setMaterialFor(null); setView(VIEWS.home) },
           onNeedMaterial: () => setView(VIEWS.import),
         })
       case VIEWS.card:
@@ -1958,6 +1973,9 @@ function CardForm({ card, onCancel, onSaved, worlds }) {
   // 自动存草稿失败时要说一声。以前 `.then(() => setSavedPrint(print))` 不看结果，
   // 盘写不进去也当成存上了：用户以为有草稿，退出再进来什么都没有。
   const [draftErr, setDraftErr] = useState(null)
+  // 当前这一版「还没落盘就立刻存一次」的动作。卸载时那个只挂一次的
+  // effect 会读它，把最后那笔改动补发出去（见下面自动保存那段）。
+  const flushRef = useRef(null)
 
   useEffect(() => {
     let alive = true
@@ -1979,7 +1997,15 @@ function CardForm({ card, onCancel, onSaved, worlds }) {
   // 自动存草稿：改动停下来 1.5 秒就存一次。
   // 为什么不在每次 onChange 都存：每敲一个字符发一次网络请求，
   // 打字会卡，而且盘上全是中间态。停手 1.5 秒意味着「他想了想，可能要去接杯水」。
+  //
+  // 光有定时器不够：用户被教会了「会自动存」，就会写完最后一句话直接点「先不改」
+  // 走人。那时最后那几个字还压在那 1.5 秒里，定时器被清掉、请求没发出去，字就没了。
+  // 所以把「现在存一次」抽成 flush，定时器到点调它，离开这一页时也补调一次。
   useEffect(() => {
+    // 每次重新算，先把上一次那个「立刻存一次」作废。不这么做的话，定时器已经
+    // 存成功、这一次因为「内容没变」提前返回，flushRef 里还留着上一版的 flush，
+    // 卸载时会把同一份草稿再发一遍——不多一块肉，但没必要。
+    flushRef.current = null
     if (draftAsked !== true) return () => {}
     if (cardId === '') return () => {}
     const print = JSON.stringify({ data, sections: sections.filter((x) => String(x.body ?? '').trim() !== '') })
@@ -1988,16 +2014,28 @@ function CardForm({ card, onCancel, onSaved, worlds }) {
     const empty = Object.keys(data).length === 0 && sections.every((x) => String(x.body ?? '').trim() === '')
     if (empty) return () => {}
     if (print === savedPrint) return () => {}
-    const timer = setTimeout(() => {
+    const flush = () => {
       call('draft.save', { cardId, draft: { data, sections, avatarTouched, avatar } })
         .then((r) => {
           if (r?.ok === true) { setSavedPrint(print); return }
           setDraftErr(r?.error ?? '草稿没存上')
         })
         .catch(() => setDraftErr('草稿没存上'))
-    }, 1500)
+    }
+    // 离开时才用得上的那一份（下面那个只挂一次的 effect 会读它）。
+    flushRef.current = flush
+    const timer = setTimeout(flush, 1500)
     return () => clearTimeout(timer)
   }, [cardId, data, sections, avatar, avatarTouched, draftAsked, savedPrint])
+
+  // 只挂一次：这一页被卸载（「先不改」、切到别的卡、跳去别的页、关掉侧栏）时，
+  // 把还压在定时器里的那笔改动补发出去。不 await：页面已经在走了，
+  // 请求发出去就会到盘上。
+  useEffect(() => () => {
+    const pending = flushRef.current
+    flushRef.current = null
+    if (typeof pending === 'function') pending()
+  }, [])
 
   const set = (key, value) => setData((prev) => ({ ...prev, [key]: value }))
 
@@ -2741,6 +2779,10 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const [aboutId, setAboutId] = useState(preset?.id ?? '')
+  // 结束整场时，输入框里那句还没点「记下」的话被丢掉了没有。
+  // 结束页以前一律说「你说的都记下来了」；可要是手一滑点了结束，
+  // 正在写的那句其实没存进去——那句话就得改口。
+  const [dropped, setDropped] = useState(false)
   const scrollRef = useRef(null)
 
   // 宿主给什么就用什么；一个都没有（还没重启、旧版宿主）就用本地这份。
@@ -2772,9 +2814,25 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
     setBusy(true); setErr(null)
     try {
       const id = preset?.id ?? safeId(targetName)
-      const existing = (listing?.cards ?? []).find((c) => c.id === id || c.name === targetName)
+      const found = (listing?.cards ?? []).find((c) => c.id === id || c.name === targetName)
+      // 同名不等于同一个人。用户在这里打「王叔」，列表里正好有一张「王叔」的卡，
+      // 以前会默默当成同一个、接着往那张卡上写，还会把这次点的关系盖上去。
+      // 用户以为自己新建了一个人，其实改的是旧的。所以从列表点「接着聊」进来的
+      // （带了 preset.id）不問；自己打名字撞上了，先问一句。
+      if (found !== undefined && (preset?.id ?? '') === '') {
+        const reuse = typeof window !== 'undefined' && typeof window.confirm === 'function'
+          ? window.confirm(`已经有一张「${targetName}」的卡了。\n\n点「好」= 接着给这张补，这次聊到的都并进那张卡。\n点「取消」= 先停下，换个名字再建一张别的。`)
+          : true
+        if (reuse !== true) {
+          setErr(`已经有一张「${targetName}」的卡了。要么回列表点它的「接着聊」，要么把名字改得能区分开再建。`)
+          return
+        }
+      }
+      const existing = found
+      // 这一次是不是「刚新建的卡」，后面准备问题失败时要靠它决定撤不撤
+      let made = null
       if (existing === undefined) {
-        const made = await call('card.save', {
+        made = await call('card.save', {
           data: {
             lifecard: '0.1', id, kind: 'real', world: 'reality', name: targetName,
             relation: relationText,
@@ -2794,7 +2852,9 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
         const got = await call('card.get', { path: existing.path })
         if (got?.ok) {
           const data = { ...got.data }
-          if (relationText !== '') data.relation = relationText
+          // 只在还没写过关系的时候补一句。已经写着的不动——重名撞上的那张卡
+          // 原本写「父亲」，这次手滑点了「朋友」，也不该把旧的改掉。
+          if (relationText !== '' && String(data.relation ?? '').trim() === '') data.relation = relationText
           if (extras.length > 0) {
             const before = Array.isArray(data.relation_extra) ? data.relation_extra : []
             data.relation_extra = [...new Set([...before, ...extras])]
@@ -2805,7 +2865,13 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
       setAboutId(existing?.id ?? id)
       const p = await call('interview.plan', { about: existing?.id ?? id, relation, limit: 3 })
       if (p?.ok !== true) {
-        setErr(p?.error ?? '没法准备问题，稍后再试一次。')
+        // 问题没准备出来（多半是 AI 那边没响应）。这时候刚建的那张空卡要收回去：
+        // 留着它就是列表里一张名字对、点开什么都没有的卡，用户下次还会再建一张。
+        // 本来就有的卡不动——那张卡上有他自己写的东西。
+        if (existing === undefined && typeof made?.path === 'string' && made.path !== '') {
+          try { await call('card.delete', { path: made.path, reason: '访谈没能开始，撤掉这次建的空卡' }) } catch (e) { /* 撤不掉也不该挡住这句话 */ }
+        }
+        setErr(`${p?.error ?? '没法准备问题'}。${existing === undefined ? '刚才建的那张空卡已经撤掉了，' : ''}过一会儿再点一次「开始」。`)
         return
       }
       setPlan(p)
@@ -2866,6 +2932,23 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
     } catch (e) {
       setErr(humanizeError(e))
     } finally { setBusy(false) }
+  }
+
+  // 「结束这次访谈」是整场收工，不是「跳过」的另一个说法：输入框里已经写好的
+  // 那句不会存进去。以前这个按钮挤在「跳过 / 不想说」旁边，手一滑整场就没了、
+  // 写了一半的话跟着丢，结束页还说「你说的都记下来了」。现在它挪到顶上单独一格，
+  // 稿子非空时再问一句才走。
+  const endSession = () => {
+    const pending = answer.trim()
+    if (pending !== '') {
+      const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
+        ? window.confirm('这一题还没点「记下」，现在结束就不会存它了。\n\n确定结束？')
+        : true
+      if (!ok) return
+      setDropped(true)
+      setAnswer('')
+    }
+    setPhase('done')
   }
 
   if (phase === 'pick') {
@@ -2944,7 +3027,17 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
         h('h3', null, '这一轮问完了'),
         h('div', { className: 'lc-meta' }, plan === null ? '' : `现在写满了 ${plan.coverage}%`),
       ),
-      plan === null ? null : h(Note, { tone: 'ok', icon: 'check' }, `你说的都记下来了。还空着：${(plan.empty ?? []).slice(0, 8).join('、')}`),
+      plan === null
+        ? (dropped === true
+            ? h(Note, { tone: undefined, icon: 'warning' }, '刚才那一题没点「记下」，没有存进去。')
+            : null)
+        : h(Note, { tone: dropped === true ? undefined : 'ok', icon: dropped === true ? 'warning' : 'check' },
+            dropped === true
+              ? '刚才那一题没点「记下」，没有存进去。点过「记下」「跳过」的那些都在。'
+              : '你说的都记下来了。'),
+      plan === null || (plan.empty ?? []).length === 0
+        ? null
+        : h('div', { className: 'lc-meta' }, `还空着：${(plan.empty ?? []).slice(0, 8).join('、')}`),
       h(Btn, { tone: 'primary', big: true, block: true, onClick: () => onAnalyze({ id: aboutId, name: preset?.name ?? name }) }, '把刚才说的整理进卡里'),
       h(Btn, { block: true, onClick: () => { onDone() } }, '先这样，回头再说'),
       h('div', { className: 'lc-meta', style: { textAlign: 'center' } }, '你说的每句话都存成了材料。整理时会标出原文出处，编不出来的。'),
@@ -2952,6 +3045,13 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
   }
 
   return h('div', { style: { display: 'flex', flexDirection: 'column', height: '100%' } },
+    // 整场收工的按钮放在最上面那一行，不和「记下 / 跳过 / 不想说」挤在一起：
+    // 那三个是「这一题怎么处理」，这个是「整场结束」，本来就不同类。
+    h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderBottom: '1px solid var(--lc-line)', background: 'var(--lc-panel)' } },
+      h('div', { className: 'lc-meta', style: { flex: '1 1 auto' } }, `正在聊「${preset?.name ?? name}」`),
+      h(Btn, { size: 'sm', tone: 'ghost', icon: 'stop', onClick: endSession, disabled: busy }, '结束这次访谈'),
+      h('div', { className: 'lc-meta' }, '（这一题不记）'),
+    ),
     h('div', { ref: scrollRef, className: 'lc-body lc-pad lc-stack', style: { flex: '1 1 auto' } },
       log.map((entry, n) => entry.role === 'bot'
         ? h('div', { key: n, className: 'lc-stack' },
@@ -2989,7 +3089,6 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
         h(Btn, { size: 'sm', icon: 'skip', disabled: busy, onClick: () => advance('skipped') }, '跳过'),
         h(Btn, { size: 'sm', icon: 'stop', disabled: busy, onClick: () => advance('skipped', 'sealed') }, '不想说'),
         h('div', { className: 'lc-grow' }),
-        h(Btn, { size: 'sm', tone: 'ghost', onClick: () => setPhase('done') }, '今天到这'),
         busy ? h(Spinner) : null,
       ),
     ),
@@ -3061,7 +3160,9 @@ function TextImport({ onAnalyze }) {
     try {
       const r = await call('import.text', { about, content: text, name: about })
       if (r.ok !== true) { setMsg({ tone: 'err', text: r.error ?? '没存上' }); return }
-      setMsg({ tone: 'ok', text: `存好了（${r.chars} 字）。` })
+      // 把刚存的那一份的位置记住：下一步「让 AI 读一读」要直接勾上它，
+      // 否则用户到了那边还得在一堆材料里猜哪份才是刚才的。
+      setMsg({ tone: 'ok', text: `存好了（${r.chars} 字）。`, path: r.path })
       setText('')
     } catch (e) { setMsg({ tone: 'err', text: humanizeError(e) }) } finally { setBusy(false) }
   }
@@ -3093,7 +3194,10 @@ function TextImport({ onAnalyze }) {
       msg === null ? null : h('span', { className: 'lc-meta', style: { color: msg.tone === 'err' ? 'var(--lc-danger)' : msg.tone === 'ok' ? 'var(--lc-doctor)' : 'var(--lc-muted)' } }, msg.text),
     ),
     msg?.tone === 'ok'
-      ? h('div', null, h(Btn, { tone: 'analyze', size: 'sm', icon: 'spark', onClick: () => onAnalyze?.() }, '让 AI 读一读'))
+      ? h('div', null, h(Btn, {
+          tone: 'analyze', size: 'sm', icon: 'spark',
+          onClick: () => onAnalyze?.({ name: about.trim(), path: msg?.path }),
+        }, '让 AI 读一读'))
       : null,
   )
 }
@@ -3257,7 +3361,12 @@ function peopleKey(p) {
 function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMaterials, onBack, onNeedMaterial }) {
   const materials = listing?.materials ?? []
   const cards = listing?.cards ?? []
-  const [about, setAbout] = useState(presetAbout?.id ?? '')
+  // 从别的页带过来的人，可能只有一个名字：材料刚存下、卡还没建。
+  // 这种也该直接开始读——读出来的东西先进「建议」，采纳时才建卡。
+  // 以前只认 id，名字到了这边就断掉，用户看到的是一张空的选择框。
+  const presetId = String(presetAbout?.id ?? '').trim()
+  const presetName = String(presetAbout?.name ?? '').trim()
+  const [about, setAbout] = useState(presetId !== '' ? presetId : presetName)
   const [chosen, setChosen] = useState(presetMaterials === undefined || presetMaterials === null ? [] : [presetMaterials])
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
@@ -3298,6 +3407,12 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
     } catch (e) { setErr(humanizeError(e)) } finally { setSavingConcept(false) }
   }
 
+  // 选择框里的候选人：有卡的用卡，没卡但带了名字的，就把名字当成一项。
+  const people = cards.map((c) => ({ value: c.id, label: c.name }))
+  if (about !== '' && !people.some((p) => p.value === about) && !cards.some((c) => String(c.name ?? '').trim() === about)) {
+    people.unshift({ value: about, label: about })
+  }
+
   const toggleConcept = () => {
     if (showConcept === true && conceptDraft !== null) flushConcept(conceptDraft)
     setShowConcept(!showConcept)
@@ -3325,6 +3440,7 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
     try {
       const r = await call('analyze.run', {
         about,
+        // about 可能是卡 id，也可能只是个名字（还没建卡）。两种都照实传。
         name: cards.find((c) => c.id === about)?.name ?? about,
         materials: chosen.length > 0 ? chosen : undefined,
         concept: concept === null ? undefined : concept,
@@ -3370,11 +3486,14 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
       label: '整理谁',
       hint: cards.length > 1 && about === '' ? '先选一个人。免得材料整理到别人卡上。' : undefined,
     },
-      cards.length === 0
+      people.length === 0
         ? h('div', { className: 'lc-meta' }, '还没有卡。先建一张。')
         : h('select', { className: 'lc-select', value: about, onChange: (e) => setAbout(e.target.value) },
-            cards.length > 1 ? h('option', { key: '__none', value: '' }, '先选一个人') : null,
-            cards.map((c) => h('option', { key: c.id, value: c.id }, c.name))),
+            people.length > 1 ? h('option', { key: '__none', value: '' }, '先选一个人') : null,
+            people.map((p) => h('option', { key: p.value, value: p.value }, p.label))),
+      about !== '' && cards.every((c) => c.id !== about)
+        ? h('div', { className: 'lc-meta', style: { marginTop: 4 } }, `还没有「${about}」的卡。这次读出来的东西先放进「建议」，你看了觉得对，再建卡。`)
+        : null,
     ),
 
     h('div', { className: 'lc-sec' },
