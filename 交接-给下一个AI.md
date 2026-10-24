@@ -11,8 +11,8 @@
 - 项目：`/Users/joyfon620/Documents/deepseek-harness/default-workspace/LifeCard/`
 - 是什么：DSH（DeepSeek Harness）的侧边栏插件，本地优先的人物档案库——把身边的人写成 Markdown+YAML 的「卡」，带关系网、题料、AI 抽取（**每条断言必须有原文引文**）、求职与模拟面试。
 - 代码在哪：全部在 `plugin/`。`plugin/lib/` 11 个模块共 12834 行，`plugin/test/` 19 个文件。
-- 当前状态：`main` 分支，工作区干净，HEAD = `0caba98`，共 90 次提交。
-- 测试：全量 **1494 项**通过（16 个测试文件）；对一个真实运行的实例做端到端验收 **15 项**（`test/live.mjs`，含一次真模型调用）。
+- 当前状态：`main` 分支，工作区干净，HEAD = `a2c8f5a`，共 91 次提交（本次把上轮遗留的 5 条 P0/P1 和审查员报的 8 条一起修掉了）。
+- 测试：全量 **1564 项**通过（17 个测试文件）；对一个真实运行的实例做端到端验收 **15 项**（`test/live.mjs`，含一次真模型调用）。
 - 发布：**没有发到 GitHub，也不许由你发**（用户明确「不发，我自己发」）。`research/` 已被 `.gitignore` 排除（用户说「调研报告不要发」）。
 - 给朋友用的试用包：`dist/LifeCard-试用版.zip`（已拷到 `~/Desktop/`），里面有 `先看这里.md` 和 `install.command`。
 
@@ -23,7 +23,7 @@
 ```bash
 cd /Users/joyfon620/Documents/deepseek-harness/default-workspace/LifeCard/plugin
 
-# ① 全量单元/渲染测试。期望「合计 1494 项，全部通过。」
+# ① 全量单元/渲染测试。期望「合计 1564 项，全部通过。」
 node test/all.mjs
 
 # ② 端到端验收（打一个真实运行的 DSH 实例）。期望 15 passed, 0 failed。
@@ -38,7 +38,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:<端口>/api/d
 ```
 
 **端口每次重启 DSH 都会变**（历史值 49192 → 53872 → 61837 → 56399 → 59411 → 50402 …）。正确取法：读当前会话的运行时上下文里那句 `Current DeepSeek Harness Web GUI URL`，别照抄文档里的旧端口。
-`live.mjs` **必须在 `plugin/` 目录下跑**（它按相对路径找样本文件）。
+`live.mjs` **必须在 `plugin/` 目录下跑**（它按相对路径找样本文件）。`test/all.mjs` 也一样——在 `LifeCard/` 根目录下跑会报「0 项、17 个文件失败」，那是没跑起来，不是测试坏了。
 
 ---
 
@@ -112,56 +112,58 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:<端口>/api/d
 
 另外新增了一条**很值钱的测试**：`plugin/test/render-all.mjs` 末尾的 `pokeHandlers()` —— 把每个页面里所有 `onClick/onChange/onSubmit/onFocus/onBlur` 都真的调一次，断言不抛错。上面那个 `dropReport` 崩溃就是它抓出来的（把它改回去，它会红）。
 
----
+### 2026-10-24 上午这一段（`a2c8f5a`，1494 → 1564 项）
 
-## 6. 还没修的问题（P0 三条 + P1 两条）
+用户的指令只有一句：「接手上一个 AI 的任务，继续工作，修改 bug 等。建议开两个没有上下文的子代理进行审核。」
 
-来源：上一轮开了一个**无上下文**的审查子代理审 `plugin/lib/client.js`，它交了 10 条。
-**已修 5 条**（1/2/3/7/8）——首页建议与材料互相吞掉、`dropReport` 定义域错导致「下一步」一改公司名就崩、勾材料点一下会把已选的再加一次、「下一步」读不到内容时显示成空、练过的记录读不到却说「还没练过」。
-**剩下这 5 条没修**，按下面的顺序做。行号是 2026-10-24 01:11 实测值，改完请重新定位（`grep -n` 更快）。
+**先跑的基线**：`node test/all.mjs` 1494 项全过、`live.mjs` 15 passed、`state.get` 200 —— 也就是说上一轮交的是绿的，问题都在下面那些边界上。
 
-### P0-1 访谈页「今天到这」会吃掉刚写的内容（中）
-- 位置：`plugin/lib/client.js:2992` 是那个按钮 —— `h(Btn, { size: 'sm', tone: 'ghost', onClick: () => setPhase('done') }, '今天到这')`，和「跳过」「不想说」挤在同一排。
-  正常结束路径在 `:2856`（也是 `setPhase('done')`，但那条是答完/问完之后的收尾，不用动）。
-- 问题：三个按钮意思接近，手一滑就结束整场；输入框里已经写好的字直接丢；结束页还会说「你说的都记下来了」。
-- 修法（挑一种）：
-  - 在 `onClick` 里判 `answer.trim() !== ''`，非空就 `window.confirm('这一题还没记下，确定不记了？')`；
-  - 或把「今天到这」挪到页面顶部（`phase === 'talk'` 的头部区），并把文案改成「结束这次访谈（这一题不记）」。
-- 补断言：`plugin/test/render-all.mjs` 里已有 `InterviewView` 的多种状态渲染，加一条「输入框里有内容时点『今天到这』会先问一句」。
+**A. 交接文档第 6 节遗留的 5 条，全修完**
 
-### P0-2 编辑表单最后 1.5 秒的字会丢（中）
-- 位置：`plugin/lib/client.js:1990-2001` 的草稿自动保存 `useEffect`：
-  `const timer = setTimeout(async () => { ... call('draft.save', ...) ... }, 1500)`（`:1998`），
-  清理函数只写了 `return () => clearTimeout(timer)`（`:2000`）。
-  「先不改」的离开路径在 `:2246`。
-- 问题：用户已经被教会「会自动存」，但组件一卸载就把定时器清掉、不发最后一次请求。停手不到 1.5 秒就点走，最后几个字不在草稿里。
-- 修法：把清理函数改成「若还有未落盘的改动就立刻发一次」——
-  先抽出 `const flush = async () => { if (print === savedPrint) return; await call('draft.save', ...); setSavedPrint(print) }`，
-  定时器里调 `flush()`，清理函数里也调一次 `flush()`（不要 await），并在页面卸载前（`onCancel` / 切走）显式 `await flush()` 更稳。
-- 补断言：`plugin/test/client-smoke.mjs` 里可以测「卸载时会调用 draft.save」；或源码级断言清理函数里出现了 `flush`。
+| 条目 | 一句话修法 |
+|---|---|
+| P0-1 访谈「今天到这」吃掉刚写的话 | 「结束这次访谈」挪到 `talk` 页顶部一行（带「这一题不记」小字），底部那排只剩记下/跳过/不想说；输入框有字时先 `window.confirm` 问一句；结束页按 `dropped` 照实说「刚才那一题没存进去」，不再一律说「都记下来了」 |
+| P0-2 编辑表单最后 1.5 秒的字会丢 | 抽出 `flush`，`flushRef` 存它；新增只挂一次的卸载 effect，卸载时把还没落盘的那次草稿补发一次（`draft-flush-test.mjs` 自带会跑 effect 的迷你 hooks 运行时，变异验证过：把清理函数改空会红 3 条） |
+| P0-3 导入页 → 分析页「这是关于谁」是空的 | `TextImport` 存完把 `{name, path}` 一起传给 `onAnalyze`；父层去 `listing.cards` 里找同名的卡（有就带 id，没有就带名字）；`AnalyzeView` 既认 id 也认名字，并给「还没有这张卡」一行灰字说明；顺手修了 `materialFor` 一旦设过就永远留着（换页不清） |
+| P1-1 plan 失败留下空卡 | plan 失败时，如果这张卡是这一次刚建的，先 `card.delete` 撤掉（本来就有的卡不动），文案里说清楚撤了 |
+| P1-2 重名默默复用旧卡并改关系 | 不是从那张卡「接着聊」进来的（`preset.id` 为空）就先问一句「点好=接着补，点取消=换个名字」；并且**只给还没写过关系的卡补关系**，已经写着的（「父亲」）不再被这次点的（「朋友」）盖掉 |
 
-### P0-3 「导入 → 一段文字」存完点「让 AI 读一读」，到分析页「这是关于谁」是空的（中）
-- 位置链路：
-  - `plugin/lib/client.js:3096` — `h(Btn, { onClick: () => onAnalyze?.() }, '让 AI 读一读')`（`TextImport` 组件里）；
-  - `ImportView` 收 `onAnalyze` 在 `:3001`，`TextImport` 定义在 `:3052`；
-  - 父层调用点 `:970` — `onAnalyze: () => setView(VIEWS.analyze)`（**没带人**）；
-  - 分析页 `AnalyzeView` 在 `:3257`，`const [about, setAbout] = useState(presetAbout?.id ?? '')`（`:3260`）拿的就是空的 preset。
-  - **正确范例在 `:975`**（「从记忆里认人」那条路径）：`onAnalyze: (about) => { setInterviewFor(about ?? null); setView(VIEWS.analyze) }`。
-- 修法：`TextImport` 保存成功后改成 `onAnalyze?.({ id: safeId(about), name: about })`，`ImportView` 原样透传，父层 `:970` 照 `:975` 的写法接。注意 `analysisFor` 那个 state 的命名在父层可能是 `interviewFor`，按现有代码对齐，别新造。
-- 补断言：`render-all.mjs` 加一条「导入页点『让 AI 读一读』时会把刚写的人名一起带过去」（可以直接断言源码或用一个记录实参的假回调）。
+**B. 第二个审查子代理（无上下文，只读冻结副本）报回来 8 条，也全修完**
 
-### P1-1 访谈 plan 失败会留下空卡
-- 位置：`plugin/lib/client.js:2806` 调 `call('interview.plan', ...)`，失败处理在 `:2807-2810` 只 `setErr(...)` 就 `return`。
-  而这张卡在 `:2800` 左右已经 `card.save` 建好了（新卡路径）。
-- 后果：盘上多一张只有 id/kind/name 的空卡；用户以为是失败，换个名字重试 → 越试越多。
-- 修法：失败时明说「『老王』这张卡已经建好了，只是问题没准备好，再点一次接着练」，并把已建好的卡记进 `aboutId` / `existing`，下次点「开始聊」直接复用，别再 `card.save`。
+审的是 `git archive` 出来的 `/tmp/lifecard-review2-20261024-100145/`（md5 记在那儿的 `md5.txt`）。它自己核对过 49 条路由与前端 40 个 `call()` 方法，无缺失、无原型链穿透。
 
-### P1-2 重名会直接复用旧卡并改它的关系
-- 位置：`plugin/lib/client.js:2775` 起 —— `const existing = listing.cards.find((c) => c.id === id)`，命中后走 `:2795-2802`，会 `card.get` 再 `card.save` 把 `data.relation` 改掉。
-- 后果：用户想建「老王（同事）」，库里已有「老王（父亲）」，一按就开始把父亲那张卡的关系改成同事。
-- 修法：命中时先停在选择上（「库里已经有『老王』了：接着聊这张，还是换个名字新建？」），未确认前**不要**改写任何字段。
+| 严重度 | 问题 | 修法 |
+|---|---|---|
+| P1 | `jobs-store.js` 的 `readInside` 把「读失败」和「没这个文件」都返回 null，于是 `addApplication` 的整表重写会用一行顶掉用户全部投递记录 | 新增 `readInsideState`（只有 `ENOENT` 才算「没有」，别的错返回 `ok:false`）；`readTracker` 读失败直说；`addApplication` / `updateApplication` 在 `current.ok !== true` 时拒绝写 |
+| P1 | `job.evaluate` 存盘失败静默，返回 ok:true 且无 path，用户以为归档了 | 失败时给 `result.saveFail`，界面在报告最上面用红框说「现在它只在屏幕上，先复制走」 |
+| P1 | `callModel` 里 `handle = await withTimeout(llm.stream(...))`，超时是在赋值前抛的，`handle` 恒为 null，那句 `abort` 永远打不中 | 先留住 `pending` 并挂 `then` 接住 handle；catch 里手里没有就等它交出来再 abort（`job.resume.build` 的存盘失败也补了 warning） |
+| P2 | 访谈「跳过」和「不想说」实际等价：台账里只要有一行就按「问过了」砍掉，`sealed` 判断和 `deferred` 重排都是死代码 | `answeredIds` 只收 `status === 'answered'`，`sealed` 单列；跳过的排到队尾，下次还会问 |
+| P2 | `listEvaluations` / `listDrafts` 读失败返回 `ok:true + []`，前端「读失败」分支永远不触发 | catch 里区分 `ENOENT`（真空表）与其它错（`ok:false`），三处 `readdir` 一起改（含 `listInterviews`） |
+| P2 | 投递表单元格不转义：公司名里一个 `\|` 或换行就把整张表写坏 | 写端 `cell()` 转义 `\|`、换行压成空格；读端按未转义的 `\|` 切分并还原 |
+| P2 | 存评估/草稿找空位用的是「读不出来」，读不出来的文件被当空位直接覆盖 | 空位探测改用 `readInsideState` 的 `exists`；读不出来就报错不写 |
+| P2 | 路径闸只做字面包含判断，工作区里一个软链就能读写出去 | `insideWorkspace` 与 `store.resolveIn` 都改用 `realpathLoose`（求最深已存在祖先的实体路径再拼回来）按实体路径再判一次；17 处 `insideWorkspace` 调用、6 处 `resolveIn` 调用改成 `await` |
+
+顺带：`interview.record` 的日期从 `toISOString()`（UTC）改成 `store.localDate()`，跟 `materials/` 里的命名一致（东八区早八点前不再差一天）。
+
+**新增的回归断言**（都验过「改回去会红」）：
+- `test/render-all.mjs`：导入→分析带人（5 条）、plan 失败撤空卡 / 重名先问 / 重名不覆盖关系 / 说不换了就一个请求都不发（8 条）。测试里要临时换掉 `globalThis.fetch` 和 `fakeWindow.confirm`，**结尾必须换回去**。
+- `test/jobs-test.mjs`：表读不出来时拒绝记、原来的表一个字节不动、目录被换成文件时列表直说、同名位置读不出来不覆盖、带竖线/换行的公司名能原样读回（16 条）。
+- `test/hardening-routes.mjs`：跳过还在队列里且排到最后、不想说不再问、答过不再问、`askedAlready` 口径（7 条）；软链往外读写被拒、工作区外没有落文件、指回内部的软链不误判（5 条）。
+- 新文件 `test/draft-flush-test.mjs`（8 条，自带会跑 `useEffect` 的迷你 hooks 运行时）。
 
 ---
+
+## 6. 还没修的问题（本节已清空：上一轮的 5 条全修完，见第 5 节）
+
+上一轮遗留的 P0-1 / P0-2 / P0-3 / P1-1 / P1-2 五条已在 `a2c8f5a` 全部修完并补了断言，行号也随之变了，别再照旧行号找。**要接着改，先按第 1 节跑一遍验证，再 `grep -n` 重新定位。**
+
+### 这一轮**没做**、值得下一轮看的（都不是会导致丢数据的级别）
+
+1. **两个审查子代理只活下来一个。** 第一轮并行开的两个（一个审前端交互、一个审宿主侧）里，审前端那个上下文耗尽、无任何产出（这台机器上并行开多个子代理很容易这样，见第 8 节）。第二轮改成**串行**：冻结 `git archive` 快照 → 先让宿主侧那个跑完 → 再开前端那个。下次照这个做法。
+2. **`callModel` 的 abort 修复没有自动化测试。** `MODEL_TIMEOUT_MS = 150000`，测超时要把这个常量做成可注入的才行，暂时只做了代码审查 + 人工推理。要补的话：给 `callModel` 加个内部参数或让 `withTimeout` 的毫秒数走 config。
+3. **`job.evaluate` 的 `saveFail` 没有端到端测试。** 它要真的让模型跑一次并让写盘失败，成本高；现在靠 `jobs-test.mjs` 里同型函数（`saveEvaluation`）的返回值测试兜着。
+4. **`package.json` 的 `author` 和 `plugin/LICENSE`**（MIT，版权写 Yuzhou）是上一轮结束时加到工作区的，本次提交一起带上了。发 GitHub 前确认署名和版权年份要不要改。
+5. **`research/` 之外还有没有不该发布的文件**：`git ls-files | grep -v '^plugin/'` 看一下根目录那几个 docx / 策划书，用户明确说不发 `research/`，其余没表态。
 
 ### 要不要修，可以问用户（P2，别自己拍板）
 - `策划书.md` / `策划书-第二部分.md` 要不要随包发布（`research/` 用户已明确不发布，已在 `.gitignore` 里）。
@@ -228,6 +230,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:<端口>/api/d
 
 ## 10. 一句话交接
 
-代码侧是可交付状态：1494 项自动测试全过；端到端 15 项在**重启 App 之后**应当全过（当前那次 10/11 是宿主还在跑修之前的代码）。
+代码侧是可交付状态：**1564 项**自动测试全过（17 个文件），端到端 15 项在一台跑着**当前代码**的实例上也全过。
+这一轮把「会让用户真的吃亏」的那批都清了：丢数据的三条路（投递表被一行顶掉、报告/简历没存进去还说存好了、重名默默改旧卡）、访谈里「跳过 = 永别」、以及软链能把读写带出工作区。
 隐私已清零（示例一律张三/李四/王先生/某公司/1970 年，git 历史也重写过），许可证 MIT。
-剩下的是**体验打磨**——第 6 节那五条都不难，十几行的改动，做完记得补断言、跑全量、提醒用户重启 App 再点一遍。
+**改完 `plugin/lib/` 记得提醒用户完全退出 DSH App 再打开**（软链装法下热重载不生效），然后照第 1 节三条验证跑一遍；第 6 节列的是「值得下一轮看」的几件小事，没有会丢数据的了。
