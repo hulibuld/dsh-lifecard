@@ -2775,7 +2775,9 @@ export function apply(ctx, config) {
           return
         }
         const origin = String(req.headers?.origin ?? '')
-        if (origin !== '') {
+        // 没有 Origin 就是同源请求（浏览器对同源 POST 一般不送）；`null` 是
+        // 沙箱里的 iframe。这两种放行，只有「明确来自别家站点」才拦。
+        if (origin !== '' && origin !== 'null') {
           let sameHost = false
           try {
             const host = String(req.headers?.host ?? '')

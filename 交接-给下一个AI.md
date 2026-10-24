@@ -11,8 +11,8 @@
 - 项目：`/Users/joyfon620/Documents/deepseek-harness/default-workspace/LifeCard/`
 - 是什么：DSH（DeepSeek Harness）的侧边栏插件，本地优先的人物档案库——把身边的人写成 Markdown+YAML 的「卡」，带关系网、题料、AI 抽取（**每条断言必须有原文引文**）、求职与模拟面试。
 - 代码在哪：全部在 `plugin/`。`plugin/lib/` 12 个模块（新增 `tavern.js` 387 行），`plugin/test/` 20 个文件。
-- 当前状态：`main` 分支，工作区干净，HEAD = `aa5b92d`，共 95 次提交。
-- 测试：全量 **1829 项**通过（18 个测试文件）；对一个真实运行的实例做端到端验收 **22 项全过**（`test/live.mjs`，含两次真模型调用：分析 + 酒馆里让 TA 回一句）。**2026-10-24 19:2x 实测已全绿**，说明 `analyze.run` 那个 500 确实修好了。
+- 当前状态：`main` 分支，工作区干净，HEAD = `14309f3`，共 98 次提交。
+- 测试：全量 **1869 项**通过（18 个测试文件）；对一个真实运行的实例做端到端验收 **22 项全过**（`test/live.mjs`，含两次真模型调用：分析 + 酒馆里让 TA 回一句）。
 - 发布：**没有发到 GitHub，也不许由你发**（用户明确「不发，我自己发」）。`research/` 已被 `.gitignore` 排除（用户说「调研报告不要发」）。
 - 给朋友用的试用包：`dist/LifeCard-试用版.zip`（已拷到 `~/Desktop/`），里面有 `先看这里.md` 和 `install.command`。
 
@@ -187,6 +187,32 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:<端口>/api/d
 - `interview.plan` 现在收 `kind`（`real` / `fictional`）；虚构题库在 `prompts.CHARACTER_QUESTIONS`，`fills` 的字段名必须存在于 `core.coverage` 那张表里，否则完成页会报「还空着」却填不上。
 - `card.fork`：复制 `data`，`id` 加 `-role`（重名就 `-2`…`-40`），`kind: 'fictional'`、`forked_from` 记原卡路径、**`delete data.cc`**（不带走酒馆/ST 的嵌入数据）。原卡一个字节都不动。
 - 三扇门不是另存的状态，是「当前在哪一屏」：`mode` 由 `view` 推出来（`novel` / `tavern` / 其它都算 `real`）。
+
+### 2026-10-24 晚上这一段（`14309f3`，1829 → 1869 项）：两个无上下文审查员的结论
+
+用户要求「多让智能体审核，不要用主控主观判断」。按老办法冻结快照（`/tmp/lifecard-review3-20261024-184156/`）后**串行**开了两个只读审查员：A 审前端与本次改动、B 审后台与数据安全。两人都只报能指出行号的，合计 17 条，全部逐条核实为真，全部已修：
+
+| 严重度 | 问题 | 修法 |
+|---|---|---|
+| P0 | 酒馆「收个尾」收到的备忘，下一句话时被静默摘掉（`writeChat` 没带 `notes`） | 两处写回带 `notes`；frontmatter 不再把数组往里塞 |
+| P0 | 回话里一行 `## xxx` 就会把后面半场对话当成「备忘」吞掉（`### xxx` 还会把说话人串改） | 写盘前给行首 `#` 加反斜杠、读回时削掉；文件仍是人能直接读的纯文本 |
+| P0 | 每条路由的「工作区」都听请求体的（`root(body)` 直接 `path.resolve`），任何网页都能把库指到别处再删素材 | 只认当前这个库；换库只有 `workspace.init` 一个入口。另加两道闸：只收 `application/json`（跨站带不上，带了要预检）、带了 Origin 就必须同源 |
+| P1 | `card.fork` 第 40 份会盖掉已有的那份；`stat` 与写之间没原子性 | 改成 `fs.open(..., 'wx')` 占位再写，占不到就换号，40 份用完说人话；写失败会撤掉占位文件 |
+| P1 | `callModel` 其实不接受「直接给 handle」，真宿主上是它 500 | `Promise.resolve(llm.stream(...))` 包一层，两种形状都认（`da30537` 的再收口） |
+| P1 | 全插件没有原子写，会话每轮整文件覆盖且无快照 | `writeChat` 改「临时文件 + rename」 |
+| P1 | `tavern.say` 读-改-写无锁，双击发送会吞掉一轮 | 按会话 id 串行（`oneAtATime`） |
+| P1 | 到 400 句上限时拒绝，但刚打的那句不落盘、界面照显 | 拒存前先写盘 |
+| P1 | 同名两张卡（`card.fork` 正好造出这种同名对）时「接着聊」会把整场访谈记到副本上 | 先按 id 精确匹配，再按名字兜底 |
+| P1 | prep 屏的「再试一次」是死按钮（`setPhase('prep')` 同值 bail out），虚构那两扇门里没有退路 | 直接重跑 `start()`；退路按钮无条件给出（虚构门是「重新填一下名字」） |
+| P2 | `card.fork` 把 `data.cc` 整个删掉，卡里自带的世界书条目一起没了 | 只清来路标记（`source_file`/`png`/`imported_at`/`spec`），`cc.fields.character_book` 留下 |
+| P2 | 虚构角色的完成度把「关系/出生年/同意状态」算进分母，永远顶不满 | `core.coverage(data, sections, { kind })` 对 `fictional` 跳过这三项 |
+| P2 | `card.save` 漏传 `sections` 会整篇清空还报成功 | 缺省时按磁盘上那一份的正文补上 |
+| P2 | 同名世界书原地覆盖，`.lifecard/raw/` 原件一起没 | 导入时挑没被占的号（`-2`、`-3`…） |
+| P2 | `forked_from` 会记绝对路径（带用户名） | 一律记相对路径 |
+
+- 新增回归测试 40 项（`tavern-test.mjs` 8→92、`hardening-routes.mjs` →159、`render-all.mjs` →457），其中「小标题吃对话」「备忘被抹」「400 句丢字」「并发吞一轮」「同名卡记错人」「死按钮」六条都验过会红。
+- 审查员 A 还提醒了一个**测试盲区**：`render-all.mjs` 的假 React 里 `useEffect` 只占槽位、从不执行，所以「自动开始」「卸载补存」这类逻辑它测不到——那部分只能靠 `draft-flush-test.mjs`（会跑 effect）或人工验。下一轮如果要钉 prep 的自动开始，得把 `InterviewView` 加进那个文件的 `EFFECTED` 白名单。
+- 审查员 B 提的「快照里跑测试只有 1484 项、5 个文件失败」不是仓库的问题：`git archive` 出来的 `plugin/` 没有 `node_modules`，`@deepseek-ai/schemastery` 找不到。真仓库里 1869 项全过。
 
 ## 6. 还没修的问题（本节已清空：上一轮的 5 条全修完，见第 5 节）
 
