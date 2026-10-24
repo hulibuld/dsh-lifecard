@@ -726,7 +726,7 @@ const SECTIONS_REL = [
 
 // ── 主界面 ────────────────────────────────────────────────────────
 
-const VIEWS = { doors: 'doors', novel: 'novel', tavern: 'tavern', home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs' }
+const VIEWS = { doors: 'doors', novel: 'novel', tavern: 'tavern', tavernChat: 'tavernChat', home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs' }
 
 /**
  * tab 组件。接收宿主给的 props（ctx / store / scope / tab / visible）。
@@ -940,7 +940,23 @@ function LifeCardTab(props) {
   // 三扇门：真实人物 / 写小说 / 酒馆。门不是另存一份状态，而是「当前在哪一屏」
   // 推出来的——首页就是真实人物那扇门，写小说、酒馆各占一屏。这样少一个
   // 要维护的开关，也不会出现「门选中了但视图没跟上」的两份真相。
-  const mode = view === VIEWS.novel ? 'novel' : view === VIEWS.tavern ? 'tavern' : 'real'
+  const mode = view === VIEWS.novel ? 'novel' : (view === VIEWS.tavern || view === VIEWS.tavernChat) ? 'tavern' : 'real'
+
+  // 正在聊的那一场。null = 还没开。
+  // 这个 useState 故意放在所有别的 hook 之后：前面那些槽位被 render-all
+  // 按号码摆状态用着，中间插一个会让那一整排全部错位。
+  const [chat, setChat] = useState(null)
+  const [chats, setChats] = useState([])
+  // 回到酒馆那两屏就重新拿一遍说过的场次：刚说完、刚删完再回来，
+  // 还挂着进这一屏之前的旧列表，用户会以为刚才那一步没生效。
+  useEffect(() => {
+    if (view !== VIEWS.tavern && view !== VIEWS.tavernChat) return
+    let gone = false
+    call('tavern.list', {})
+      .then((r) => { if (!gone && r?.ok === true && Array.isArray(r.items)) setChats(r.items) })
+      .catch(() => { /* 取不到就空着，不影响开新的一场 */ })
+    return () => { gone = true }
+  }, [view])
 
   const pickDoor = (next) => {
     setError(null)
@@ -975,12 +991,54 @@ function LifeCardTab(props) {
     } catch (e) { setError(humanizeError(e)) }
   }
 
+  /**
+   * 从列表里挑一个角色，开一场。
+   *
+   * 酒馆那扇门里点一张卡 = 「我要和 TA 说话」，不是「我要编辑这张卡」。
+   * 想改卡还有卡页里的入口，这里不要多一步。
+   */
+  // 接着上次那一场说。列表里点进来走的是这条路。
+  const openChat = async (row) => {
+    setBusy('card')
+    setError(null)
+    try {
+      const r = await call('tavern.get', { id: row?.id })
+      if (r?.ok !== true) throw new Error(r?.error ?? '这一场打不开')
+      setChat({ id: r.id, card_name: r.card_name, world_name: r.world_name, turns: r.turns ?? [], err: null, busy: false })
+      setView(VIEWS.tavernChat)
+    } catch (e) {
+      setError(humanizeError(e))
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const startTavern = async (card) => {
+    setBusy('card')
+    setError(null)
+    try {
+      const r = await call('tavern.start', { card: card?.path ?? String(card?.id ?? '') })
+      if (r?.ok !== true) throw new Error(r?.error ?? '这一场没开起来')
+      setChat({ id: r.id, card_name: r.card_name, world_name: r.world_name, turns: r.turns ?? [], err: null, busy: false })
+      setView(VIEWS.tavernChat)
+    } catch (e) {
+      setError(humanizeError(e))
+    } finally {
+      setBusy('')
+    }
+  }
+
+  // 首页那张卡片点下去之后去哪儿，由门决定：酒馆里是「聊一场」，
+  // 别的两扇门里还是「打开这张卡」。
+  const openFromList = (card) => (mode === 'tavern' ? startTavern(card) : openCard(card))
+
   const header = () => {
     const titles = {
       [VIEWS.doors]: '你要用哪个？',
       [VIEWS.home]: '真实人物记录',
       [VIEWS.novel]: '写小说',
       [VIEWS.tavern]: '酒馆',
+      [VIEWS.tavernChat]: chat === null ? '聊一场' : (String(chat.card_name ?? '').trim() === '' ? '聊一场' : String(chat.card_name)),
       [VIEWS.card]: activeCard?.data?.name ?? '这张卡',
       [VIEWS.interview]: '陪他聊聊',
       [VIEWS.import]: '添加',
@@ -1051,6 +1109,13 @@ function LifeCardTab(props) {
     }
     // 门还没选：先问「你要用哪个」。选完才进首页，首页再按门决定露出什么。
     if (view === VIEWS.doors) return h(DoorsView, { state, onPick: pickDoor })
+    if (view === VIEWS.tavernChat) {
+      return h(TavernView, {
+        chat,
+        onChat: setChat,
+        onBack: () => { setChat(null); setView(VIEWS.tavern) },
+      })
+    }
     switch (view) {
       case VIEWS.import:
         return h(ImportView, {
@@ -1102,7 +1167,7 @@ function LifeCardTab(props) {
         // 直接退回首页，用户点了没反应，还以为坏了。现在把清单单独摊开。
         return activeCard === null
           ? proposal === null
-            ? h(HomeView, { state, listing, mode, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor() })
+            ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor() })
             : h('div', { className: 'lc-pad lc-stack' },
                 proposal.about === undefined || String(proposal.about).trim() === ''
                   ? null
@@ -1161,7 +1226,7 @@ function LifeCardTab(props) {
         })
       case VIEWS.world:
         return activeWorld === null
-          ? h(HomeView, { state, listing, mode, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor() })
+          ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor() })
           : h(WorldView, {
               world: activeWorld,
               listing,
@@ -1172,7 +1237,7 @@ function LifeCardTab(props) {
       case VIEWS.jobs:
         return h(JobsView, { onBack: () => setView(VIEWS.home), flash })
       default:
-        return h(HomeView, { state, listing, mode, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor() })
+        return h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor() })
     }
   }
 
@@ -1299,7 +1364,7 @@ function DoorsView({ onPick, state }) {
   )
 }
 
-function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial }) {
+function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial, chats, onOpenChat }) {
   // 这扇门是不是「真实人物记录」。写小说、酒馆那两扇门里不该出现
   // 「贴一份招聘说明」「从记忆里认人」这类动作——那是记录真人才用得上的。
   const isReal = mode !== 'novel' && mode !== 'tavern'
@@ -1323,6 +1388,8 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
     return materials.filter((m) => String(m.name ?? m.path ?? '').toLowerCase().includes(needle))
   }, [materials, q])
   const avatars = listing?.avatars ?? {}
+  // 酒馆门里要能看到「说过的那几场」，否则退出去就再也回不来那一场了。
+  const chatRows = mode === 'tavern' && Array.isArray(chats) ? chats : []
   // 世界书不是卡：它没有覆盖度、不参与体检打分，放在卡列表里会让人以为
   // 「这张卡才写了 20%」。单独一段，点进去能读条目。
   const allWorlds = listing?.worlds ?? []
@@ -1428,6 +1495,29 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
       h('div', { className: 'lc-grow' }),
       isReal && materials.length > 0 ? h(Btn, { tone: 'analyze', size: 'sm', icon: 'spark', onClick: () => onNavigate(VIEWS.analyze) }, `整理 ${materials.length} 份材料`) : null,
     ),
+
+    // 酒馆门里先列「说过的场次」：这是回来的路。没有它，用户退出一场
+    // 就再也找不回来——只能重新开一场，前面那些话看着像丢了。
+    chatRows.length > 0
+      ? h('div', null,
+          h(GroupTitle, { tone: 'analyze', icon: 'chat' }, `说过的场次 · ${chatRows.length}`),
+          h('div', { className: 'lc-stack' }, chatRows.map((c) => h('button', {
+            key: c.id,
+            className: 'lc-btn block',
+            style: { justifyContent: 'flex-start', textAlign: 'left', padding: '7px 9px' },
+            type: 'button',
+            onClick: () => onOpenChat?.(c),
+          },
+            h('div', { className: 'lc-row', style: { gap: 6 } },
+              h('div', { className: 'lc-grow lc-ellipsis', style: { fontWeight: 650, fontSize: 12.5 } }, `和「${String(c.card_name ?? '').trim() === '' ? 'TA' : c.card_name}」`),
+              h('span', { className: 'lc-meta' }, `${c.turns ?? 0} 句`),
+            ),
+            String(c.last ?? '').trim() === ''
+              ? null
+              : h('div', { className: 'lc-meta lc-ellipsis', style: { marginTop: 2 } }, String(c.last).slice(0, 42)),
+          ))),
+        )
+      : null,
 
     byKind.real.length > 0
       ? (isReal
@@ -1678,6 +1768,145 @@ function WorldView({ world, listing, onOpenCard }) {
 }
 
 // ── 单张卡 ────────────────────────────────────────────────────────
+
+/**
+ * 酒馆：和一张卡你一句我一句地说下去。
+ *
+ * 三件事刻意做得笨一点：
+ *   1. 没有「流式打字」——一句话说完才出现。省得半句半句往外蹦、用户读一半
+ *      就以为断线了；
+ *   2. 我说的话先存再等 TA 回。TA 没回话是常事（网、模型），但我说的话
+ *      不能因为这个丢掉；
+ *   3. 退出就是退出，不弹「确定放弃吗」——每一轮都已经在文件里了。
+ */
+function TavernView({ chat, onChat, onBack }) {
+  const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const scrollRef = useRef(null)
+  const turns = Array.isArray(chat?.turns) ? chat.turns : []
+  const rawName = String(chat?.card_name ?? '').trim()
+  const name = rawName === '' ? 'TA' : rawName
+  const me = '我'
+
+  const say = async (text) => {
+    if (busy || chat?.id === undefined) return
+    setBusy(true)
+    setErr(null)
+    try {
+      const r = await call('tavern.say', { id: chat.id, text })
+      // 后台说 ok:false 时，它可能已经把「我」那句存下来了——turns 里有就照着画，
+      // 不然用户会以为自己那句话没发出去、再打一遍，最后文件里出现两份。
+      if (Array.isArray(r?.turns)) onChat({ ...chat, turns: r.turns })
+      if (r?.ok !== true) { setErr(r?.error ?? 'TA 没接上话，过一会儿再试一次'); return }
+      setDraft('')
+    } catch (e) {
+      setErr(humanizeError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const remove = async () => {
+    if (chat?.id === undefined) return
+    setBusy(true)
+    setErr(null)
+    try {
+      const r = await call('tavern.delete', { id: chat.id })
+      if (r?.ok !== true) { setErr(r?.error ?? '这一场没能删掉'); return }
+      onBack()
+    } catch (e) {
+      setErr(humanizeError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const bubble = (turn, index) => {
+    const mine = turn.who === me
+    return h('div', {
+      key: `${index}-${turn.who}`,
+      style: {
+        display: 'flex',
+        justifyContent: mine ? 'flex-end' : 'flex-start',
+        gap: 6,
+      },
+    },
+      h('div', {
+        style: {
+          maxWidth: '82%',
+          background: mine ? 'var(--lc-accent-soft)' : 'var(--lc-interview-soft)',
+          border: '1px solid var(--lc-line)',
+          borderRadius: 10,
+          padding: '7px 10px',
+          whiteSpace: 'pre-wrap',
+          lineHeight: 1.65,
+          fontSize: 13,
+        },
+      },
+        h('div', { className: 'lc-meta', style: { marginBottom: 2, fontSize: 10.5 } }, turn.who),
+        turn.text,
+      ),
+    )
+  }
+
+  return h('div', { className: 'lc-pad lc-stack', style: { gap: 10 } },
+    h('div', { className: 'lc-row' },
+      h(Btn, { size: 'sm', icon: 'back', onClick: onBack, disabled: busy }, '回去'),
+      h('div', { className: 'lc-grow lc-ellipsis', style: { fontWeight: 650 } }, `和「${name}」在演`),
+      h('span', { className: 'lc-meta' }, `${turns.length} 句`),
+    ),
+    turns.length === 0
+      ? h(Note, { icon: 'chat' }, `这张卡没写开场白。点「让 ${name} 先说」，或者你先开口都行。`)
+      : null,
+    h('div', {
+      ref: scrollRef,
+      className: 'lc-stack',
+      style: { gap: 7, maxHeight: '52vh', overflowY: 'auto', padding: '2px 1px' },
+    }, turns.map(bubble)),
+    err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
+    h('textarea', {
+      className: 'lc-textarea',
+      rows: 3,
+      value: draft,
+      placeholder: `你要和「${name}」说什么…`,
+      spellCheck: false,
+      onChange: (e) => setDraft(e.target.value),
+      onKeyDown: (e) => {
+        // 回车就发，Shift+回车换行——这是所有聊天窗口的习惯，
+        // 不这样用户会一直按回车，然后发现换行了一堆。
+        if (e.key === 'Enter' && e.shiftKey !== true) {
+          e.preventDefault?.()
+          say(draft.trim())
+        }
+      },
+    }),
+    h('div', { className: 'lc-row' },
+      h(Btn, {
+        tone: 'primary', size: 'sm', icon: 'send',
+        disabled: busy || draft.trim() === '',
+        onClick: () => say(draft.trim()),
+      }, busy ? '等一下…' : '说这句'),
+      h(Btn, {
+        size: 'sm', tone: 'interview', icon: 'chat',
+        disabled: busy,
+        onClick: () => say(''),
+        title: `让「${name}」自己往下说`,
+      }, `让 ${name} 先说`),
+      h('div', { className: 'lc-grow' }),
+      h(Btn, { size: 'sm', ghost: true, icon: 'trash', disabled: busy, onClick: () => setConfirmDelete(true) }, '这一场不要了'),
+    ),
+    confirmDelete === true
+      ? h('div', { className: 'lc-row' },
+          h('span', { className: 'lc-meta', className: 'lc-meta' }, '这一场的记录会删掉，删了就找不回来了。'),
+          h(Btn, { size: 'sm', tone: 'danger', onClick: remove, disabled: busy }, '确定删'),
+          h(Btn, { size: 'sm', ghost: true, onClick: () => setConfirmDelete(false), disabled: busy }, '先不删'),
+        )
+      : null,
+    h('div', { className: 'lc-meta' }, '每说一句都会存进「chats」里，退出再进来还能接着说。'),
+  )
+}
 
 function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, onInterview, onAnalyze, worlds, onOpenWorld }) {
   const [editing, setEditing] = useState(false)

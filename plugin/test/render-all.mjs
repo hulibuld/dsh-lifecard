@@ -1521,5 +1521,123 @@ for (const [label, tree] of [
   void picked
 }
 
+// ── 酒馆：一处能开口的地方 ────────────────────────────────────────
+// 角色卡和世界书管得再好，没有「和 TA 说话」这一屏，那两样就是摆设。
+{
+  const CHAT = {
+    id: 'chat-20261024-1611-abcd',
+    card_name: '张三',
+    turns: [
+      { who: '张三', text: '来了？自己找地方坐。' },
+      { who: '我', text: '我路过，进来看看。' },
+    ],
+  }
+  // 先让整棵树走到那一屏，TavernView 才会进 seen
+  renderRoot('酒馆（聊天屏）', base('tavernChat'))
+  t('酒馆聊天那一屏渲染得出来', seen.get('TavernView') !== undefined)
+
+  const tree = renderOne('酒馆（已经说了几句）', seen.get('TavernView'), { chat: CHAT, onChat: () => {}, onBack: () => {} })
+  const text = textOf(expand(tree))
+  t('标题写着和谁在演', text.includes('和「张三」在演'), text.slice(0, 120))
+  t('对方说的那句在屏上', text.includes('自己找地方坐'), text)
+  t('我说的那句也在屏上', text.includes('我路过'), text)
+  t('屏上有几个说话人的名字', text.includes('张三') && text.includes('我'), text)
+  t('说了几句有个数', /\d+ 句/.test(text), text.slice(0, 160))
+  t('退出前说清「存过了」', text.includes('还能接着说'), text.slice(-160))
+
+  // 空输入框：发送要是灰的，免得点了没反应
+  const emptyButtons = flatButtons(expand(renderOne('酒馆（还没打字）', seen.get('TavernView'), { chat: CHAT, onChat: () => {}, onBack: () => {} }, { 0: '' })))
+  const sendBtn = emptyButtons.find((b) => textOf(b).includes('说这句'))
+  t('没打字时「说这句」按不动', sendBtn !== undefined && sendBtn.props.disabled === true, sendBtn === undefined ? '没找到按钮' : '')
+
+  // 说一句：后台收到了、界面跟着长出新的一轮
+  const posts = []
+  const realFetch = globalThis.fetch
+  let updated = null
+  globalThis.fetch = async (url, init) => {
+    posts.push({ url: String(url), body: init?.body === undefined ? '' : String(init.body) })
+    return { ok: true, json: async () => ({ ok: true, turns: [...CHAT.turns, { who: '我', text: '我路过，进来看看。' }, { who: '张三', text: '坐吧。' }] }) }
+  }
+  try {
+    const typed = renderOne('酒馆（打了一句话）', seen.get('TavernView'), { chat: CHAT, onChat: (c) => { updated = c }, onBack: () => {} }, { 0: '我路过，进来看看。' })
+    const clicked = clickByText(typed, '说这句')
+    t('「说这句」点得动', clicked === true)
+    await new Promise((r) => setTimeout(r, 30))
+    t('点了之后真的问了后台', posts.some((x) => x.url.includes('tavern.say')), posts.map((x) => x.url).join(' | '))
+    t('把我说的话一起带过去了', posts.some((x) => x.body.includes('我路过')), posts.map((x) => x.body).join(' | '))
+    t('回来之后对话长了一轮', Array.isArray(updated?.turns) && updated.turns.length === 4, JSON.stringify(updated?.turns))
+  } finally {
+    globalThis.fetch = realFetch
+  }
+
+  // TA 没回话：我那句已经在文件里了，屏上要照实说
+  let keptBack = null
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({ ok: false, error: 'TA 没接上话：连不上', turns: [...CHAT.turns, { who: '我', text: '喂？' }] }),
+  })
+  try {
+    const typed = renderOne('酒馆（TA 没回话）', seen.get('TavernView'), { chat: CHAT, onChat: (c) => { keptBack = c }, onBack: () => {} }, { 0: '喂？' })
+    clickByText(typed, '说这句')
+    await new Promise((r) => setTimeout(r, 30))
+    t('回不上话时如实说', String(hookStore[2] ?? '').includes('没接上话'), String(hookStore[2]))
+    t('我那句照样留在屏上（不会让人再打一遍）', (keptBack?.turns ?? []).some((x) => x.text === '喂？'), JSON.stringify(keptBack?.turns))
+  } finally {
+    globalThis.fetch = realFetch
+  }
+
+  // 删这一场要先问一句
+  const delTree = renderOne('酒馆（想删掉这一场）', seen.get('TavernView'), { chat: CHAT, onChat: () => {}, onBack: () => {} })
+  const delClicked = clickByText(delTree, '这一场不要了')
+  t('「这一场不要了」点得动', delClicked === true)
+  t('点完先问一句，不直接删', hookStore[3] === true, String(hookStore[3]))
+
+  // 没有开场白的卡：不能是一片死白
+  const bare = renderOne('酒馆（这张卡没写开场白）', seen.get('TavernView'), { chat: { id: 'chat-x', card_name: '', turns: [] }, onChat: () => {}, onBack: () => {} })
+  const bareText = textOf(expand(bare))
+  t('没开场白时说清怎么开始', bareText.includes('先说'), bareText.slice(0, 200))
+  t('没名字的时候用「TA」顶上', bareText.includes('TA'), bareText.slice(0, 120))
+}
+
+// ── 酒馆：说过的那几场要能回去 ────────────────────────────────────
+// 退出一场之后就找不回来了，等于每场都只活一次——列表是回来的路。
+{
+  const rows = [
+    { id: 'chat-1', card_name: '张三', turns: 12, last: '坐吧。', updated_at: '2026-10-24 16:30' },
+    { id: 'chat-2', card_name: '', turns: 3, last: '', updated_at: '2026-10-24 15:00' },
+  ]
+  const picked = []
+  const tree = renderOne('酒馆首页（说过的场次）', seen.get('HomeView'), {
+    state: STATE, listing: LISTING, mode: 'tavern', chats: rows,
+    onOpen: () => {}, onOpenWorld: () => {}, onNavigate: () => {}, onProposal: () => {},
+    busy: '', onDoDoctor: () => {}, showMore: false, onMore: () => {},
+    intro: false, onIntroDone: () => {}, onMaterial: () => {}, onDeleteMaterial: () => {},
+    onOpenChat: (row) => picked.push(row),
+  })
+  const text = textOf(expand(tree))
+  t('首页有「说过的场次」这一栏', text.includes('说过的场次'), text.slice(0, 200))
+  t('场次里写着和谁在演', text.includes('和「张三」'), text.slice(0, 240))
+  t('没名字的那场用「TA」顶上', text.includes('和「TA」'), text.slice(0, 240))
+  t('场次里有句数', text.includes('12 句'), text.slice(0, 240))
+  t('场次里有最后一句', text.includes('坐吧'), text.slice(0, 240))
+
+  const clicked = clickByText(tree, '和「张三」')
+  t('点一场能接着回去', clicked === true)
+  t('回去时把那一场交给后台', picked[0]?.id === 'chat-1', JSON.stringify(picked[0]))
+}
+
+{
+  // 一场都没说过的时候不要空着横一条「说过的场次 · 0」
+  const tree = renderOne('酒馆首页（还没说过）', seen.get('HomeView'), {
+    state: STATE, listing: LISTING, mode: 'tavern', chats: [],
+    onOpen: () => {}, onOpenWorld: () => {}, onNavigate: () => {}, onProposal: () => {},
+    busy: '', onDoDoctor: () => {}, showMore: false, onMore: () => {},
+    intro: false, onIntroDone: () => {}, onMaterial: () => {}, onDeleteMaterial: () => {},
+    onOpenChat: () => {},
+  })
+  const text = textOf(expand(tree))
+  t('没说过的时候不出现空的场次栏', !text.includes('说过的场次'), text.slice(0, 200))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

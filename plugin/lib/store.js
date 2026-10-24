@@ -401,7 +401,7 @@ function hitsRedaction(redactions, relPath, content) {
  * `path.join(root, '../x')` 会安静地写到工作区外。
  * 越界返回 `{ok:false}` 而不抛异常——上层路由是按返回值处理的。
  */
-async function resolveIn(root, rel) {
+export async function resolveIn(root, rel) {
   const base = path.resolve(root)
   const abs = path.resolve(base, String(rel ?? ''))
   if (abs !== base && !abs.startsWith(base + path.sep)) {

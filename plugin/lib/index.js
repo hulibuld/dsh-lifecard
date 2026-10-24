@@ -14,6 +14,7 @@ import path from 'node:path'
 import { promises as fs, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
+import os from 'node:os'
 import * as core from './core.js'
 import * as codec from './codec.js'
 import * as store from './store.js'
@@ -24,6 +25,7 @@ import * as memory from './memory.js'
 import * as jobs from './jobs.js'
 import * as jobsStore from './jobs-store.js'
 import * as interview from './jobs-interview.js'
+import * as tavern from './tavern.js'
 export const name = 'dsh-lifecard'
 
 /** 需要宿主提供的服务。缺 webServer 就什么都不做（明确失败胜过静默半死）。 */
@@ -2123,7 +2125,199 @@ function buildApi(ctx, workspace, config, options) {
       const answered = await collectAnswered(ws, aboutId)
       return { ok: true, about: aboutId, answered }
     },
+
+    // ── 酒馆（角色扮演）──────────────────────────────────────────
+
+    /** 酒馆：说过的这几场。 */
+    'tavern.list': async (body) => {
+      const ws = await root(body)
+      return await tavern.listChats(ws)
+    },
+
+    /**
+     * 酒馆：挑一个人，开一场。
+     *
+     * 开场白直接当第一条说出来——用户点了「开始」就该看到 TA 开口，
+     * 而不是对着一个空框想「我该说什么」。
+     */
+    'tavern.start': async (body) => {
+      const ws = await root(body)
+      const want = String(body?.card ?? '').trim()
+      if (want === '') return { ok: false, error: '得先挑一个人，才能开始。' }
+      const rel = want.endsWith('.card.md') ? want : await store.findCardByRelOrId(ws, want)
+      if (rel === null) return { ok: false, error: '找不到这张卡。它可能被删掉了，或者不在这个文件夹里。' }
+      const card = await store.readCard(ws, rel)
+      if (card.ok !== true) {
+        // 「文件不存在」是内部说法。用户点的是一个名字，他看到的也该是人的话。
+        const reason = String(card.error ?? '')
+        const missing = reason.includes('不存在') || reason.includes('没有这个')
+        return {
+          ok: false,
+          error: missing ? '找不到这张卡。它可能被删掉了，或者不在这个文件夹里。' : `这张卡读不出来：${reason}`,
+        }
+      }
+      const persona = tavern.personaFromCard(card.data, card.sections)
+      const cardName = persona.name !== '' ? persona.name : String(card.data?.name ?? '').trim()
+      const world = await resolveTavernWorld(ws, String(body?.world ?? ''), String(card.data?.world ?? ''))
+      if (world.ok !== true) return world
+      const id = tavern.newChatId()
+      const turns = []
+      const greeting = tavern.greetingOf(card.sections)
+      if (greeting !== '') turns.push({ who: cardName === '' ? 'TA' : cardName, text: greeting })
+      const now = tavernStamp()
+      const data = {
+        id,
+        card: rel,
+        card_name: cardName,
+        world: world.rel,
+        world_name: world.name,
+        created_at: now,
+        updated_at: now,
+        turns: turns.length,
+      }
+      const saved = await tavern.writeChat(ws, id, data, turns)
+      if (saved.ok !== true) return saved
+      return { ok: true, id, path: saved.path, card: rel, card_name: cardName, world: world.rel, world_name: world.name, turns }
+    },
+
+    /** 酒馆：读这一场。 */
+    'tavern.get': async (body) => {
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '这一场找不到了' }
+      const got = await tavern.readChat(ws, id)
+      if (got.ok !== true) return got
+      return {
+        ok: true,
+        id,
+        card: String(got.data?.card ?? ''),
+        card_name: String(got.data?.card_name ?? ''),
+        world: String(got.data?.world ?? ''),
+        world_name: String(got.data?.world_name ?? ''),
+        created_at: String(got.data?.created_at ?? ''),
+        updated_at: String(got.data?.updated_at ?? ''),
+        turns: got.turns ?? [],
+        notes: got.notes ?? [],
+      }
+    },
+
+    /**
+     * 酒馆：我说一句，TA 说一句。
+     *
+     * 空正文 = 「让 TA 先说」（历史里已经有开场白时就是「让 TA 接着往下」）。
+     * 模型不回话时，用户刚打的那句**必须已经存下来**——不然他打完一段，
+     * 断网一次就全没了。
+     */
+    'tavern.say': async (body) => {
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '这一场找不到了' }
+      const got = await tavern.readChat(ws, id)
+      if (got.ok !== true) return got
+      const turns = Array.isArray(got.turns) ? got.turns.slice() : []
+      const said = String(body?.text ?? '').trim()
+      if (said !== '') turns.push({ who: '我', text: said })
+      if (turns.length > tavern.MAX_TURNS) {
+        return {
+          ok: false,
+          error: `这一场已经说了 ${turns.length} 句，太长了记不住前面。换个标题另开一场，接着往下聊。`,
+          turns,
+        }
+      }
+      const cardRel = String(got.data?.card ?? '')
+      const card = cardRel === '' ? { ok: false } : await store.readCard(ws, cardRel)
+      const persona = card.ok === true ? tavern.personaFromCard(card.data, card.sections) : { name: '', text: '' }
+      const cardName = persona.name !== '' ? persona.name : String(got.data?.card_name ?? '').trim()
+      const worldNotes = []
+      const worldRel = String(got.data?.world ?? '')
+      if (worldRel !== '') {
+        const world = await store.readCard(ws, worldRel)
+        if (world.ok === true) {
+          const entries = core.parseWorldEntries(world.sections)
+          worldNotes.push(...tavern.pickWorldEntries(entries, tavern.recentContextText(turns)))
+        }
+      }
+      const system = tavern.buildRoleplaySystem({ cardName, persona: persona.text, worldNotes })
+      const user = tavern.buildRoleplayUser({ cardName, turns })
+      const called = await callModel(ctx, { system, user, model: body?.model })
+      const now = tavernStamp()
+      if (called.ok !== true) {
+        // 我那句先存下来：TA 没回话，不代表我说的话可以丢
+        const kept = await tavern.writeChat(ws, id, { ...got.data, turns: turns.length, updated_at: now }, turns)
+        return {
+          ok: false,
+          error: `TA 没接上话：${called.error ?? '过一会儿再试一次'}`,
+          kept: kept.ok === true,
+          turns,
+        }
+      }
+      const reply = tavernCleanReply(called.text, cardName)
+      if (reply !== '') turns.push({ who: cardName === '' ? 'TA' : cardName, text: reply })
+      const saved = await tavern.writeChat(ws, id, { ...got.data, card_name: cardName, turns: turns.length, updated_at: now }, turns)
+      if (saved.ok !== true) {
+        return { ok: false, error: `TA 回了，但这一场没存下来：${saved.error}`, reply, turns }
+      }
+      return { ok: true, id, reply, turns, used: { card: card.ok === true, world: worldNotes.length } }
+    },
+
+    /** 酒馆：这一场不要了。 */
+    'tavern.delete': async (body) => {
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '这一场找不到了' }
+      return await tavern.deleteChat(ws, id)
+    },
   }
+}
+
+/** 酒馆的时间戳：`2026-10-24 16:11`。本地时间，字典序就是时间序。 */
+function tavernStamp(now = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${store.localDate(now)} ${pad(now.getHours())}:${pad(now.getMinutes())}`
+}
+
+/**
+ * 找到这一场该用哪本世界书。
+ *
+ * body 里给的可以是路径、也可以是 id；都没给就看卡上写的 world。
+ * 找不到不算失败——酒馆里没有世界书也能聊，只是 TA 不知道外面的事。
+ * @returns {Promise<{ok: true, rel: string, name: string}>}
+ */
+async function resolveTavernWorld(ws, want, cardWorld) {
+  const pick = want !== '' ? want : cardWorld
+  if (pick === '' || pick === 'reality') return { ok: true, rel: '', name: '' }
+  if (pick.endsWith('.md')) {
+    const got = await store.readCard(ws, pick)
+    if (got.ok !== true) return { ok: true, rel: '', name: '' }
+    return { ok: true, rel: pick, name: String(got.data?.name ?? '') }
+  }
+  const all = await store.listAll(ws)
+  const hit = (all.worlds ?? []).find((w) => String(w.id) === pick)
+  if (hit === undefined) return { ok: true, rel: '', name: '' }
+  return { ok: true, rel: String(hit.path), name: String(hit.name ?? pick) }
+}
+
+/**
+ * 模型有时候还是会写「张三：」前缀，或者把整段包进引号。
+ * 这里削掉最外层那一点，别让界面上一句话变成两行重复。
+ */
+function tavernCleanReply(text, cardName) {
+  let out = String(text ?? '').trim()
+  if (out === '') return ''
+  const name = cardName.trim()
+  const prefixes = name === '' ? ['TA：', 'TA:'] : [`${name}：`, `${name}:`, 'TA：', 'TA:']
+  let again = true
+  while (again) {
+    again = false
+    for (const prefix of prefixes) {
+      if (out.startsWith(prefix)) {
+        out = out.slice(prefix.length).trim()
+        again = true
+      }
+    }
+  }
+  if (out.length > 1 && /^["“'].*["”']$/s.test(out)) out = out.slice(1, -1).trim()
+  return out
 }
 
 /**
@@ -2421,12 +2615,40 @@ export function apply(ctx, config) {
         } catch (error) {
           // 兜底 catch 也不能把 EISDIR 这类英文原样漏到界面上。
           console.error('[lifecard] 路由没做成：', error)
+          // 但光往 stdout 打是不够的：桌面版把这个进程的输出丢进 /dev/null，
+          // 出过一次「分析这一步永远 500」的事故，界面上只有一句人话，
+          // 日志里什么都没有，只能靠猜。所以再往一个文件里落一份。
+          noteRouteError(method, error).catch(() => {})
           writeJson(res, 500, { ok: false, error: { code: 'internal', message: humanizeHostError(error) } })
         }
       },
     }),
     'dsh-lifecard: /api/dsh-lifecard routes',
   )
+}
+
+/**
+ * 把「某个接口抛了什么」记到文件里，供事后查。
+ *
+ * 只在出错时写，一行一条，最多留 200KB：这不是运行日志，是事故现场。
+ * 位置用 os.tmpdir()：这台机器上桌面版的 stdout 是 /dev/null，写文件是唯一
+ * 能事后拿到的线索，而临时目录不用申请权限、也不会混进用户的档案。
+ */
+async function noteRouteError(method, error) {
+  try {
+    const file = path.join(os.tmpdir(), 'dsh-lifecard-errors.log')
+    const when = new Date().toISOString()
+    const stack = error !== null && typeof error === 'object' && typeof error.stack === 'string'
+      ? error.stack
+      : String(error)
+    const line = `\n[${when}] ${method} :: ${stack}\n`
+    let keep = ''
+    try {
+      const st = await fs.stat(file)
+      if (st.size > 200 * 1024) keep = (await fs.readFile(file, 'utf8')).slice(-60000)
+    } catch { /* 还没有这个文件，正常 */ }
+    await fs.writeFile(file, keep + line, 'utf8')
+  } catch { /* 连日志都写不了，那就别在日志上再抛一次 */ }
 }
 
 export { defaultWorkspace, buildApi, callModel, withTimeout, MODEL_TIMEOUT_MS }

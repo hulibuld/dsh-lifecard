@@ -575,5 +575,54 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   }
 }
 
+// ── 兜底 catch 要留下事发现场 ──────────────────────────────────────
+// 桌面版把插件进程的 stdout 丢进 /dev/null。出过一次「分析永远 500」的
+// 事故：界面上只有一句人话，日志里什么都没有，只能靠猜。所以兜底 catch
+// 除了回人话，还得把 stack 落一份到文件里。
+{
+  const logFile = path.join(tmpdir(), 'dsh-lifecard-errors.log')
+  let saved = ''
+  try { saved = await fs.readFile(logFile, 'utf8') } catch { /* 本来就没有 */ }
+  try { await fs.rm(logFile, { force: true }) } catch { /* 忽略 */ }
+
+  let handler = null
+  const ctxLog = {
+    webServer: { register: (spec) => { handler = spec.handler; return () => {} } },
+    reflect: { get: () => undefined },
+    effect: (fn) => { fn(); return () => {} },
+    logger: { warn: () => {} },
+    get: () => undefined,
+  }
+  // maxBodyMB 压到 1：发一份 1.5MB 的请求体，readBody 一定抛。
+  api.apply(ctxLog, { workspace: ws, maxBodyMB: 1 })
+  let status = 0
+  let text = ''
+  const res = {
+    writeHead: (code) => { status = code },
+    end: (b) => { text = String(b ?? '') },
+  }
+  const big = JSON.stringify({ pad: 'x'.repeat(1500 * 1024) })
+  const req = {
+    method: 'POST',
+    url: '/api/dsh-lifecard/state.get',
+    async *[Symbol.asyncIterator]() { yield Buffer.from(big) },
+    on: (event, fn) => { if (event === 'end') fn(); if (event === 'data') fn(Buffer.from(big)) },
+  }
+  await handler(req, res)
+  // 落日志是「别挡住回话」的写法（不 await），所以这里等一下文件落盘
+  await new Promise((r) => setTimeout(r, 60))
+  t('请求体太大时给 500，不是崩掉', status === 500, `${status} ${text.slice(0, 80)}`)
+  t('返回的还是人话，不是英文异常', /[\u4e00-\u9fa5]/.test(text), text.slice(0, 200))
+
+  let logged = ''
+  try { logged = await fs.readFile(logFile, 'utf8') } catch (e) { logged = '<读不到：' + e.message + '>' }
+  t('出错时把现场写进了文件', logged.includes('state.get'), logged.slice(0, 200))
+  t('文件里带着 stack（不是一句话）', /at .+:\d+:\d+/.test(logged), logged.slice(0, 300))
+
+  // 恢复现场：别把测试制造的这条留在那台机器的 /tmp 里
+  try { await fs.rm(logFile, { force: true }) } catch { /* 忽略 */ }
+  if (saved !== '') { try { await fs.writeFile(logFile, saved, 'utf8') } catch { /* 忽略 */ } }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
