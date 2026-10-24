@@ -3396,6 +3396,17 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
   const [conceptDraft, setConceptDraft] = useState(null)
   const shownConcept = conceptDraft !== null ? conceptDraft : concept
 
+  // 打字打到一半、没点「存一下」就离开这一页（点返回、切到别人的卡）：
+  // 输入框的 onBlur 一般能赶上，但按钮点下去和卸载谁先谁后不保证。
+  // 卸载时补存一次，别让刚想出来的那句话白写。
+  const conceptDraftRef = useRef(null)
+  conceptDraftRef.current = conceptDraft
+  useEffect(() => () => {
+    const pending = conceptDraftRef.current
+    if (pending === null || pending === undefined) return
+    call('concept.set', { concept: pending }).catch(() => {})
+  }, [])
+
   const flushConcept = async (value) => {
     const next = value ?? conceptDraft ?? concept
     setConceptDraft(null)

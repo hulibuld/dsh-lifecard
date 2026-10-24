@@ -161,9 +161,10 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:<端口>/api/d
 
 1. **两个审查子代理只活下来一个。** 第一轮并行开的两个（一个审前端交互、一个审宿主侧）里，审前端那个上下文耗尽、无任何产出（这台机器上并行开多个子代理很容易这样，见第 8 节）。第二轮改成**串行**：冻结 `git archive` 快照 → 先让宿主侧那个跑完 → 再开前端那个。下次照这个做法。
 2. **`callModel` 的 abort 修复没有自动化测试。** `MODEL_TIMEOUT_MS = 150000`，测超时要把这个常量做成可注入的才行，暂时只做了代码审查 + 人工推理。要补的话：给 `callModel` 加个内部参数或让 `withTimeout` 的毫秒数走 config。
-3. **`job.evaluate` 的 `saveFail` 没有端到端测试。** 它要真的让模型跑一次并让写盘失败，成本高；现在靠 `jobs-test.mjs` 里同型函数（`saveEvaluation`）的返回值测试兜着。
-4. **`package.json` 的 `author` 和 `plugin/LICENSE`**（MIT，版权写 Yuzhou）是上一轮结束时加到工作区的，本次提交一起带上了。发 GitHub 前确认署名和版权年份要不要改。
-5. **`research/` 之外还有没有不该发布的文件**：`git ls-files | grep -v '^plugin/'` 看一下根目录那几个 docx / 策划书，用户明确说不发 `research/`，其余没表态。
+3. **`AnalyzeView` 的「你想让 TA 是什么样的人」补了个卸载补存**（`conceptDraftRef` + 空依赖 effect），这条也没有自动化测试覆盖——`render-all.mjs` 的假 React 不跑 effect，`draft-flush-test.mjs` 只白名单了 `CardForm`。要测就把那个文件的 `EFFECTED` 加上 `AnalyzeView`。
+4. **`job.evaluate` 的 `saveFail` 没有端到端测试。** 它要真的让模型跑一次并让写盘失败，成本高；现在靠 `jobs-test.mjs` 里同型函数（`saveEvaluation`）的返回值测试兜着。
+5. **`package.json` 的 `author` 和 `plugin/LICENSE`**（MIT，版权写 Yuzhou）是上一轮结束时加到工作区的，本次提交一起带上了。发 GitHub 前确认署名和版权年份要不要改。
+6. **`research/` 之外还有没有不该发布的文件**：`git ls-files | grep -v '^plugin/'` 看一下根目录那几个 docx / 策划书，用户明确说不发 `research/`，其余没表态。
 
 ### 要不要修，可以问用户（P2，别自己拍板）
 - `策划书.md` / `策划书-第二部分.md` 要不要随包发布（`research/` 用户已明确不发布，已在 `.gitignore` 里）。
