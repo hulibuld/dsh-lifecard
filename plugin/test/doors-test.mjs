@@ -203,5 +203,57 @@ console.log('\n=== 3. 没选过门时按真实人物算（老用户直接进首�
   t('默认那扇门是真实人物记录', words.includes('下一步') || words.includes('认识的人') || words.includes('还没有档案'), words.slice(0, 200))
 }
 
+console.log('\n=== 4. 列表里能直接删卡（不用先进去滚到底）===')
+{
+  // 真事故：建错几张（比如「复制一份来演」试了几次），想删就得先点开卡、
+  // 滚到最下面才找得到删除——列表里完全删不了。
+  const listing = {
+    ok: true, workspace: '/tmp/x', errors: [], materials: [], worlds: [], proposals: [], avatars: {},
+    cards: [
+      { id: 'lin', path: 'people/lin.card.md', name: '林小雨', kind: 'fictional', coverage: 40, tags: [] },
+      { id: 'mama', path: 'people/mama.card.md', name: '妈妈', kind: 'real', relation: '母亲', coverage: 62, tags: [] },
+    ],
+  }
+  const calls = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), body: String(init?.body ?? '') })
+    return { ok: true, json: async () => ({ ok: true, exists: true, workspace: '/tmp/x', relations: [], cards: [], materials: [], worlds: [], proposals: [], errors: [] }) }
+  }
+  try {
+    const tree = renderRoot({ ...base('home'), 2: listing })
+    // 每张卡旁边都得有一个「删掉「X」」的按钮
+    const trash = findNodes(tree, (n) => n.type === 'button' && typeof n.props?.title === 'string' && n.props.title.startsWith('删掉'))
+    t('列表里每张卡都有删除按钮', trash.length === 2, trash.map((b) => b.props.title))
+    t('删除按钮带名字，不会删错人', trash.some((b) => b.props.title.includes('林小雨')) && trash.some((b) => b.props.title.includes('妈妈')), trash.map((b) => b.props.title))
+
+    // 点一下：先问一句，问的话要说清后果
+    const asked = []
+    const realConfirm = fakeWindow.confirm
+    fakeWindow.confirm = (msg) => { asked.push(String(msg)); return true }
+    const lin = trash.find((b) => b.props.title.includes('林小雨'))
+    lin.props.onClick({ stopPropagation() {} })
+    await new Promise((r) => setTimeout(r, 40))
+    t('删之前先问一句', asked.length === 1, asked)
+    t('问的时候说清卡里的东西一起没', asked[0].includes('一起删掉'), asked[0])
+    t('并且说清材料不受影响', asked[0].includes('材料是另一份文件'), asked[0])
+    const del = calls.find((c) => c.url.includes('card.delete'))
+    t('真的发了删除请求', del !== undefined, calls.map((c) => c.url.split('/').pop()))
+    t('删的是点的那一张，不是第一张', String(del?.body ?? '').includes('people/lin.card.md'), del?.body)
+
+    // 点「取消」就什么都不做
+    fakeWindow.confirm = () => false
+    calls.length = 0
+    const again = renderRoot({ ...base('home'), 2: listing })
+    const lin2 = findNodes(again, (n) => n.type === 'button' && typeof n.props?.title === 'string' && n.props.title.includes('林小雨'))[0]
+    lin2.props.onClick({ stopPropagation() {} })
+    await new Promise((r) => setTimeout(r, 30))
+    t('点取消就一个请求都不发', calls.filter((c) => c.url.includes('card.delete')).length === 0, calls.map((c) => c.url.split('/').pop()))
+    fakeWindow.confirm = realConfirm
+  } finally {
+    globalThis.fetch = realFetch
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

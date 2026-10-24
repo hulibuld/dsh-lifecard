@@ -978,6 +978,27 @@ function LifeCardTab(props) {
     setView(next === 'novel' ? VIEWS.novel : next === 'tavern' ? VIEWS.tavern : VIEWS.home)
   }
 
+  /**
+   * 删一张卡。
+   *
+   * 先问一句：删卡是不可逆的（后台只写墓碑，界面上收不回来）。
+   * 问的时候要说清「哪些东西会跟着没」——关系史、口癖这些都在卡里，
+   * 而材料是另一份文件，不会跟着删。
+   */
+  const deleteCard = async (card) => {
+    const name = String(card?.name ?? '').trim() === '' ? '这张卡' : `「${card.name}」`
+    const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
+      ? window.confirm(`确定删掉${name}吗？\n\n卡里写的东西（关系史、口癖、能力…）一起删掉，界面上收不回来。\n材料是另一份文件，不受影响。`)
+      : true
+    if (ok !== true) return
+    try {
+      const r = await call('card.delete', { path: card?.path, reason: '用户在列表里删掉' })
+      if (r?.ok !== true) { setError(r?.error ?? '没删掉'); return }
+      flash(`删掉了${name}`, 'ok')
+      await refresh()
+    } catch (e) { setError(humanizeError(e)) }
+  }
+
   const deleteMaterial = async (m) => {
     const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
       ? window.confirm(`确定删掉「${m.name}」吗？\n\n删了就真没了，AI 以后也读不到这一份。`)
@@ -1188,7 +1209,7 @@ function LifeCardTab(props) {
         // 直接退回首页，用户点了没反应，还以为坏了。现在把清单单独摊开。
         return activeCard === null
           ? proposal === null
-            ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern })
+            ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard })
             : h('div', { className: 'lc-pad lc-stack' },
                 proposal.about === undefined || String(proposal.about).trim() === ''
                   ? null
@@ -1247,7 +1268,7 @@ function LifeCardTab(props) {
         })
       case VIEWS.world:
         return activeWorld === null
-          ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern })
+          ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard })
           : h(WorldView, {
               world: activeWorld,
               listing,
@@ -1258,7 +1279,7 @@ function LifeCardTab(props) {
       case VIEWS.jobs:
         return h(JobsView, { onBack: () => setView(VIEWS.home), flash })
       default:
-        return h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern })
+        return h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard })
     }
   }
 
@@ -1450,7 +1471,7 @@ function DoorsView({ onPick, state }) {
   )
 }
 
-function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial, chats, onOpenChat, onForkCard }) {
+function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial, chats, onOpenChat, onForkCard, onDeleteCard }) {
   // 这扇门是不是「真实人物记录」。写小说、酒馆那两扇门里不该出现
   // 「贴一份招聘说明」「从记忆里认人」这类动作——那是记录真人才用得上的。
   const isReal = mode !== 'novel' && mode !== 'tavern'
@@ -1608,7 +1629,7 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
       ? (isReal
           ? h('div', null,
               h(GroupTitle, { icon: 'people' }, `认识的人 · ${byKind.real.length}`),
-              h('div', { className: 'lc-stack' }, byKind.real.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id] }))),
+              h('div', { className: 'lc-stack' }, byKind.real.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id], onDelete: onDeleteCard }))),
             )
           // 同一个文件夹里可能两样都有。这扇门不直接铺开真人，但也不能装作没有——
           // 用户会以为卡丢了。收起来一行，想看再展开，展开后是「复制一份来演」。
@@ -1643,14 +1664,14 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
     byKind.fic.length > 0
       ? h('div', null,
           h(GroupTitle, { tone: 'interview', icon: 'book' }, `${isReal ? '虚构角色' : (mode === 'tavern' ? '可以拿来演的角色' : '角色')} · ${byKind.fic.length}`),
-          h('div', { className: 'lc-stack' }, byKind.fic.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id] }))),
+          h('div', { className: 'lc-stack' }, byKind.fic.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id], onDelete: onDeleteCard }))),
         )
       : null,
 
     byKind.other.length > 0
       ? h('div', null,
           h(GroupTitle, { tone: 'analyze', icon: 'list' }, `其他 · ${byKind.other.length}`),
-          h('div', { className: 'lc-stack' }, byKind.other.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id] }))),
+          h('div', { className: 'lc-stack' }, byKind.other.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id], onDelete: onDeleteCard }))),
         )
       : null,
 
@@ -1743,8 +1764,21 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
   )
 }
 
-function CardRow({ card, onOpen, photo }) {
-  return h('button', { className: 'lc-card-item', onClick: () => onOpen(card), type: 'button' },
+function CardRow({ card, onOpen, photo, onDelete }) {
+  // 整行是一个 button（点哪儿都能打开）。要再塞一个「删」进去，就不能
+  // 在 button 里放 button——浏览器会把它们当兄弟节点拆开，React 也会警告。
+  // 所以行改成 div，左边一块可点区域负责打开，右边单独一个真 button 负责删。
+  return h('div', { className: 'lc-card-item', style: { display: 'flex', alignItems: 'center', gap: 8, cursor: 'default' } },
+    h('button', {
+      type: 'button',
+      className: 'lc-row',
+      onClick: () => onOpen(card),
+      style: {
+        flex: '1 1 auto', minWidth: 0, background: 'transparent', border: 0,
+        padding: 0, textAlign: 'left', cursor: 'pointer', font: 'inherit', color: 'inherit',
+        display: 'flex', alignItems: 'center', gap: 8,
+      },
+    },
     h(Avatar, { name: card.name, kind: card.kind, photo }),
     h('div', { className: 'lc-grow' },
       h('div', { className: 'lc-row' },
@@ -1763,6 +1797,16 @@ function CardRow({ card, onOpen, photo }) {
         ? h('div', { className: 'lc-wrap', style: { marginTop: 5 } }, card.tags.slice(0, 4).map((t) => h(Tag, { key: t }, t)))
         : null,
     ),
+    ),
+    // 列表里直接能删：以前必须先点开卡、滚到最底下才找得到「删掉这张卡」，
+    // 建错一张（比如「复制一份来演」试了几次）就得来回点好几屏。
+    onDelete === undefined ? null : h('button', {
+      type: 'button',
+      className: 'lc-btn ghost sm',
+      title: `删掉「${card.name ?? '这张卡'}」`,
+      onClick: (e) => { e?.stopPropagation?.(); onDelete(card) },
+      style: { flex: '0 0 auto' },
+    }, h(Icon, { name: 'trash', size: 13 })),
   )
 }
 
