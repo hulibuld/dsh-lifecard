@@ -943,16 +943,19 @@ function LifeCardTab(props) {
   // render-all 里那些按号码摆状态的地方就全错位了。
   // 这三处（首页两种形态 + 世界那一页）原本各抄了一份一模一样的处理，
   // 而且都不接异常：后台一断，点「删掉」「检查一下」就是毫无反应。
-  // 三扇门：真实人物 / 写小说 / 酒馆。门不是另存一份状态，而是「当前在哪一屏」
-  // 推出来的——首页就是真实人物那扇门，写小说、酒馆各占一屏。这样少一个
-  // 要维护的开关，也不会出现「门选中了但视图没跟上」的两份真相。
-  const mode = view === VIEWS.novel ? 'novel' : (view === VIEWS.tavern || view === VIEWS.tavernChat) ? 'tavern' : 'real'
 
   // 正在聊的那一场。null = 还没开。
   // 这个 useState 故意放在所有别的 hook 之后：前面那些槽位被 render-all
   // 按号码摆状态用着，中间插一个会让那一整排全部错位。
   const [chat, setChat] = useState(null)
   const [chats, setChats] = useState([])
+  // 「我现在在哪扇门里」必须自己记住，不能靠「当前在哪一屏」去猜。
+  // 以前 mode 是从 view 推的：一进「聊着建」，当前屏就变成 interview，
+  // 于是不管从哪扇门进来，都退回 real——三扇门点进去全都说
+  // 「你在记录一个现实里的人」。子页面不是门，门要跟着人走。
+  const [door, setDoor] = useState('real')
+  // 门自己的那两屏直接说了算；其余屏（聊着建、卡片、分析…）沿用上次选的门。
+  const mode = view === VIEWS.novel ? 'novel' : (view === VIEWS.tavern || view === VIEWS.tavernChat) ? 'tavern' : door
   // 回到酒馆那两屏就重新拿一遍说过的场次：刚说完、刚删完再回来，
   // 还挂着进这一屏之前的旧列表，用户会以为刚才那一步没生效。
   useEffect(() => {
@@ -965,6 +968,7 @@ function LifeCardTab(props) {
   }, [view])
 
   const pickDoor = (next) => {
+    setDoor(next)
     setError(null)
     setProposal(null)
     setActiveCard(null)
@@ -1350,34 +1354,44 @@ const DOORS = [
   {
     id: 'real', icon: 'people', tone: 'interview',
     title: '真实人物记录',
-    desc: '身边的人：他做过什么、怎么说话、你们之间发生过什么。访谈、材料、找工作都在这扇门里。',
+    desc: '身边的人：他做过什么、怎么说话、你们之间发生过什么。',
+    bullets: ['聊着建，把他说的话记下来', '贴材料，让 AI 读出能核实的内容', '找工作：贴招聘说明、练面试'],
   },
   {
     id: 'novel', icon: 'book', tone: 'import',
     title: '写小说',
     desc: '虚构的角色和世界：先把人立起来，再一章一章往下写。',
+    bullets: ['立角色：性格、口癖、绝不会做的事', '写世界：地方、规矩、里面还有谁'],
   },
   {
     id: 'tavern', icon: 'chat', tone: 'analyze',
-    title: '酒馆（角色扮演）',
-    desc: '拿一张角色卡，和 TA 你一句我一句地演。世界书决定场景和规矩。',
+    title: '酒馆',
+    desc: '拿一张角色卡，和 TA 你一句一句地演。',
+    bullets: ['挑一张角色卡就开演', '拿现实里的人来演也行（复制一份，原卡不动）'],
   },
 ]
 
 function DoorsView({ onPick, state }) {
   const workspace = String(state?.workspace ?? '')
-  // 三扇门是这一屏唯一的动作，做成大卡片：图标一块色、标题一行、说明两行。
-  // 以前是三根细横栏，上面一大片空，看着像排在设置里的一列选项，
-  // 不像「选一个开始」。
+  // 三扇门是进这个插件之后唯一的动作，所以让它们真的占满一屏：
+  // 竖着排三块大卡，每块自己撑开、中间留白，而不是一列细横栏吊在顶上。
+  // 以前那三条加起来还没有一屏的三分之一高，底下全是空的。
   const tint = {
     real: { fg: 'var(--lc-interview)', bg: 'var(--lc-interview-soft)', icon: 'people' },
     novel: { fg: 'var(--lc-import)', bg: 'var(--lc-import-soft)', icon: 'book' },
     tavern: { fg: 'var(--lc-analyze)', bg: 'var(--lc-analyze-soft)', icon: 'chat' },
   }
-  return h('div', { className: 'lc-pad lc-stack', style: { gap: 12, paddingTop: 14 } },
-    h('div', null,
-      h('h2', { style: { margin: '2px 0 0', fontSize: 19 } }, '你要用哪个？'),
-      h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '先选一扇门。进去之后随时能换——卡和世界书都在同一个文件夹里，不会丢。'),
+  return h('div', {
+    className: 'lc-pad',
+    style: {
+      // 撑满 header 之外的全部高度：三块门均分，看不出「上面一小坨、下面一大片白」
+      display: 'flex', flexDirection: 'column', gap: 10,
+      minHeight: '100%', boxSizing: 'border-box',
+    },
+  },
+    h('div', { style: { flex: '0 0 auto', paddingBottom: 2 } },
+      h('h2', { style: { margin: '2px 0 0', fontSize: 20 } }, '你要用哪个？'),
+      h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '选一扇门进去。随时能换——卡和世界书都在同一个文件夹里。'),
     ),
     DOORS.map((door) => {
       const t = tint[door.id] ?? tint.real
@@ -1387,27 +1401,37 @@ function DoorsView({ onPick, state }) {
         className: 'lc-door',
         onClick: () => onPick(door.id),
         style: {
-          display: 'flex', alignItems: 'flex-start', gap: 12, width: '100%',
-          padding: '16px 14px', textAlign: 'left', cursor: 'pointer',
-          border: '1px solid var(--lc-line)', borderRadius: 14, background: 'var(--lc-panel)',
-          boxShadow: 'var(--lc-shadow)',
+          // flex:1 = 三块把剩下的高度均分；minHeight 保证窄窗口下也不塌成一条
+          flex: '1 1 0', minHeight: 104,
+          display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 8,
+          width: '100%', padding: '16px 16px', textAlign: 'left', cursor: 'pointer',
+          border: '1px solid var(--lc-line)', borderRadius: 16,
+          background: 'var(--lc-panel)', boxShadow: 'var(--lc-shadow)',
+          font: 'inherit', color: 'inherit',
         },
       },
-        h('div', {
-          style: {
-            flex: '0 0 auto', width: 46, height: 46, borderRadius: 12,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: t.bg, color: t.fg,
-          },
-        }, h(Icon, { name: t.icon, size: 24 })),
-        h('div', { className: 'lc-stack', style: { flex: '1 1 auto', gap: 5, minWidth: 0 } },
-          h('div', { style: { fontSize: 15.5, fontWeight: 650 } }, door.title),
-          h('div', { className: 'lc-meta', style: { lineHeight: 1.65 } }, door.desc),
-          h('div', { className: 'lc-meta', style: { color: t.fg, fontWeight: 600 } }, '进这扇门 →'),
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+          h('div', {
+            style: {
+              flex: '0 0 auto', width: 42, height: 42, borderRadius: 12,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: t.bg, color: t.fg,
+            },
+          }, h(Icon, { name: t.icon, size: 22 })),
+          h('div', { style: { fontSize: 17, fontWeight: 700, minWidth: 0 } }, door.title),
+          h('div', { style: { flex: '1 1 auto' } }),
+          h('div', { style: { color: t.fg, fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap' } }, '进去 →'),
         ),
+        h('div', { className: 'lc-meta', style: { lineHeight: 1.6 } }, door.desc),
+        (door.bullets ?? []).length === 0 ? null : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2 } },
+          door.bullets.map((line, i) => h('div', {
+            key: i,
+            className: 'lc-meta',
+            style: { display: 'flex', gap: 6, lineHeight: 1.55 },
+          }, h('span', { style: { color: t.fg } }, '·'), h('span', null, line)))),
       )
     }),
-    workspace === '' ? null : h('div', { className: 'lc-meta', style: { marginTop: 4 } }, `档案在：${workspace}`),
+    workspace === '' ? null : h('div', { className: 'lc-meta', style: { flex: '0 0 auto', paddingTop: 2 } }, `档案在：${workspace}`),
   )
 }
 
@@ -1415,6 +1439,9 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
   // 这扇门是不是「真实人物记录」。写小说、酒馆那两扇门里不该出现
   // 「贴一份招聘说明」「从记忆里认人」这类动作——那是记录真人才用得上的。
   const isReal = mode !== 'novel' && mode !== 'tavern'
+  // 「聊着建」那个入口的配色跟着门走：现实紫、小说蓝、酒馆黄。
+  // 光靠标题那句字还不够，颜色一眼就分得开。
+  const fictionActionTone = mode === 'tavern' ? 'analyze' : 'import'
   const [q, setQ] = useState('')
   const cards = listing?.cards ?? []
   const filtered = useMemo(() => {
@@ -1492,39 +1519,30 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
         h('h3', null, isReal ? '还没有档案' : '还什么都没有'),
         h('div', { className: 'lc-meta' }, '选一个开始的方式，随时可以换别的：'),
       ),
-      isReal
-        ? h(Action, {
-            tone: 'interview', icon: 'chat',
-            title: '陪我聊聊，边聊边建',
-            desc: '它会问几个具体的问题。答不上来就跳过，一句也不想说也行。',
-            onClick: () => onNavigate(VIEWS.interview),
-          })
-        : h(Action, {
-            key: 'new',
-            tone: 'import', icon: 'pencil',
-            title: '先立一个人',
-            desc: '空白表，把这个人是谁、怎么说话、想要什么写下来。',
-            onClick: () => onNavigate(VIEWS.newCard),
-          }),
+      // 三扇门第一块都给「聊着建」：那是这个插件最好上手的入口。
+      // 差别只在说什么话——建真人问的是「他是我的什么人」，
+      // 建角色问的是「TA 一张嘴什么感觉」。
+      h(Action, {
+        tone: fictionActionTone,
+        icon: 'chat',
+        title: isReal ? '陪我聊聊，边聊边建' : (mode === 'tavern' ? '聊着立一个能演的角色' : '聊着立一个小说角色'),
+        desc: isReal
+          ? '它会问几个具体的问题。答不上来就跳过，一句也不想说也行。'
+          : '先问 TA 怎么说话、什么情况下会变脸，比填空白表快。',
+        onClick: () => onNavigate(VIEWS.interview),
+      }),
       h(Action, {
         tone: 'import', icon: 'import',
         title: '把已有的角色卡拖进来',
         desc: '别人给你的角色卡，图片或导出的文件都行，放进来就能看。',
         onClick: () => onNavigate(VIEWS.import),
       }),
-      isReal
-        ? h(Action, {
-            icon: 'pencil',
-            title: '我自己填',
-            desc: '一张空表，一个字段一个字段地写。',
-            onClick: () => onNavigate(VIEWS.newCard),
-          })
-        : h(Action, {
-            icon: 'book',
-            title: '先写一个世界',
-            desc: '地方、规矩、里面还有谁——角色的话才有地方可说。',
-            onClick: () => onNavigate(VIEWS.import),
-          }),
+      h(Action, {
+        icon: 'pencil',
+        title: '我自己填',
+        desc: '一张空表，一个字段一个字段地写。',
+        onClick: () => onNavigate(VIEWS.newCard),
+      }),
     )
   }
 
@@ -1536,7 +1554,7 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
     ),
 
     h('div', { className: 'lc-row', style: { marginTop: 2 } },
-      h(Btn, { tone: 'interview', size: 'sm', icon: 'chat', onClick: () => onNavigate(VIEWS.interview) }, '聊着建'),
+      h(Btn, { tone: isReal ? 'interview' : fictionActionTone, size: 'sm', icon: 'chat', onClick: () => onNavigate(VIEWS.interview) }, isReal ? '聊着建' : '聊着立一个人'),
       h(Btn, { tone: 'import', size: 'sm', icon: 'import', onClick: () => onNavigate(VIEWS.import) }, '导入'),
       isReal
         ? h(Btn, { tone: 'analyze', size: 'sm', icon: 'person', onClick: () => onNavigate(VIEWS.memory), title: '从你写过的记忆里认出身边的人' }, '从记忆里认人')
