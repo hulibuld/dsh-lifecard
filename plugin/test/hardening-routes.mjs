@@ -472,6 +472,41 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   t('分析本身跑通（假模型回了合法 JSON）', r.ok === true, r.error)
 }
 
+// ── llm.stream 的两种形状都得认 ────────────────────────────────
+// 真宿主上 `llm.stream()` 有时**直接返回一个已经建好的 handle**（流本身），
+// 不是 Promise。早先这里假定它一定是 Promise，于是对那种形状调 .then 必抛
+// `TypeError: pending.then is not a function`——「整理进卡里」在 0.02 秒内
+// 500，而本地所有假 llm 都写成 `async () => (async function*(){…})()`
+// （永远 thenable），所以这条路上翻了车也测不出来。
+{
+  const answer = '{"items":[],"gaps":[],"questions":[]}'
+  const handleStream = () => (async function* () {
+    yield { type: 'text-delta', text: answer }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })()
+
+  // 形状一：直接给 handle（同步返回值，没有 .then）
+  const directLlm = {
+    listProviders: async () => [{ provider: 'raccoon', models: [{ id: 'sn-deepseek-v4-1-flash-1017' }] }],
+    listModels: async () => [],
+    stream: () => handleStream(),
+  }
+  const directTable = api.buildApi({ ...ctx, get: (n) => (n === 'llm' ? directLlm : undefined) }, async () => ws, { workspace: ws })
+  const direct = await directTable['analyze.run']({ about: 'jia', name: '甲' })
+  t('stream 直接给 handle 时也跑得通', direct.ok === true, direct.error)
+  t('stream 直接给 handle 时能读出回复', direct.ok === true && direct.json !== undefined && direct.md !== undefined, Object.keys(direct ?? {}))
+
+  // 形状二：给 Promise<handle>（本地假 llm 一直是这一种，别改坏了）
+  const promiseLlm = {
+    listProviders: async () => [{ provider: 'raccoon', models: [{ id: 'sn-deepseek-v4-1-flash-1017' }] }],
+    listModels: async () => [],
+    stream: async () => handleStream(),
+  }
+  const promiseTable = api.buildApi({ ...ctx, get: (n) => (n === 'llm' ? promiseLlm : undefined) }, async () => ws, { workspace: ws })
+  const promised = await promiseTable['analyze.run']({ about: 'jia', name: '甲' })
+  t('stream 给 Promise 时也跑得通', promised.ok === true, promised.error)
+}
+
 // ── 「上次选的文件夹」要记得住 ──────────────────────────────────
 // 以前 workspace.init 只改内存里的 config（`settings.workspace = ws`），
 // 一个字节都没落盘：重启之后回落 ~/LifeCard，第二天打开又是「先挑一个文件夹」，

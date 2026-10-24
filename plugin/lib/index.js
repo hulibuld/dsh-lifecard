@@ -331,12 +331,22 @@ async function callModel(ctx, input) {
         temperature: 0.2,
         maxTokens: 4000,
       })
-      // withTimeout 是 Promise.race：超时是在**赋值之前**抛出来的，那时候
-      // handle 还是 null，catch 里的 abort 就永远打不中，被丢下的那条请求
-      // 会一直挂着占连接和配额。所以先挂一个 then，把它真正交出来的 handle
-      // 接住——不管我们来不来得及等。
-      pending.then((h) => { if (handle === null) handle = h }, () => {})
-      handle = await withTimeout(pending, MODEL_TIMEOUT_MS, 'AI ')
+      // 宿主这边 `llm.stream` 有时直接返回一个已经建好的 handle（流本身），
+      // 有时返回 Promise<handle>。**两种都得认**：早先这里假定它一定是 Promise，
+      // 于是对真宿主上「直接给 handle」的那一种调 .then 就抛
+      // `TypeError: pending.then is not a function`——「整理进卡里」每次都
+      // 在 0.02 秒内 500，而这条路上其它分支（本地假 llm）全测不出来。
+      if (pending !== null && pending !== undefined && typeof pending.then === 'function') {
+        // withTimeout 是 Promise.race：超时是在**赋值之前**抛出来的，那时候
+        // handle 还是 null，catch 里的 abort 就永远打不中，被丢下的那条请求
+        // 会一直挂着占连接和配额。所以先挂一个 then，把它真正交出来的 handle
+        // 接住——不管我们来不来得及等。
+        const waiting = pending
+        waiting.then((h) => { if (handle === null) handle = h }, () => {})
+        handle = await withTimeout(waiting, MODEL_TIMEOUT_MS, 'AI ')
+      } else {
+        handle = pending
+      }
       const text = await withTimeout(collectStream(handle), MODEL_TIMEOUT_MS, 'AI ')
       if (text !== '') return { ok: true, text, model: `${candidate.provider}/${candidate.model}`, attempts }
       attempts.push(`${candidate.provider}/${candidate.model}: 空响应`)
@@ -347,7 +357,7 @@ async function callModel(ctx, input) {
         try { if (typeof h?.abort === 'function') h.abort() } catch { /* 断不掉就算了 */ }
       }
       if (handle !== null) stop(handle)
-      else if (pending !== null) pending.then(stop, () => {})
+      else if (pending !== null && pending !== undefined && typeof pending.then === 'function') pending.then(stop, () => {})
       attempts.push(`${candidate.provider}/${candidate.model}: ${String(error?.message ?? error)}`)
     }
   }
