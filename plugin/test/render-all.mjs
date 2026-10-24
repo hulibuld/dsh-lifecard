@@ -1685,5 +1685,83 @@ for (const [label, tree] of [
   t('没说过的时候不出现空的场次栏', !text.includes('说过的场次'), text.slice(0, 200))
 }
 
+// ── 2026-10-24 第二轮：门做大了、酒馆里真人卡收起、聊着建按门分题 ──────────
+{
+  const doors = expand(renderRoot('进门那一屏（三扇门都是大卡）', base('doors')))
+  const doorText = textOf(doors)
+  const doorJson = JSON.stringify(doors)
+  t('进门那一屏有三句「进这扇门」', (doorText.match(/进这扇门/g) ?? []).length === 3, [doorText.slice(0, 300), (doorText.match(/进这扇门/g) ?? []).length])
+  t('三扇门名字都在', ['真实人物记录', '写小说', '酒馆（角色扮演）'].every((x) => doorText.includes(x)), doorText.slice(0, 200))
+  t('门卡是方的（不是一根细横栏）', doorJson.includes('"borderRadius":14'), doorJson.slice(0, 200))
+}
+
+{
+  // 酒馆门里真人卡默认收起：一进去就看见父母同学的一排卡，不太舒服，
+  // 也分不清哪些是拿来演的。收起不等于藏起来——得说清它们在哪儿。
+  const tree = expand(renderRoot('酒馆门首页（真人卡默认收起）', base('tavern')))
+  const text = textOf(tree)
+  t('酒馆门里说清真人卡有多少张', text.includes('现实里认识的人 · 2'), text.slice(0, 300))
+  t('默认不铺开真人卡', !text.includes('老张'), text.slice(0, 300))
+  t('有「展开看看」', text.includes('展开看看'), text.slice(0, 300))
+  t('说清完整记录在另一扇门', text.includes('真实人物记录'), text.slice(0, 300))
+  t('说清拿去演是复制一份', text.includes('复制一份独立的角色卡'), text.slice(0, 300))
+}
+
+{
+  // 展开之后：卡片列出来；点一张，问「要不要复制一份来演」。
+  const Home = seen.get('HomeView')
+  const props = {
+    state: STATE, listing: LISTING, mode: 'tavern', chats: [],
+    onOpen: () => {}, onOpenWorld: () => {}, onNavigate: () => {}, onProposal: () => {},
+    busy: '', onDoDoctor: () => {}, showMore: false, onMore: () => {},
+    intro: false, onIntroDone: () => {}, onMaterial: () => {}, onDeleteMaterial: () => {},
+    onOpenChat: () => {}, onForkCard: () => {},
+  }
+  const opened = expand(renderOne('酒馆门首页（展开真人卡）', Home, props, { 1: true }))
+  const openedText = textOf(opened)
+  t('展开之后列出真人卡', openedText.includes('老张'), openedText.slice(0, 300))
+  t('展开之后能收起', openedText.includes('先收起'), openedText.slice(0, 300))
+  // 点一张卡＝把「要不要复制」那句话问出来
+  const row = flatButtons(opened).find((b) => textOf(b).includes('老张'))
+  if (row === null || row === undefined) t('真人的卡能点', false, '没找到这一行')
+  else {
+    row.props.onClick()
+    const asked = expand(renderOne('酒馆门首页（问了要不要复制来演）', Home, props, { 1: true, 2: { name: '老张', path: 'cards/lao-zhang.card.md' } }))
+    const askedText = textOf(asked)
+    t('点真人的卡会先问一句', askedText.includes('复制一份来演'), askedText.slice(0, 400))
+    t('问的时候说清原来那张不会被改', askedText.includes('原来那张一个字都不会动'), askedText.slice(0, 400))
+    t('可以不复制', askedText.includes('先不'), askedText.slice(0, 400))
+  }
+}
+
+{
+  // 聊着建：从已有的卡点「接着聊」进来，不再问一遍「他是我的什么人」。
+  const Interview = seen.get('InterviewView')
+  const prep = expand(renderOne('接着聊（直接从卡上接着问）', Interview,
+    { state: STATE, listing: LISTING, preset: { id: 'mama', name: '妈妈' }, mode: 'real' }, { 0: 'prep' }))
+  const prepText = textOf(prep)
+  t('接着聊时标题带名字', prepText.includes('接着聊 妈妈'), prepText.slice(0, 300))
+  t('接着聊时说不问已经写过的', prepText.includes('已经写过的，就不再问了'), prepText.slice(0, 300))
+  t('接着聊时不再问「他是我的什么人」', !prepText.includes('他是我的什么人'), prepText.slice(0, 300))
+
+  // 现实那扇门：第一屏照旧先问关系
+  const real = expand(renderOne('边聊边建（现实里的人）', Interview,
+    { state: STATE, listing: LISTING, mode: 'real' }, { 0: 'pick' }))
+  const realText = textOf(real)
+  t('现实那扇门问「他是我的什么人」', realText.includes('他是我的什么人'), realText.slice(0, 300))
+  t('现实那扇门是紫色（interview）', JSON.stringify(real).includes('--lc-interview-soft'), realText.slice(0, 200))
+
+  // 酒馆那扇门：问的是「TA 叫什么」，不出现关系；配色换成 analyze
+  const fictional = expand(renderOne('边聊边立一个人（酒馆的角色）', Interview,
+    { state: STATE, listing: LISTING, mode: 'tavern' }, { 0: 'pick' }))
+  const ficText = textOf(fictional)
+  const ficJson = JSON.stringify(fictional)
+  t('虚构角色问「TA 叫什么」', ficText.includes('TA 叫什么'), ficText.slice(0, 300))
+  t('虚构角色不问「他是我的什么人」', !ficText.includes('他是我的什么人'), ficText.slice(0, 300))
+  t('虚构角色说清这不是现实里的人', ficText.includes('虚构角色') && ficText.includes('不是现实里的谁'), ficText.slice(0, 400))
+  t('虚构角色的颜色和现实不一样（analyze）', ficJson.includes('--lc-analyze-soft') && !ficJson.includes('--lc-interview-soft'), ficText.slice(0, 200))
+  t('虚构角色的第一问从怎么说话起', ficText.includes('TA 怎么说话'), ficText.slice(0, 400))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

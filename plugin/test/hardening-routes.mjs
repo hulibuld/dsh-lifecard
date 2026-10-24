@@ -624,5 +624,49 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   if (saved !== '') { try { await fs.writeFile(logFile, saved, 'utf8') } catch { /* 忽略 */ } }
 }
 
+console.log('\n=== card.fork：拿现实里的卡复制一份来演 ===')
+{
+  // 酒馆里「拿现实里的人来演」必须是一份独立的副本。共用同一个文件的话，
+  // 演一场把性格改成完全相反，现实那张记录就被改写了——这是这个功能
+  // 最容易出事的地方，所以按文件内容钉死。
+  const src = 'people/fork-src.card.md'
+  const madeSrc = await table['card.save']({
+    path: src,
+    data: baseCard({ id: 'fork-src', name: '老周', relation: '同事', address: '周哥' }),
+    sections: [{ title: '自述', body: '〔自述〕他在厂里干了二十年。' }],
+  })
+  t('先建一张现实里的卡', madeSrc.ok === true, madeSrc)
+
+  const first = await table['card.fork']({ path: src })
+  t('card.fork 成功', first.ok === true, first)
+  t('复制出来的是另一份文件', first.path !== src, first)
+  t('复制出来的 id 带 -role', String(first.id).startsWith('fork-src-role'), first)
+  t('名字不变（演的还是这个人）', first.name === '老周', first)
+
+  const copied = await store.readCard(ws, first.path)
+  t('复制出来的卡读得回来', copied.ok === true, copied)
+  t('复制出来的卡是虚构角色', copied.data?.kind === 'fictional', copied.data?.kind)
+  t('复制出来的卡记着从谁那儿来的', copied.data?.forked_from === src, copied.data?.forked_from)
+  t('正文一起复制过去', JSON.stringify(copied.sections ?? []).includes('纱厂') || JSON.stringify(copied.sections ?? []).includes('厂里干了二十年'), copied.sections)
+
+  // 改副本不该动到原卡
+  const changed = await table['card.save']({
+    path: first.path,
+    data: { ...copied.data, name: '老周（热情版）', address: '周哥' },
+    sections: [{ title: '自述', body: '〔自述〕他一进门就跟所有人打招呼。' }],
+  })
+  t('副本能改', changed.ok === true, changed)
+  const after = await store.readCard(ws, src)
+  t('改副本之后原卡一个字都没变', after.data?.name === '老周' && JSON.stringify(after.sections ?? []).includes('厂里干了二十年'), [after.data?.name, after.sections])
+
+  // 同一张卡可以复制好几份，不许互相覆盖
+  const second = await table['card.fork']({ path: src })
+  t('再复制一份还是成功', second.ok === true, second)
+  t('第二份换了文件名，没覆盖第一份', second.path !== first.path, [first.path, second.path])
+
+  const missing = await table['card.fork']({ path: 'people/nobody.card.md' })
+  t('找不到的卡说人话', missing.ok === false && String(missing.error).includes('找不到'), missing)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

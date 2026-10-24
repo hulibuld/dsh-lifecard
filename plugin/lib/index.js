@@ -833,6 +833,49 @@ function buildApi(ctx, workspace, config, options) {
       return written
     },
 
+    /**
+     * 把一张卡复制成另一张独立的卡（酒馆里「拿现实里的人来演」用）。
+     *
+     * 关键在「独立」：复制出来的是一份新文件，之后在酒馆里把性格改成完全相反、
+     * 加一堆原作没有的口癖，也不会动到现实那张卡。共用一个文件的话，
+     * 演着演着现实记录就被改写了——那是这个功能最容易出事的地方。
+     */
+    'card.fork': async (body) => {
+      const ws = await root(body)
+      const want = String(body?.path ?? '').trim()
+      if (want === '') return { ok: false, error: '得先挑一张卡。' }
+      const rel = want.endsWith('.card.md') ? want : await store.findCardByRelOrId(ws, want)
+      if (rel === null || rel === undefined) return { ok: false, error: '找不到这张卡。它可能被删掉了，或者不在这个文件夹里。' }
+      const card = await store.readCard(ws, rel)
+      if (card.ok !== true) {
+        const why = String(card.error ?? '')
+        if (why.includes('不存在') || why.includes('没有这个')) return { ok: false, error: '找不到这张卡。它可能被删掉了，或者不在这个文件夹里。' }
+        return { ok: false, error: why === '' ? '这张卡读不出来。' : `这张卡读不出来：${why}` }
+      }
+      const data = { ...(card.data ?? {}) }
+      const baseName = String(data.name ?? data.id ?? '').trim() === '' ? '没名字的人' : String(data.name).trim()
+      // 名字不改：「演我妈」要认得出是我妈。区别在身份上——它是一张独立的新卡。
+      const stem = core.safeId(`${data.id ?? core.safeId(baseName)}-role`)
+      let id = stem
+      let target = store.cardRelPath(id, 'reality')
+      // 同一张卡可以复制好几份（一份热情版、一份冷淡版），不覆盖已有的
+      for (let n = 2; n <= 40; n += 1) {
+        const exists = await fs.stat(path.join(ws, target)).then((st) => st.isFile()).catch(() => false)
+        if (!exists) break
+        id = `${stem}-${n}`
+        target = store.cardRelPath(id, 'reality')
+      }
+      data.id = id
+      data.kind = 'fictional'
+      data.world = 'reality'
+      // 留一条来路，方便以后在卡里看见「这是从谁那儿复制的」
+      data.forked_from = card.path ?? rel
+      delete data.cc
+      const written = await store.writeCard(ws, target, data, Array.isArray(card.sections) ? card.sections : [])
+      if (written.ok !== true) return { ok: false, error: written.error ?? '复制没成功。' }
+      return { ok: true, path: target, id, name: baseName, from: card.path ?? rel }
+    },
+
     /** 看某张卡以前的样子（快照在每次保存时自动留，只是以前没露出来）。 */
     'card.history': async (body) => {
       const ws = await root(body)
@@ -2025,7 +2068,10 @@ function buildApi(ctx, workspace, config, options) {
       const ws = await root(body)
       const aboutId = String(body?.about ?? '')
       const relationId = String(body?.relation ?? 'parent')
-      const { questions } = prompts.questionsFor(relationId)
+      // 虚构角色（写小说、酒馆）不用「他是我的什么人」那一套题：
+      // 那一问对虚构的人是空的，逼着人选一个只会让后面的答案全跑偏。
+      const kind = String(body?.kind ?? 'real')
+      const { questions } = prompts.questionsFor(relationId, kind)
       let answered = []
       let data = {}
       let sections = []

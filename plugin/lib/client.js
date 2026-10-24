@@ -1031,6 +1031,17 @@ function LifeCardTab(props) {
   // 首页那张卡片点下去之后去哪儿，由门决定：酒馆里是「聊一场」，
   // 别的两扇门里还是「打开这张卡」。
   const openFromList = (card) => (mode === 'tavern' ? startTavern(card) : openCard(card))
+  // 现实里的卡拿去演：先复制成一份独立的角色卡，再开聊。
+  // 不复制直接用原来那张的话，演上十分钟，现实记录里的性格就被改写了。
+  const forkForTavern = async (card) => {
+    try {
+      const r = await call('card.fork', { path: card?.path ?? String(card?.id ?? '') })
+      if (r?.ok !== true) { setError(r?.error ?? '没能复制出一张可以演的角色卡'); return }
+      await refresh()
+      flash(`复制了一张「${r.name}」的角色卡，原来那张没动`, 'ok')
+      await startTavern({ path: r.path, id: r.id, name: r.name })
+    } catch (e) { setError(humanizeError(e)) }
+  }
 
   const header = () => {
     const titles = {
@@ -1136,7 +1147,7 @@ function LifeCardTab(props) {
         })
       case VIEWS.interview:
         return h(InterviewView, {
-          state, listing, preset: interviewFor, onRecorded: refresh, flash,
+          state, listing, preset: interviewFor, onRecorded: refresh, flash, mode,
           onDone: () => { setInterviewFor(null); setMaterialFor(null); setView(VIEWS.home); refresh() },
           onAnalyze: (about) => { setInterviewFor(about ?? null); setView(VIEWS.analyze) },
         })
@@ -1167,7 +1178,7 @@ function LifeCardTab(props) {
         // 直接退回首页，用户点了没反应，还以为坏了。现在把清单单独摊开。
         return activeCard === null
           ? proposal === null
-            ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor() })
+            ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern })
             : h('div', { className: 'lc-pad lc-stack' },
                 proposal.about === undefined || String(proposal.about).trim() === ''
                   ? null
@@ -1226,7 +1237,7 @@ function LifeCardTab(props) {
         })
       case VIEWS.world:
         return activeWorld === null
-          ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor() })
+          ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern })
           : h(WorldView, {
               world: activeWorld,
               listing,
@@ -1237,7 +1248,7 @@ function LifeCardTab(props) {
       case VIEWS.jobs:
         return h(JobsView, { onBack: () => setView(VIEWS.home), flash })
       default:
-        return h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor() })
+        return h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern })
     }
   }
 
@@ -1349,22 +1360,52 @@ const DOORS = [
 
 function DoorsView({ onPick, state }) {
   const workspace = String(state?.workspace ?? '')
-  return h('div', { className: 'lc-pad lc-stack' },
-    h('h2', { style: { margin: '2px 0 0', fontSize: 17 } }, '你要用哪个？'),
-    h('div', { className: 'lc-meta' }, '先选一扇门。进去之后随时能换——卡和世界书都在同一个文件夹里，不会丢。'),
-    DOORS.map((door) => h(Action, {
-      key: door.id,
-      tone: door.tone,
-      icon: door.icon,
-      title: door.title,
-      desc: door.desc,
-      onClick: () => onPick(door.id),
-    })),
+  // 三扇门是这一屏唯一的动作，做成大卡片：图标一块色、标题一行、说明两行。
+  // 以前是三根细横栏，上面一大片空，看着像排在设置里的一列选项，
+  // 不像「选一个开始」。
+  const tint = {
+    real: { fg: 'var(--lc-interview)', bg: 'var(--lc-interview-soft)', icon: 'people' },
+    novel: { fg: 'var(--lc-import)', bg: 'var(--lc-import-soft)', icon: 'book' },
+    tavern: { fg: 'var(--lc-analyze)', bg: 'var(--lc-analyze-soft)', icon: 'chat' },
+  }
+  return h('div', { className: 'lc-pad lc-stack', style: { gap: 12, paddingTop: 14 } },
+    h('div', null,
+      h('h2', { style: { margin: '2px 0 0', fontSize: 19 } }, '你要用哪个？'),
+      h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '先选一扇门。进去之后随时能换——卡和世界书都在同一个文件夹里，不会丢。'),
+    ),
+    DOORS.map((door) => {
+      const t = tint[door.id] ?? tint.real
+      return h('button', {
+        key: door.id,
+        type: 'button',
+        className: 'lc-door',
+        onClick: () => onPick(door.id),
+        style: {
+          display: 'flex', alignItems: 'flex-start', gap: 12, width: '100%',
+          padding: '16px 14px', textAlign: 'left', cursor: 'pointer',
+          border: '1px solid var(--lc-line)', borderRadius: 14, background: 'var(--lc-panel)',
+          boxShadow: 'var(--lc-shadow)',
+        },
+      },
+        h('div', {
+          style: {
+            flex: '0 0 auto', width: 46, height: 46, borderRadius: 12,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: t.bg, color: t.fg,
+          },
+        }, h(Icon, { name: t.icon, size: 24 })),
+        h('div', { className: 'lc-stack', style: { flex: '1 1 auto', gap: 5, minWidth: 0 } },
+          h('div', { style: { fontSize: 15.5, fontWeight: 650 } }, door.title),
+          h('div', { className: 'lc-meta', style: { lineHeight: 1.65 } }, door.desc),
+          h('div', { className: 'lc-meta', style: { color: t.fg, fontWeight: 600 } }, '进这扇门 →'),
+        ),
+      )
+    }),
     workspace === '' ? null : h('div', { className: 'lc-meta', style: { marginTop: 4 } }, `档案在：${workspace}`),
   )
 }
 
-function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial, chats, onOpenChat }) {
+function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial, chats, onOpenChat, onForkCard }) {
   // 这扇门是不是「真实人物记录」。写小说、酒馆那两扇门里不该出现
   // 「贴一份招聘说明」「从记忆里认人」这类动作——那是记录真人才用得上的。
   const isReal = mode !== 'novel' && mode !== 'tavern'
@@ -1406,6 +1447,11 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
     const other = filtered.filter((c) => !['real', 'self', 'hybrid', 'fictional'].includes(c.kind))
     return { real, fic, other }
   }, [filtered])
+  // 酒馆那扇门里，现实里的人默认收起来：一进去先看见父母、同学、同事的一排卡，
+  // 会让人不太舒服，也分不清哪些是拿来演的。想看的时候再展开。
+  const [showRealForRole, setShowRealForRole] = useState(false)
+  // 正在问「要不要复制一份来演」的那张卡
+  const [forkAsk, setForkAsk] = useState(null)
 
   // 第一次进来时那段介绍。只出现一次，点过「知道了」就不再出现。
   // 刻意只有四五行：介绍写长了没人读，读的人也只想知道「这玩意儿干吗的、从哪儿下手」。
@@ -1525,9 +1571,34 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
               h(GroupTitle, { icon: 'people' }, `认识的人 · ${byKind.real.length}`),
               h('div', { className: 'lc-stack' }, byKind.real.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id] }))),
             )
-          // 同一个文件夹里可能两样都有。这扇门不列真人，但也不能装作没有——
-          // 用户会以为卡丢了。说清它们在哪儿、怎么过去。
-          : h('div', { className: 'lc-meta' }, `另外还有 ${byKind.real.length} 张写的是现实里的人，在「真实人物记录」那扇门里。`))
+          // 同一个文件夹里可能两样都有。这扇门不直接铺开真人，但也不能装作没有——
+          // 用户会以为卡丢了。收起来一行，想看再展开，展开后是「复制一份来演」。
+          : h('div', null,
+              h(GroupTitle, { icon: 'people' }, `现实里认识的人 · ${byKind.real.length}`),
+              h('div', { className: 'lc-meta', style: { marginBottom: 6 } },
+                '这些是记录真人用的，默认不铺开；想看完整的那张，去「真实人物记录」那扇门。拿去演会复制一份独立的角色卡——之后怎么改都动不到原来那张。'),
+              h(Btn, { size: 'sm', icon: showRealForRole ? 'chevron' : 'people', onClick: () => { setShowRealForRole(!showRealForRole); setForkAsk(null) } },
+                showRealForRole ? '先收起' : '展开看看'),
+              showRealForRole
+                ? h('div', { className: 'lc-stack', style: { marginTop: 8 } },
+                    forkAsk === null
+                      ? null
+                      : h('div', { className: 'lc-note' },
+                          h('div', { style: { lineHeight: 1.7 } },
+                            `「${String(forkAsk.name ?? '').trim() === '' ? '这个人' : forkAsk.name}」的卡是现实里的记录。`,
+                            h('br'),
+                            '拿去演会复制成一张新的角色卡：性格、说话方式随便改，原来那张一个字都不会动。'),
+                          h('div', { className: 'lc-row', style: { marginTop: 8, gap: 6 } },
+                            h(Btn, { size: 'sm', tone: 'analyze', icon: 'chat', onClick: () => { const c = forkAsk; setForkAsk(null); onForkCard?.(c) } }, '复制一份来演'),
+                            h(Btn, { size: 'sm', onClick: () => setForkAsk(null) }, '先不'),
+                          ),
+                        ),
+                    byKind.real.map((c) => h(CardRow, {
+                      key: c.path, card: c, onOpen: (row) => setForkAsk(row), photo: avatars[c.id],
+                    })),
+                  )
+                : null,
+            ))
       : null,
 
     byKind.fic.length > 0
@@ -3187,8 +3258,16 @@ function NewCardView({ state, onCreate, presetName }) {
 
 // ── 访谈 ──────────────────────────────────────────────────────────
 
-function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAnalyze }) {
-  const [phase, setPhase] = useState('pick')   // pick | talk | done
+function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAnalyze, mode }) {
+  // 这扇门建的是现实里的人，还是虚构的角色。两者的第一问本来就不该一样：
+  // 现实先问「他是我的什么人」，虚构问「TA 一张嘴什么感觉」。
+  // 顺带把颜色分开——不然建着建着分不清手里这张是真人还是角色。
+  const fiction = mode === 'novel' || mode === 'tavern'
+  const fictionTone = mode === 'tavern' ? 'analyze' : 'import'
+  const accent = fiction ? `var(--lc-${fictionTone})` : 'var(--lc-interview)'
+  const accentSoft = fiction ? `var(--lc-${fictionTone}-soft)` : 'var(--lc-interview-soft)'
+  // prep = 从一张已有的卡点「接着聊」进来，直接去准备问题，不再让人挑一遍关系。
+  const [phase, setPhase] = useState(String(preset?.id ?? '').trim() === '' ? 'pick' : 'prep')   // prep | pick | talk | done
   const [name, setName] = useState(preset?.name ?? '')
   const [relation, setRelation] = useState(() => {
     const relations = (state?.relations?.length ?? 0) > 0 ? state.relations : RELATION_FALLBACK
@@ -3232,6 +3311,15 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
     if (scrollRef.current !== null) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
   }, [log, current])
 
+  // 从卡页走进来的这一条路：卡已经存在，名字关系都在卡上，之前答过的题也在台账里。
+  // 再让他在第一屏把「他是我的什么人」点一遍，等于把已经知道的事问第二遍——
+  // 用户会以为刚才那一步没生效。所以这一屏直接跳过，去准备问题。
+  useEffect(() => {
+    if (phase !== 'prep') return
+    start()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase])
+
   const start = async () => {
     const targetName = (preset?.name ?? name).trim()
     if (targetName === '') { setErr('先写一下他叫什么'); return }
@@ -3270,10 +3358,12 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
       if (existing === undefined) {
         made = await call('card.save', {
           data: {
-            lifecard: '0.1', id, kind: 'real', world: 'reality', name: targetName,
-            relation: relationText,
+            lifecard: '0.1', id, kind: fiction ? 'fictional' : 'real', world: 'reality', name: targetName,
+            // 虚构的角色没有「他是我的什么人」，不写这个字段——
+            // 写着「母亲」的虚构角色，以后在酒馆里看会莫名其妙。
+            ...(fiction || relationText === '' ? {} : { relation: relationText }),
             // 只有真有补充身份时才写这个字段，不然每张卡都多一行空数组
-            ...(extras.length > 0 ? { relation_extra: extras } : {}),
+            ...(!fiction && extras.length > 0 ? { relation_extra: extras } : {}),
           },
           sections: [],
         })
@@ -3283,7 +3373,7 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
           setErr(made?.error ?? '这张卡没能建起来。换个名字再试。')
           return
         }
-      } else if (extras.length > 0 || relationText !== '') {
+      } else if (!fiction && (extras.length > 0 || relationText !== '')) {
         // 已经有卡的话，把这次点的关系补进去（别把原来写的覆盖成空）
         const got = await call('card.get', { path: existing.path })
         if (got?.ok) {
@@ -3299,7 +3389,7 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
         }
       }
       setAboutId(existing?.id ?? id)
-      const p = await call('interview.plan', { about: existing?.id ?? id, relation, limit: 3 })
+      const p = await call('interview.plan', { about: existing?.id ?? id, relation, limit: 3, kind: fiction ? 'fictional' : 'real' })
       if (p?.ok !== true) {
         // 问题没准备出来（多半是 AI 那边没响应）。这时候刚建的那张空卡要收回去：
         // 留着它就是列表里一张名字对、点开什么都没有的卡，用户下次还会再建一张。
@@ -3308,12 +3398,14 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
           try { await call('card.delete', { path: made.path, reason: '访谈没能开始，撤掉这次建的空卡' }) } catch (e) { /* 撤不掉也不该挡住这句话 */ }
         }
         setErr(`${p?.error ?? '没法准备问题'}。${existing === undefined ? '刚才建的那张空卡已经撤掉了，' : ''}过一会儿再点一次「开始」。`)
+        setPhase('pick')
         return
       }
       setPlan(p)
       setQueue(p.next ?? [])
       setCurrent((p.next ?? [])[0] ?? null)
-      setPhase('talk')
+      // 一句都没得问（这张卡已经写满了）：结束页比一个空白的提问框诚实。
+      setPhase((p.next ?? []).length === 0 ? 'done' : 'talk')
       setLog([{ role: 'bot', text: `好，我们开始。\n一次问一件小事，想不起来就跳过。` }])
     } catch (e) {
       setErr(humanizeError(e))
@@ -3350,7 +3442,7 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
       // 队列推进
       const rest = queue.slice(1)
       if (rest.length === 0) {
-        const p = await call('interview.plan', { about: aboutId, relation, limit: 3 })
+        const p = await call('interview.plan', { about: aboutId, relation, limit: 3, kind: fiction ? 'fictional' : 'real' })
         setPlan(p)
         setQueue(p.next ?? [])
         setCurrent((p.next ?? [])[0] ?? null)
@@ -3387,23 +3479,52 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
     setPhase('done')
   }
 
+  // 从卡页点「接着聊」进来：正在按这张卡已有的内容准备问题。
+  // 这一屏一般只闪一下；出错时把话说清楚，并能退回去自己挑关系重来。
+  if (phase === 'prep') {
+    const target = String(preset?.name ?? name).trim()
+    return h('div', { className: 'lc-pad lc-stack' },
+      h('div', { className: 'lc-empty' },
+        h('div', { className: 'lc-empty-icon', style: { background: accentSoft, color: accent } }, h(Icon, { name: 'chat', size: 22 })),
+        h('h3', null, target === '' ? '正在准备问题…' : `接着聊 ${target}`),
+        h('div', { className: 'lc-meta' }, '这张卡已经写过的，就不再问了。'),
+      ),
+      err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
+      err === null
+        ? h(Spinner)
+        : h('div', { className: 'lc-stack' },
+            h(Btn, { tone: 'primary', block: true, onClick: () => setPhase('prep'), disabled: busy }, busy ? '正在准备…' : '再试一次'),
+            fiction ? null : h(Btn, { block: true, onClick: () => setPhase('pick') }, '我自己挑一下关系'),
+          ),
+    )
+  }
+
   if (phase === 'pick') {
     const lockedName = (preset?.name ?? '').trim() !== ''
     return h('div', { className: 'lc-pad lc-stack' },
       h('div', { className: 'lc-empty', style: { paddingBottom: 8 } },
-        h('div', { className: 'lc-empty-icon', style: { background: 'var(--lc-interview-soft)', color: 'var(--lc-interview)' } }, h(Icon, { name: 'chat', size: 22 })),
-        h('h3', null, lockedName ? `接着聊 ${preset.name}` : '边聊边建一张卡'),
+        h('div', { className: 'lc-empty-icon', style: { background: accentSoft, color: accent } }, h(Icon, { name: fiction ? 'book' : 'chat', size: 22 })),
+        h('h3', null, lockedName ? `接着聊 ${preset.name}` : (fiction ? '边聊边立一个人' : '边聊边建一张卡')),
         h('div', { className: 'lc-meta' }, '它一次只问一件具体的小事。', h('br'), '答不上来就跳过；说了「不想说」的，以后不会再问。'),
       ),
+      // 一句话说清「现在建的是哪一种人」，靠颜色和那一行字区分，
+      // 免得在酒馆里建着建着，以为自己在补现实里那个人。
+      h(Note, { tone: undefined, icon: fiction ? 'book' : 'person' },
+        fiction
+          ? (mode === 'tavern' ? '你在立一个可以演的虚构角色。它不是现实里的谁，写多离谱都行。' : '你在立一个小说角色。它不是现实里的谁，写多离谱都行。')
+          : '你在记录一个现实里的人。卡上写什么，最好都是他真有过的事。'),
       lockedName
         ? h(Note, { tone: undefined, icon: 'person' }, `正在给「${preset.name}」补内容。`)
-        : h(Field, { label: '他叫什么' },
-            h('input', { className: 'lc-input', value: name, onChange: (e) => setName(e.target.value), placeholder: '妈 / 爷爷 / 老张', spellCheck: false }),
+        : h(Field, { label: fiction ? 'TA 叫什么' : '他叫什么' },
+            h('input', {
+              className: 'lc-input', value: name, onChange: (e) => setName(e.target.value),
+              placeholder: fiction ? '林小雨 / 老刀 / 阿澜' : '妈 / 爷爷 / 老张', spellCheck: false,
+            }),
           ),
       // 四个最常用的词并排放，一行就完事。
       // 剩下那些（爷爷、老师、同事、隔壁王叔）不铺成按钮，直接在下面一行里写——
       // 十四个人排成一片按钮，看着像在填表，不像在说一个人。
-      h(Field, { label: '他是我的什么人' },
+      fiction ? null : h(Field, { label: '他是我的什么人' },
         h('div', { className: 'lc-chips' },
           RELATION_QUICK.map((r) => h('button', {
             key: r.id,
@@ -3430,7 +3551,7 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
       ),
       // 「还有什么」平时只露一行灰字，点开才有输入框。
       // 大多数卡只有一个身份，这条一直摊开着会显得每张卡都缺东西。
-      h('div', { className: 'lc-more' },
+      fiction ? null : h('div', { className: 'lc-more' },
         showExtras
           ? h('div', null,
               h('input', {
@@ -3449,17 +3570,19 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
               onClick: () => setShowExtras(true),
             }, '还有什么'),
       ),
-      h('div', { className: 'lc-meta' },
-        relations.find((r) => r.id === relation)?.hint ?? '随便点一个最贴的。这一句只决定先问什么，不决定他的身份。'),
+      fiction
+        ? h('div', { className: 'lc-meta' }, '第一问从「TA 怎么说话」开始——那是演和写最先要用上的。')
+        : h('div', { className: 'lc-meta' },
+            relations.find((r) => r.id === relation)?.hint ?? '随便点一个最贴的。这一句只决定先问什么，不决定他的身份。'),
       err === null ? null : h(Err, { text: err }),
-      h(Btn, { tone: 'interview', big: true, block: true, onClick: start, disabled: busy, icon: 'send' }, busy ? '准备中…' : '开始聊'),
+      h(Btn, { tone: fiction ? fictionTone : 'interview', big: true, block: true, onClick: start, disabled: busy, icon: 'send' }, busy ? '准备中…' : '开始聊'),
     )
   }
 
   if (phase === 'done') {
     return h('div', { className: 'lc-pad lc-stack' },
       h('div', { className: 'lc-empty' },
-        h('div', { className: 'lc-empty-icon', style: { background: 'var(--lc-doctor-soft)', color: 'var(--lc-doctor)' } }, h(Icon, { name: 'check', size: 22 })),
+        h('div', { className: 'lc-empty-icon', style: { background: fiction ? accentSoft : 'var(--lc-doctor-soft)', color: fiction ? accent : 'var(--lc-doctor)' } }, h(Icon, { name: 'check', size: 22 })),
         h('h3', null, '这一轮问完了'),
         h('div', { className: 'lc-meta' }, plan === null ? '' : `现在写满了 ${plan.coverage}%`),
       ),
@@ -3484,7 +3607,7 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
     // 整场收工的按钮放在最上面那一行，不和「记下 / 跳过 / 不想说」挤在一起：
     // 那三个是「这一题怎么处理」，这个是「整场结束」，本来就不同类。
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderBottom: '1px solid var(--lc-line)', background: 'var(--lc-panel)' } },
-      h('div', { className: 'lc-meta', style: { flex: '1 1 auto' } }, `正在聊「${preset?.name ?? name}」`),
+      h('div', { className: 'lc-meta', style: { flex: '1 1 auto', color: fiction ? accent : undefined } }, `正在聊「${preset?.name ?? name}」${fiction ? '（虚构的角色）' : ''}`),
       h(Btn, { size: 'sm', tone: 'ghost', icon: 'stop', onClick: endSession, disabled: busy }, '结束这次访谈'),
       h('div', { className: 'lc-meta' }, '（这一题不记）'),
     ),

@@ -354,7 +354,67 @@ export const QUESTION_BANK = {
  * 「隔壁王叔」，我们不知道怎么问他，但父母那一套题（他为你做过什么、
  * 你们怎么吵、你第一次发现他是普通人的时刻）几乎对任何人都成立。
  */
-export function questionsFor(relationId) {
+/**
+ * 虚构角色的题（写小说、酒馆那两扇门用）。
+ *
+ * 现实里那张卡第一问是「他是我的什么人」——虚构角色没有这个关系，
+ * 问它只会让人愣一下，然后随便选一个。虚构要问的是「这个人怎么说话、
+ * 什么情况下会变脸、第一眼看上去是什么样」，这些才是演和写用得上的。
+ */
+export const CHARACTER_QUESTIONS = [
+  {
+    id: 'char.q01',
+    ask: 'TA 一张嘴，你想让听的人先感觉到什么？',
+    options: ['不好惹，但讲道理', '看着随和，句句带刺', '话很少，一开口就定调', '热得有点过头，让人不习惯', '都不像，我自己说'],
+    probe: '那一句话大概是怎么说的？把原话写一句给我（糙一点也行）。',
+    fills: ['性格', '口癖'],
+    why: '「怎么说话」比「性格形容词」更能直接拿去做对白。',
+  },
+  {
+    id: 'char.q02',
+    ask: 'TA 身上最不像别人的那一点是什么？',
+    options: ['看事情的角度跟常人不一样', '某种别人受不了的习惯', '一段没人知道的过去', '一个和身份不搭的本事', '说不清，就是有'],
+    probe: '这一条要是被别人当面点破，TA 会怎么反应？',
+    fills: ['自述', '性格'],
+    why: '一个具体的不合群之处，比十行设定更能让角色站住。',
+  },
+  {
+    id: 'char.q03',
+    ask: 'TA 说话有没有固定习惯？',
+    options: ['爱用某几个词 / 口头禅', '句子很短，不爱解释', '爱反问，不正面回答', '喜欢长篇讲道理', '没什么固定习惯'],
+    probe: '举一句原话：TA 最典型的一句是什么？',
+    fills: ['口癖'],
+    why: '口癖是对白里最容易出错也最容易见效的地方。',
+  },
+  {
+    id: 'char.q04',
+    ask: '什么话能让 TA 立刻闭嘴、或者直接变脸？',
+    options: ['提到某个人的名字', '质疑 TA 的能力', '谈钱 / 谈过去', '被别人当成弱者照顾', '几乎没什么能戳到 TA'],
+    probe: '真被戳到时，TA 是先沉默，还是先动手/发火？',
+    fills: ['不会说的话', 'taboos'],
+    why: '禁区决定「TA 不会说什么」，比「会说什么」更能稳住角色。',
+  },
+  {
+    id: 'char.q05',
+    ask: 'TA 长什么样？先说一件别人一见面就会注意到的事。',
+    options: ['穿得跟场合不搭', '有个旧得离谱的东西一直带在身上', '站姿/走路有点特别', '脸上有说不清的疲惫', '太普通了，反而记不住'],
+    probe: '再补一件近看才发现的细节（手上的、鞋上的、说话的口气）。',
+    fills: ['外貌'],
+    why: '先给一个远看的记号，再给一个近看的细节，写场景时就有得用。',
+  },
+  {
+    id: 'char.q06',
+    ask: 'TA 现在最想要什么？最怕什么？',
+    options: ['想要一个具体的东西/位置', '想要某个人回来看一眼', '怕再回到从前那种日子', '怕被人看穿', '自己也没想清楚'],
+    probe: '为了这个，TA 已经做过什么不太体面的事？',
+    fills: ['competency', '自述'],
+    why: '要什么、怕什么，决定 TA 在场景里会怎么选。',
+  },
+]
+
+export function questionsFor(relationId, kind) {
+  // 虚构角色没有「他是我的什么人」这一问：直接换一套题。
+  if (String(kind ?? '') === 'fictional') return { questions: CHARACTER_QUESTIONS, exact: true }
   const key = String(relationId ?? '')
   const type = RELATION_TYPES.find((r) => r.id === key)
   const bank = type?.bank ?? key
@@ -492,6 +552,7 @@ export default {
   RELATION_EXTRAS,
   QUESTION_BANK,
   questionsFor,
+  CHARACTER_QUESTIONS,
   buildAnalyzePrompt,
   SCHEMA_HINT,
 }
