@@ -744,7 +744,11 @@ function asArray(v) {
  * @param {Record<string, unknown>} data
  * @param {Array<{title: string, body: string}>} sections
  */
-export function coverage(data, sections) {
+export function coverage(data, sections, options) {
+  // 虚构角色不问「是你的谁」「出生年」「同意状态」——那些是给真人用的字段。
+  // 不算进分母，否则小说/酒馆门里聊完一整轮，页面上会永远写着
+  // 「还空着：关系、出生年、同意状态」，怎么聊都填不满。
+  const kind = String(options?.kind ?? data?.kind ?? '').trim()
   const fields = [
     { key: 'name', label: '名字', weight: 3 },
     { key: 'relation', label: '关系', weight: 2 },
@@ -768,7 +772,9 @@ export function coverage(data, sections) {
   const rows = []
   let got = 0
   let total = 0
+  const realOnly = new Set(['relation', 'birth_year', 'consent'])
   for (const f of fields) {
+    if (kind === 'fictional' && realOnly.has(f.key)) continue
     const v = data?.[f.key]
     const filled = v !== undefined && v !== null && String(typeof v === 'object' ? JSON.stringify(v) : v).trim() !== '' && String(typeof v === 'object' ? JSON.stringify(v) : v) !== '[]' && String(typeof v === 'object' ? JSON.stringify(v) : v) !== '{}'
     total += f.weight

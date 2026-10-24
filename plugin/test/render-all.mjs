@@ -1764,6 +1764,76 @@ for (const [label, tree] of [
 }
 
 {
+  // 同名两张卡（酒馆里「复制一份来演」造出来的副本正好同名）：
+  // 从原卡点「接着聊」，不能把整场访谈记到副本上。
+  const Interview = seen.get('InterviewView')
+  const bodies = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    bodies.push(String(init?.body ?? ''))
+    return {
+      ok: true,
+      json: async () => ({
+        ok: true,
+        next: [{ id: 'q1', ask: '你妈做饭有什么固定动作？', options: ['先把菜切好'], fills: ['habit'] }],
+        remaining: 1, coverage: 10, empty: [],
+      }),
+    }
+  }
+  const TWINS = {
+    ...LISTING,
+    cards: [
+      { path: 'people/lao-zhang-role.card.md', id: 'lao-zhang-role', name: '老张', kind: 'fictional', world: 'reality' },
+      { path: 'people/lao-zhang.card.md', id: 'lao-zhang', name: '老张', kind: 'real', world: 'reality' },
+    ],
+  }
+  const tree = renderOne('同名两张卡（从原卡接着聊）', Interview,
+    { state: STATE, listing: TWINS, preset: { id: 'lao-zhang', name: '老张' }, mode: 'real' }, { 0: 'pick', 1: '老张' })
+  const go = flatButtons(expand(tree)).find((b) => textOf(b).includes('开始聊'))
+  if (go === undefined) t('同名两张卡时找得到「开始聊」', false)
+  else {
+    go.props.onClick()
+    await new Promise((r) => setTimeout(r, 30))
+    const plan = bodies.find((b) => b.includes('"about"')) ?? ''
+    t('带 preset.id 进来时按 id 找那张卡，不按名字', plan.includes('"lao-zhang"'), plan.slice(0, 200))
+    t('没写进那份同名的副本', !plan.includes('lao-zhang-role'), plan.slice(0, 200))
+  }
+  globalThis.fetch = realFetch
+}
+
+{
+  // 「再试一次」以前写成 setPhase('prep')：相位本来就是 prep，React 同值
+  // 直接 bail out，按钮按了没反应；虚构那两扇门里连退路都没有，等于死页。
+  const Interview = seen.get('InterviewView')
+  const bodies = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    bodies.push(String(init?.body ?? ''))
+    return {
+      ok: true,
+      json: async () => ({
+        ok: true, next: [{ id: 'q1', ask: 'TA 说话有什么习惯？', options: ['爱重复'], fills: ['口癖'] }],
+        remaining: 1, coverage: 10, empty: [],
+      }),
+    }
+  }
+  const tree = expand(renderOne('接着聊失败（虚构角色）', Interview,
+    { state: STATE, listing: LISTING, preset: { id: 'lin', name: '林小雨' }, mode: 'tavern' },
+    { 0: 'prep', 13: '没法准备问题，等一会儿再试' }))
+  const text = textOf(tree)
+  t('准备失败时说清发生了什么', text.includes('没法准备问题'), text.slice(0, 300))
+  const retry = flatButtons(tree).find((b) => textOf(b).includes('再试一次'))
+  t('虚构角色也有退回改名字的按钮', flatButtons(tree).some((b) => textOf(b).includes('重新填一下名字')), text.slice(0, 300))
+  if (retry === undefined) t('准备失败时有「再试一次」', false)
+  else {
+    retry.props.onClick()
+    await new Promise((r) => setTimeout(r, 30))
+    t('「再试一次」真的又去准备了一次（以前是个死按钮）', bodies.some((b) => b.includes('"about"')), JSON.stringify(bodies).slice(0, 300))
+  }
+  globalThis.fetch = realFetch
+}
+
+{
   // 分析页那两栏「想突出的 / 不想要的」是边打边存的草稿：只有点「存一下」
   // 或失焦才落盘。改了字直接点「开始读」，以前发出去的还是上一次存的那份，
   // 读出来的东西跟屏幕上写的不一样。

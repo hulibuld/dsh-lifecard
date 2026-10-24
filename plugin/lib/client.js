@@ -3344,7 +3344,12 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
     setBusy(true); setErr(null)
     try {
       const id = preset?.id ?? safeId(targetName)
-      const found = (listing?.cards ?? []).find((c) => c.id === id || c.name === targetName)
+      // 先按 id 精确匹配，再按名字兜底。顺序不能反：酒馆里「复制一份来演」
+      // 会造出一张同名的副本（id 是 xxx-role），而 readdir 下 `-role` 排在
+      // 原卡前面——先比名字的话，从原卡点「接着聊」会把整场访谈写到副本上。
+      const cards = listing?.cards ?? []
+      const byId = cards.find((c) => c.id === id)
+      const found = byId !== undefined ? byId : cards.find((c) => String(c.name ?? '').trim() === targetName)
       // 同名不等于同一个人。用户在这里打「王叔」，列表里正好有一张「王叔」的卡，
       // 以前会默默当成同一个、接着往那张卡上写，还会把这次点的关系盖上去。
       // 用户以为自己新建了一个人，其实改的是旧的。所以从列表点「接着聊」进来的
@@ -3499,8 +3504,11 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
       err === null
         ? h(Spinner)
         : h('div', { className: 'lc-stack' },
-            h(Btn, { tone: 'primary', block: true, onClick: () => setPhase('prep'), disabled: busy }, busy ? '正在准备…' : '再试一次'),
-            fiction ? null : h(Btn, { block: true, onClick: () => setPhase('pick') }, '我自己挑一下关系'),
+            // 直接再跑一次准备，不能写成 setPhase('prep')：这一屏的相位本来就
+            // 是 prep，同值 setState 会被 React 忽略，按钮按了没反应。
+            h(Btn, { tone: 'primary', block: true, onClick: () => { setErr(null); start() }, disabled: busy }, busy ? '正在准备…' : '再试一次'),
+            // 退路必须一直有：虚构那两扇门里没有关系可挑，但至少能回去改名字。
+            h(Btn, { block: true, onClick: () => setPhase('pick') }, fiction ? '重新填一下名字' : '我自己挑一下关系'),
           ),
     )
   }

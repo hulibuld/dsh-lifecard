@@ -69,6 +69,29 @@ function yamlValue(value) {
 }
 
 /**
+ * 一段正文里，行首的 `#` 会被当成标题。
+ *
+ * 这一层是给「模型回话」用的：TA 随手写个 `## 第二天` 或 `### 她`，
+ * 读回来的时候就会把后面半场对话当成「备忘」吞掉，甚至把说话人改成小标题。
+ * 所以写盘前给行首的 `#` 加一个反斜杠，读的时候再削掉——文件照样是人
+ * 能直接看懂的纯文本，但解析器不会再认错。
+ */
+function escapeLines(text) {
+  return String(text ?? '')
+    .split(/\r?\n/)
+    .map((line) => (/^#{1,6}\s/.test(line) ? `\\${line}` : line))
+    .join('\n')
+}
+
+/** 反过来：行首那个反斜杠只在它挡着一个 `#` 的时候才削。 */
+function unescapeLines(text) {
+  return String(text ?? '')
+    .split(/\r?\n/)
+    .map((line) => (/^\\(#{1,6}\s)/.test(line) ? line.slice(1) : line))
+    .join('\n')
+}
+
+/**
  * 把一个会话写成 Markdown。
  *
  * 形状：
@@ -98,20 +121,22 @@ export function renderChatMarkdown(data, turns) {
   const lines = ['---']
   for (const [key, value] of Object.entries(head)) {
     if (value === undefined) continue
+    // 备忘是正文里的段，不是一行 frontmatter；数组/对象也别往 YAML 里塞
+    if (key === 'notes' || value !== null && typeof value === 'object') continue
     lines.push(`${key}: ${yamlValue(value)}`)
   }
   lines.push('---', '')
   for (const note of Array.isArray(data?.notes) ? data.notes : []) {
     const title = String(note?.title ?? '').trim()
     if (title === '') continue
-    lines.push(`## ${title}`, '', String(note?.body ?? '').trim(), '')
+    lines.push(`## ${title}`, '', escapeLines(String(note?.body ?? '').trim()), '')
   }
   lines.push('## 对话', '')
   for (const turn of Array.isArray(turns) ? turns : []) {
     const who = String(turn?.who ?? '').trim()
     const text = String(turn?.text ?? '').trim()
     if (who === '' || text === '') continue
-    lines.push(`### ${who}`, '', text, '')
+    lines.push(`### ${who}`, '', escapeLines(text), '')
   }
   return `${lines.join('\n').trimEnd()}\n`
 }
@@ -133,19 +158,19 @@ export function parseChatText(text) {
   for (const raw of String(body).split(/\r?\n/)) {
     const hit = /^###\s+(.+?)\s*$/.exec(raw)
     if (hit !== null) {
-      if (cur !== null && cur.text.trim() !== '') turns.push({ who: cur.who, text: cur.text.trim() })
+      if (cur !== null && cur.text.trim() !== '') turns.push({ who: cur.who, text: unescapeLines(cur.text.trim()) })
       cur = { who: hit[1].trim(), text: '' }
       continue
     }
     if (cur === null) continue
     cur.text += `${raw}\n`
   }
-  if (cur !== null && cur.text.trim() !== '') turns.push({ who: cur.who, text: cur.text.trim() })
+  if (cur !== null && cur.text.trim() !== '') turns.push({ who: cur.who, text: unescapeLines(cur.text.trim()) })
   const notes = []
   for (const section of parsed.sections ?? []) {
     const title = String(section?.title ?? '').trim()
     if (title === '' || title === '对话') continue
-    notes.push({ title, body: String(section.body ?? '').trim() })
+    notes.push({ title, body: unescapeLines(String(section.body ?? '').trim()) })
   }
   return { ok: true, data: parsed.data ?? {}, turns, notes }
 }
@@ -174,7 +199,11 @@ export async function writeChat(root, id, data, turns) {
   await fs.mkdir(path.dirname(at.abs), { recursive: true })
   const text = renderChatMarkdown({ ...data, turns: (turns ?? []).length }, turns)
   try {
-    await fs.writeFile(at.abs, text, 'utf8')
+    // 先写临时文件再改名：磁盘满、掉电、进程被杀的时候，原来那份还是完整的。
+    // 会话是整文件重写，没有这一步就是在拿用户聊了半天的那份东西赌运气。
+    const tmp = `${at.abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+    await fs.writeFile(tmp, text, 'utf8')
+    await fs.rename(tmp, at.abs)
   } catch {
     return { ok: false, error: '这个会话没能存下来。检查一下文件夹权限或者磁盘是不是满了。' }
   }

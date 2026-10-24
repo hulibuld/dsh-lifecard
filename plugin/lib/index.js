@@ -336,17 +336,16 @@ async function callModel(ctx, input) {
       // 于是对真宿主上「直接给 handle」的那一种调 .then 就抛
       // `TypeError: pending.then is not a function`——「整理进卡里」每次都
       // 在 0.02 秒内 500，而这条路上其它分支（本地假 llm）全测不出来。
-      if (pending !== null && pending !== undefined && typeof pending.then === 'function') {
-        // withTimeout 是 Promise.race：超时是在**赋值之前**抛出来的，那时候
-        // handle 还是 null，catch 里的 abort 就永远打不中，被丢下的那条请求
-        // 会一直挂着占连接和配额。所以先挂一个 then，把它真正交出来的 handle
-        // 接住——不管我们来不来得及等。
-        const waiting = pending
-        waiting.then((h) => { if (handle === null) handle = h }, () => {})
-        handle = await withTimeout(waiting, MODEL_TIMEOUT_MS, 'AI ')
-      } else {
-        handle = pending
-      }
+      // 包一层 Promise.resolve：同步给 handle 和给 Promise 两种形状都认。
+      // 早先只处理 thenable，真宿主偏偏是同步给 handle，于是
+      // `pending.then is not a function`——所有 AI 功能一起 500。
+      const waiting = Promise.resolve(pending)
+      // withTimeout 是 Promise.race：超时是在**赋值之前**抛出来的，那时候
+      // handle 还是 null，catch 里的 abort 就永远打不中，被丢下的那条请求
+      // 会一直挂着占连接和配额。所以先挂一个 then，把它真正交出来的 handle
+      // 接住——不管我们来不来得及等。
+      waiting.then((h) => { if (handle === null) handle = h }, () => {})
+      handle = await withTimeout(waiting, MODEL_TIMEOUT_MS, 'AI ')
       const text = await withTimeout(collectStream(handle), MODEL_TIMEOUT_MS, 'AI ')
       if (text !== '') return { ok: true, text, model: `${candidate.provider}/${candidate.model}`, attempts }
       attempts.push(`${candidate.provider}/${candidate.model}: 空响应`)
@@ -357,7 +356,7 @@ async function callModel(ctx, input) {
         try { if (typeof h?.abort === 'function') h.abort() } catch { /* 断不掉就算了 */ }
       }
       if (handle !== null) stop(handle)
-      else if (pending !== null && pending !== undefined && typeof pending.then === 'function') pending.then(stop, () => {})
+      else if (pending !== null && pending !== undefined) Promise.resolve(pending).then(stop, () => {})
       attempts.push(`${candidate.provider}/${candidate.model}: ${String(error?.message ?? error)}`)
     }
   }
@@ -668,10 +667,34 @@ async function gatherMemoryPeople() {
 function buildApi(ctx, workspace, config, options) {
   const settings = config ?? {}
   const remember = typeof options?.remember === 'function' ? options.remember : null
+  /**
+   * 同一场会话的写操作排队。
+   *
+   * `tavern.say` 是「读文件 → 改 → 整文件写回」，中间夹着一次模型调用
+   * （几秒到几十秒）。双击「发送」或者两个窗口聊同一场，后写的那次以旧
+   * turns 为基础，前一次那几轮就凭空消失了。按 id 串起来就没有这个窗口。
+   */
+  const chatQueue = new Map()
+  const oneAtATime = (id, run) => {
+    const prev = chatQueue.get(id) ?? Promise.resolve()
+    const next = prev.then(run, run)
+    chatQueue.set(id, next.then(() => {}, () => {}))
+    return next
+  }
   const root = async (body) => {
-    // 请求里带 workspace 只作用于这一次调用；要记住得走 workspace.init。
-    if (typeof body?.workspace === 'string' && body.workspace.trim() !== '') {
-      return path.resolve(body.workspace.trim())
+    // 请求体里的 workspace 只用来「确认」，不能用来「换库」。
+    // 以前这里直接 path.resolve(body.workspace) 就采信了：所有越界检查
+    // （insideWorkspace / resolveIn）都以这个 ws 为基准，于是任何一个网页
+    // 脚本都能 POST 一个别的文件夹当库，把那里 materials/ 的名字列出来、
+    // 再把原始素材删掉（素材没有快照）。换库只有一个入口：workspace.init。
+    const want = typeof body?.workspace === 'string' ? body.workspace.trim() : ''
+    if (want !== '') {
+      const now = typeof workspace === 'function' ? await workspace() : await currentWorkspace(settings)
+      const abs = path.resolve(want)
+      if (abs === path.resolve(now)) return abs
+      // 指到别处：不采信，按当前这个库办。不报错是因为旧客户端会顺手带上
+      // 它记着的那个路径，硬报错会把正常操作也卡住。
+      return now
     }
     // 优先用外面传进来的那个函数（apply 传的是「每次现读配置」，所以没有模块级状态）。
     // 只有当调用方没给（或给了非函数）时才自己从配置算——测试会传一个指向临时目录的函数，
@@ -707,7 +730,11 @@ function buildApi(ctx, workspace, config, options) {
 
     /** 建工作区（首次使用时选一个文件夹）。 */
     'workspace.init': async (body) => {
-      const ws = await root(body)
+      // 换库只走这一个入口，所以这里直接采信 body.workspace——别处一律不认
+      // （否则任何一次请求都能把「库」指到别的地方，所有越界检查跟着歪）。
+      const want = String(body?.workspace ?? '').trim()
+      if (want === '') return { ok: false, error: '没有说是哪个文件夹。' }
+      const ws = path.resolve(want)
       const opened = await store.openWorkspace(ws, { create: true })
       if (!opened.ok) return { ok: false, error: opened.error }
       settings.workspace = ws
@@ -839,7 +866,14 @@ function buildApi(ctx, workspace, config, options) {
           }
         }
       }
-      const written = await store.writeCard(ws, rel, data, Array.isArray(body?.sections) ? body.sections : [], { force: body?.force === true })
+      // sections 缺省不能当空数组：那会把一张写满正文的卡整篇清空，还照样报成功。
+      // 老客户端漏传时按磁盘上那一份的正文补上（新卡就真是空的）。
+      let sections = Array.isArray(body?.sections) ? body.sections : null
+      if (sections === null) {
+        const old = await store.readCard(ws, rel)
+        sections = old.ok === true && Array.isArray(old.sections) ? old.sections : []
+      }
+      const written = await store.writeCard(ws, rel, data, sections, { force: body?.force === true })
       return written
     },
 
@@ -866,23 +900,42 @@ function buildApi(ctx, workspace, config, options) {
       const baseName = String(data.name ?? data.id ?? '').trim() === '' ? '没名字的人' : String(data.name).trim()
       // 名字不改：「演我妈」要认得出是我妈。区别在身份上——它是一张独立的新卡。
       const stem = core.safeId(`${data.id ?? core.safeId(baseName)}-role`)
-      let id = stem
-      let target = store.cardRelPath(id, 'reality')
-      // 同一张卡可以复制好几份（一份热情版、一份冷淡版），不覆盖已有的
-      for (let n = 2; n <= 40; n += 1) {
-        const exists = await fs.stat(path.join(ws, target)).then((st) => st.isFile()).catch(() => false)
-        if (!exists) break
-        id = `${stem}-${n}`
-        target = store.cardRelPath(id, 'reality')
+      let id = ''
+      let target = ''
+      // 同一张卡可以复制好几份（一份热情版、一份冷淡版）。
+      // 用 'wx' 占位而不是「stat 一下没在就写」：两次点击几乎同时到达时，
+      // 后者会拿到 EEXIST，自然往下挑号，不会互相覆盖。挑到 40 就明说。
+      for (let n = 1; n <= 40; n += 1) {
+        const candidateId = n === 1 ? stem : `${stem}-${n}`
+        const candidateRel = store.cardRelPath(candidateId, 'reality')
+        const free = await fs.open(path.join(ws, candidateRel), 'wx')
+          .then(async (handle) => { await handle.close(); return true })
+          .catch(() => false)
+        if (free) { id = candidateId; target = candidateRel; break }
       }
+      if (id === '') return { ok: false, error: '这张卡已经复制了很多份了。先把用不上的那几份删掉，再来复制。' }
       data.id = id
       data.kind = 'fictional'
       data.world = 'reality'
-      // 留一条来路，方便以后在卡里看见「这是从谁那儿复制的」
-      data.forked_from = card.path ?? rel
-      delete data.cc
-      const written = await store.writeCard(ws, target, data, Array.isArray(card.sections) ? card.sections : [])
-      if (written.ok !== true) return { ok: false, error: written.error ?? '复制没成功。' }
+      // 留一条来路，方便以后在卡里看见「这是从谁那儿复制的」。
+      // 一律记相对路径：绝对路径里带着 /Users/<用户名>，角色卡导出分享时会漏出去。
+      data.forked_from = String(card.path ?? rel).replace(String(ws) + path.sep, '')
+      // 不带走「从哪儿导入的」这类来路和原图，但**卡里自带的小设定要留下**：
+      // 那是用户一条条写的世界书条目，不是图片附件，丢掉等于白写。
+      if (data.cc !== null && typeof data.cc === 'object') {
+        const cc = { ...data.cc }
+        delete cc.source_file
+        delete cc.png
+        delete cc.imported_at
+        delete cc.spec
+        data.cc = cc
+      }
+      const written = await store.writeCard(ws, target, data, Array.isArray(card.sections) ? card.sections : [], { force: true })
+      if (written.ok !== true) {
+        // 占位文件留着会变成一张空卡，撤掉
+        await fs.rm(path.join(ws, target), { force: true }).catch(() => {})
+        return { ok: false, error: written.error ?? '复制没成功。' }
+      }
       return { ok: true, path: target, id, name: baseName, from: card.path ?? rel }
     },
 
@@ -2108,7 +2161,7 @@ function buildApi(ctx, workspace, config, options) {
         skipCount.set(a.q, (skipCount.get(a.q) ?? 0) + 1)
       }
       const giveUp = new Set([...skipCount].filter(([, n]) => n >= 2).map(([q]) => q))
-      const cov = core.coverage(data, sections)
+      const cov = core.coverage(data, sections, { kind: data?.kind })
       const filled = new Set(cov.filled.map((f) => f.key))
       const todo = questions.filter((q) => {
         if (answeredIds.has(q.id) || sealedIds.has(q.id) || giveUp.has(q.id)) return false
@@ -2265,60 +2318,72 @@ function buildApi(ctx, workspace, config, options) {
      * 断网一次就全没了。
      */
     'tavern.say': async (body) => {
-      const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '这一场找不到了' }
-      const got = await tavern.readChat(ws, id)
-      if (got.ok !== true) return got
-      const turns = Array.isArray(got.turns) ? got.turns.slice() : []
-      const said = String(body?.text ?? '').trim()
-      if (said !== '') turns.push({ who: '我', text: said })
-      if (turns.length > tavern.MAX_TURNS) {
-        return {
-          ok: false,
-          error: `这一场已经说了 ${turns.length} 句，太长了记不住前面。换个标题另开一场，接着往下聊。`,
-          turns,
+      // 同一场会话一次只处理一句：读-改-写之间夹着一次模型调用，
+      // 不串起来的话双击发送会丢一轮。
+      return oneAtATime(id, async () => {
+        const ws = await root(body)
+        const id = String(body?.id ?? '').trim()
+        if (id === '') return { ok: false, error: '这一场找不到了' }
+        const got = await tavern.readChat(ws, id)
+        if (got.ok !== true) return got
+        const turns = Array.isArray(got.turns) ? got.turns.slice() : []
+        const said = String(body?.text ?? '').trim()
+        if (said !== '') turns.push({ who: '我', text: said })
+        if (turns.length > tavern.MAX_TURNS) {
+          // 太长了不收——但用户刚打的那句得先落盘。以前这里只把 turns 塞进
+          // 响应让界面照常显示，一刷新就没了，用户会以为见鬼了。
+          if (said !== '') {
+            await tavern.writeChat(ws, id, { ...got.data, notes: got.notes, turns: turns.length, updated_at: tavernStamp() }, turns)
+          }
+          return {
+            ok: false,
+            error: `这一场已经说了 ${turns.length} 句，太长了记不住前面。换个标题另开一场，接着往下聊。`,
+            turns,
+          }
         }
-      }
-      const cardRel = String(got.data?.card ?? '')
-      const card = cardRel === '' ? { ok: false } : await store.readCard(ws, cardRel)
-      const persona = card.ok === true ? tavern.personaFromCard(card.data, card.sections) : { name: '', text: '' }
-      const cardName = persona.name !== '' ? persona.name : String(got.data?.card_name ?? '').trim()
-      const worldNotes = []
-      const worldRel = String(got.data?.world ?? '')
-      if (worldRel !== '') {
-        const world = await store.readCard(ws, worldRel)
-        if (world.ok === true) {
-          const entries = core.parseWorldEntries(world.sections)
-          worldNotes.push(...tavern.pickWorldEntries(entries, tavern.recentContextText(turns)))
+        const cardRel = String(got.data?.card ?? '')
+        const card = cardRel === '' ? { ok: false } : await store.readCard(ws, cardRel)
+        const persona = card.ok === true ? tavern.personaFromCard(card.data, card.sections) : { name: '', text: '' }
+        const cardName = persona.name !== '' ? persona.name : String(got.data?.card_name ?? '').trim()
+        const worldNotes = []
+        const worldRel = String(got.data?.world ?? '')
+        if (worldRel !== '') {
+          const world = await store.readCard(ws, worldRel)
+          if (world.ok === true) {
+            const entries = core.parseWorldEntries(world.sections)
+            worldNotes.push(...tavern.pickWorldEntries(entries, tavern.recentContextText(turns)))
+          }
         }
-      }
-      // 「收个尾」收到的那段备忘，每轮都带上：不带的话说得久了它会开始
-      // 把前面发生过的事记错（历史只带最近二十来轮）。
-      const memoryNote = (Array.isArray(got.notes) ? got.notes : [])
-        .find((n) => String(n?.title ?? '').trim() === tavern.MEMORY_TITLE)
-      const memory = memoryNote === undefined ? '' : String(memoryNote.body ?? '')
-      const system = tavern.buildRoleplaySystem({ cardName, persona: persona.text, worldNotes, memory })
-      const user = tavern.buildRoleplayUser({ cardName, turns })
-      const called = await callModel(ctx, { system, user, model: body?.model })
-      const now = tavernStamp()
-      if (called.ok !== true) {
-        // 我那句先存下来：TA 没回话，不代表我说的话可以丢
-        const kept = await tavern.writeChat(ws, id, { ...got.data, turns: turns.length, updated_at: now }, turns)
-        return {
-          ok: false,
-          error: `TA 没接上话：${called.error ?? '过一会儿再试一次'}`,
-          kept: kept.ok === true,
-          turns,
+        // 「收个尾」收到的那段备忘，每轮都带上：不带的话说得久了它会开始
+        // 把前面发生过的事记错（历史只带最近二十来轮）。
+        const memoryNote = (Array.isArray(got.notes) ? got.notes : [])
+          .find((n) => String(n?.title ?? '').trim() === tavern.MEMORY_TITLE)
+        const memory = memoryNote === undefined ? '' : String(memoryNote.body ?? '')
+        const system = tavern.buildRoleplaySystem({ cardName, persona: persona.text, worldNotes, memory })
+        const user = tavern.buildRoleplayUser({ cardName, turns })
+        const called = await callModel(ctx, { system, user, model: body?.model })
+        const now = tavernStamp()
+        if (called.ok !== true) {
+          // 我那句先存下来：TA 没回话，不代表我说的话可以丢
+          const kept = await tavern.writeChat(ws, id, { ...got.data, notes: got.notes, turns: turns.length, updated_at: now }, turns)
+          return {
+            ok: false,
+            error: `TA 没接上话：${called.error ?? '过一会儿再试一次'}`,
+            kept: kept.ok === true,
+            turns,
+          }
         }
-      }
-      const reply = tavernCleanReply(called.text, cardName)
-      if (reply !== '') turns.push({ who: cardName === '' ? 'TA' : cardName, text: reply })
-      const saved = await tavern.writeChat(ws, id, { ...got.data, card_name: cardName, turns: turns.length, updated_at: now }, turns)
-      if (saved.ok !== true) {
-        return { ok: false, error: `TA 回了，但这一场没存下来：${saved.error}`, reply, turns }
-      }
-      return { ok: true, id, reply, turns, used: { card: card.ok === true, world: worldNotes.length } }
+        const reply = tavernCleanReply(called.text, cardName)
+        if (reply !== '') turns.push({ who: cardName === '' ? 'TA' : cardName, text: reply })
+        const saved = await tavern.writeChat(ws, id, { ...got.data, notes: got.notes, card_name: cardName, turns: turns.length, updated_at: now }, turns)
+        if (saved.ok !== true) {
+          return { ok: false, error: `TA 回了，但这一场没存下来：${saved.error}`, reply, turns }
+        }
+        return { ok: true, id, reply, turns, used: { card: card.ok === true, world: worldNotes.length } }
+    
+      })
     },
 
     /**
@@ -2430,7 +2495,17 @@ function tavernCleanReply(text, cardName) {
  *    原文件对上。
  */
 async function importWorldInfo(ws, json, fileName) {
-  const id = core.safeId(String(json?.name ?? path.basename(fileName, path.extname(fileName))))
+  const stem = core.safeId(String(json?.name ?? path.basename(fileName, path.extname(fileName))))
+  // 同名的那本不覆盖：导第二本叫「雾港」的世界书时，第一本的世界条目
+  // 会被换掉，而 .lifecard/raw/ 里的原件也跟着一起没了（原件没快照）。
+  // 挑一个没被占的号——和卡那边 uniqueId 一个道理。
+  let id = stem
+  for (let n = 2; n <= 200; n += 1) {
+    const taken = await fs.stat(path.join(ws, 'worlds', id, 'world.md')).then((st) => st.isFile()).catch(() => false)
+    const rawTaken = await fs.stat(path.join(ws, '.lifecard/raw', `${id}.worldinfo.json`)).then((st) => st.isFile()).catch(() => false)
+    if (!taken && !rawTaken) break
+    id = `${stem}-${n}`
+  }
   const rel = path.posix.join('worlds', id, 'world.md')
   const entries = normalizeWorldEntries(json)
 
@@ -2688,6 +2763,30 @@ export function apply(ctx, config) {
         if (req.method !== 'POST') {
           writeJson(res, 405, { ok: false, error: { code: 'method-error', message: '只用 POST' } })
           return
+        }
+        // 这一层没有登录：插件跑在本机，端口上谁都能连。浏览器里的任意一个
+        // 网页都能对着 127.0.0.1 发 POST（表单/纯文本不发预检），而我们的
+        // 接口没有 Origin 校验——那就等于「任何网页都能删你的素材」。
+        // 两道便宜的闸：①只收 application/json（跨站带不上这个类型，
+        // 带了就要预检）②带了 Origin 就必须和请求自己的主机一致。
+        const contentType = String(req.headers?.['content-type'] ?? '').toLowerCase()
+        if (!contentType.includes('application/json')) {
+          writeJson(res, 415, { ok: false, error: { code: 'bad-request', message: '请求格式不对' } })
+          return
+        }
+        const origin = String(req.headers?.origin ?? '')
+        if (origin !== '') {
+          let sameHost = false
+          try {
+            const host = String(req.headers?.host ?? '')
+            sameHost = host !== '' && new URL(origin).host === host
+          } catch {
+            sameHost = false
+          }
+          if (!sameHost) {
+            writeJson(res, 403, { ok: false, error: { code: 'forbidden', message: '这个来源不能改档案' } })
+            return
+          }
         }
         const pathname = new URL(req.url ?? '/', 'http://dsh.internal').pathname
         const method = pathname.startsWith('/api/dsh-lifecard/') ? pathname.slice('/api/dsh-lifecard/'.length) : ''

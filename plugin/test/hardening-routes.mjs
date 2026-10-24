@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import * as api from '../lib/index.js'
 import * as store from '../lib/store.js'
+import * as core from '../lib/core.js'
 
 let pass = 0, fail = 0
 const t = (name, cond, extra) => {
@@ -267,6 +268,7 @@ console.log('\n=== 10. 后台兜底 catch 不漏英文（EISDIR 这类 errno） 
   await handler({
     method: 'POST',
     url: '/api/dsh-lifecard/card.get',
+    headers: { 'content-type': 'application/json' },
     async *[Symbol.asyncIterator]() { throw new Error('EISDIR: illegal operation on a directory, read') },
   }, res)
   const got = sent[0]
@@ -569,18 +571,25 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
     get: () => undefined,
     logger: { warn: () => {} },
   }
-  const post = async (method, body) => {
+  const post = async (method, body, extra = {}) => {
     let status = 0
     let text = ''
     const res = {
       writeHead: (code) => { status = code },
       end: (b) => { text = String(b ?? '') },
     }
-    const payload = JSON.stringify(body ?? {})
+    const payload = typeof extra.raw === 'string' ? extra.raw : JSON.stringify(body ?? {})
+    // 真客户端是 fetch(..., {headers:{'content-type':'application/json'}})，
+    // 路由那两道闸（只收 JSON、Origin 同源）得照着真实请求来测。
+    const headers = { 'content-type': 'application/json', ...(extra.headers ?? {}) }
     const req = {
       method: 'POST',
       url: `/api/dsh-lifecard/${method}`,
-      async *[Symbol.asyncIterator]() { yield Buffer.from(payload) },
+      headers,
+      async *[Symbol.asyncIterator]() {
+        if (extra.noChunks === true) return
+        yield Buffer.from(payload)
+      },
       on: (event, fn) => { if (event === 'end') fn(); if (event === 'data') fn(Buffer.from(payload)) },
     }
     await handler(req, res)
@@ -640,6 +649,7 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   const req = {
     method: 'POST',
     url: '/api/dsh-lifecard/state.get',
+    headers: { 'content-type': 'application/json' },
     async *[Symbol.asyncIterator]() { yield Buffer.from(big) },
     on: (event, fn) => { if (event === 'end') fn(); if (event === 'data') fn(Buffer.from(big)) },
   }
@@ -701,6 +711,112 @@ console.log('\n=== card.fork：拿现实里的卡复制一份来演 ===')
 
   const missing = await table['card.fork']({ path: 'people/nobody.card.md' })
   t('找不到的卡说人话', missing.ok === false && String(missing.error).includes('找不到'), missing)
+}
+
+console.log('\n=== 16. 复制来演：小设定要留下、来路不带家目录 ===')
+{
+  const src = 'people/lao-zhang.card.md'
+  await store.writeCard(ws, src, {
+    lifecard: '0.1', id: 'lao-zhang', kind: 'real', world: 'reality', name: '老张',
+    cc: { spec: 'chara_card_v2', source_file: 'laozhang.png', fields: { character_book: { entries: [{ keys: ['茶馆'], content: '镇上有家老茶馆。' }] } } },
+  }, [{ title: '自述', body: '话不多的人。' }])
+
+  const forked = await table['card.fork']({ path: src })
+  t('复制成功', forked.ok === true, forked)
+  const copy = await store.readCard(ws, forked.path)
+  t('副本读得回来', copy.ok === true, copy.error ?? copy.ok)
+  const book = copy.data?.cc?.fields?.character_book
+  t('卡里自带的小设定一条没丢', Array.isArray(book?.entries) && book.entries.length === 1, copy.data?.cc)
+  t('来路标记被清掉了（不再指着原图）', copy.data?.cc?.source_file === undefined && copy.data?.cc?.spec === undefined, copy.data?.cc)
+  t('来路记的是相对路径，不是 /Users/…', String(copy.data?.forked_from ?? '').startsWith('people/'), copy.data?.forked_from)
+
+  // 第 41 次复制要说人话，不能盖掉别人
+  const many = await table['card.fork']({ path: src })
+  t('再复制一份换号不覆盖', many.ok === true && many.path !== forked.path, [forked.path, many.path])
+}
+
+console.log('\n=== 17. card.save 漏传 sections 不许把正文清空 ===')
+{
+  const rel = 'people/keep-body.card.md'
+  await store.writeCard(ws, rel, { lifecard: '0.1', id: 'keep-body', kind: 'real', world: 'reality', name: '留字的人' }, [
+    { title: '自述', body: '这段话不能因为一次保存就没了。' },
+  ])
+  const before = await store.readCard(ws, rel)
+  const posted = await table['card.save']({ path: rel, data: { ...before.data, name: '留字的人' } })
+  t('保存成功', posted.ok === true, posted)
+  const after = await store.readCard(ws, rel)
+  t('正文还在', after.ok === true && after.sections.some((x) => String(x.body).includes('不能因为一次保存就没了')), after.sections)
+}
+
+console.log('\n=== 18. 同名世界书不再原地覆盖 ===')
+{
+  const worldJson = (name) => Buffer.from(JSON.stringify({ name, entries: { 0: { uid: 0, key: ['雾'], keysecondary: [], comment: '', content: `${name}的条目`, constant: false, selective: true, insertion_order: 10, enabled: true } } }), 'utf8').toString('base64')
+  const first = await table['import.cards']({ files: [{ name: 'a.json', base64: worldJson('雾港') }] })
+  const second = await table['import.cards']({ files: [{ name: 'b.json', base64: worldJson('雾港') }] })
+  t('第一本导进来了', first.ok === true && Array.isArray(first.results), first)
+  const p1 = first.results?.[0]?.path
+  const p2 = second.results?.[0]?.path
+  t('第二本另存一份，不覆盖第一本', typeof p1 === 'string' && typeof p2 === 'string' && p1 !== p2, [p1, p2])
+  const one = await store.readCard(ws, String(p1))
+  t('第一本还在、条目没被换掉', one.ok === true && one.text.includes('雾港的条目'), one.ok)
+}
+
+console.log('\n=== 19. 别的网页不能偷偷动档案 ===')
+{
+  let handler = null
+  const ctx3 = {
+    webServer: { register: (options) => { handler = options.handler; return () => {} } },
+    reflect: { get: () => undefined },
+    effect: (fn) => { fn(); return () => {} },
+    logger: { warn: () => {} },
+    get: () => undefined,
+  }
+  api.apply(ctx3, { workspace: ws })
+  const send = async (method, body, headers) => {
+    let status = 0
+    let text = ''
+    const res = { writeHead: (c) => { status = c }, end: (b) => { text = String(b ?? '') } }
+    const payload = JSON.stringify(body ?? {})
+    const req = {
+      method: 'POST',
+      url: `/api/dsh-lifecard/${method}`,
+      headers,
+      async *[Symbol.asyncIterator]() { yield Buffer.from(payload) },
+      on: () => {},
+    }
+    await handler(req, res)
+    return { status, body: text === '' ? null : JSON.parse(text) }
+  }
+
+  const plain = await send('state.get', {}, { 'content-type': 'text/plain' })
+  t('不是 JSON 的请求一律不收（浏览器跨站发不出 JSON）', plain.status === 415, plain.status)
+  const cross = await send('state.get', {}, { 'content-type': 'application/json', origin: 'https://evil.example', host: '127.0.0.1:50084' })
+  t('别家网页来的请求挡掉', cross.status === 403, cross.status)
+  const same = await send('state.get', {}, { 'content-type': 'application/json', origin: 'http://127.0.0.1:50084', host: '127.0.0.1:50084' })
+  t('自己的界面照旧能用', same.status === 200 && same.body?.ok === true, same.status)
+  const bare = await send('state.get', {}, { 'content-type': 'application/json' })
+  t('不带 Origin 的本地调用也照旧能过', bare.status === 200, bare.status)
+}
+
+console.log('\n=== 20. 请求体里指定的 workspace 不能换库 ===')
+{
+  const other = path.join(tmpdir(), 'lifecard-other-' + stamp)
+  await fs.mkdir(path.join(other, 'materials'), { recursive: true })
+  await fs.writeFile(path.join(other, 'materials', '别人的素材.md'), '不该被看到', 'utf8')
+  const peek = await table['workspace.list']({ workspace: other })
+  t('用别的路径当 workspace 也只在当前库里找', JSON.stringify(peek).includes('别人的素材') === false, String(peek).slice(0, 200))
+}
+
+console.log('\n=== 21. 虚构角色的完成度不把「关系/出生年/同意」算进去 ===')
+{
+  const data = { lifecard: '0.1', id: 'lin', kind: 'fictional', world: 'reality', name: '林小雨' }
+  const sections = [{ title: '自述', body: '爱笑，话密。' }, { title: '口癖', body: '老说「就是说」。' }]
+  const realCov = core.coverage({ ...data, kind: 'real' }, sections)
+  const ficCov = core.coverage(data, sections)
+  t('真人的表里有关系那一项', realCov.rows.some((r) => r.key === 'relation'), realCov.rows.map((r) => r.key))
+  t('虚构角色的表里没有关系/出生年/同意状态', ['relation', 'birth_year', 'consent'].every((k) => !ficCov.rows.some((r) => r.key === k)), ficCov.rows.map((r) => r.key))
+  t('虚构角色的「还空着」里也不会出现关系', (ficCov.empty ?? []).every((r) => !['关系', '出生年', '同意状态'].includes(r.label)), (ficCov.empty ?? []).map((r) => r.label))
+  t('虚构角色的完成度因此能顶到 100%', ficCov.percent >= realCov.percent, [ficCov.percent, realCov.percent])
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

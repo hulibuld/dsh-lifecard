@@ -26,6 +26,22 @@ const ws = path.join(tmpdir(), 'lifecard-tavern-' + stamp)
 await fs.mkdir(ws, { recursive: true })
 await store.openWorkspace(ws, { create: true })
 
+/** 造一个假的宿主 ctx：`llm.stream()` 直接给 handle（和真宿主一样）。 */
+const makeCtx = (reply) => ({
+  webServer: { register: () => () => {} },
+  reflect: { get: () => undefined },
+  effect: (fn) => { fn(); return () => {} },
+  logger: { warn: () => {} },
+  get: (name) => (name === 'llm' ? {
+    listProviders: async () => [{ provider: 'raccoon', models: [{ id: 'm' }] }],
+    listModels: async () => [],
+    stream: () => (async function* () {
+      yield { type: 'text-delta', text: reply() }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })(),
+  } : undefined),
+})
+
 console.log('\n=== 1. 会话文件：写出去读回来还是那个样子 ===')
 {
   t('路径钉在 chats/ 里', tavern.chatRelPath('x') === 'chats/x.md', tavern.chatRelPath('x'))
@@ -313,6 +329,86 @@ console.log('\n=== 8. 收个尾：把前面发生过的事记下来，之后每�
   t('之后每一轮都把备忘带上了', seenSystem.includes('到这儿为止'), seenSystem.slice(0, 200))
   t('带的是备忘的内容', seenSystem.includes('厂里倒闭') || seenSystem.includes('还没谈完'), seenSystem.slice(0, 400))
   void lines
+}
+
+console.log('\n=== 8. 回话里带小标题不能把后面半场对话吃掉 ===')
+{
+  const turns = [
+    { who: '我', text: '今晚下雪了吗？' },
+    { who: '张三', text: '下了。\n\n## 天气\n\n雪下了一整天。\n\n### 她\n\n这句是她说的。' },
+    { who: '我', text: '那她冷不冷。' },
+  ]
+  const data = { id: 'chat-head', card: 'people/zhang-san.card.md', card_name: '张三' }
+  const text = tavern.renderChatMarkdown(data, turns)
+  const back = tavern.parseChatText(text)
+  t('读回来还是三条', back.ok === true && back.turns.length === 3, back.turns?.length)
+  t('第三条没被当成备忘吞掉', back.turns?.[2]?.text === '那她冷不冷。', back.turns?.[2])
+  t('说话人没被小标题串改', back.turns?.[1]?.who === '张三', back.turns?.[1])
+  t('小标题原样留在正文里（用户看得见）', String(back.turns?.[1]?.text).includes('## 天气'), back.turns?.[1])
+  t('备忘里没有混进对话', (back.notes ?? []).length === 0, back.notes)
+}
+
+console.log('\n=== 9. 「收个尾」收到的那段，下一句话之后还在 ===')
+{
+  const id = 'chat-mem'
+  const many = []
+  for (let n = 0; n < 5; n += 1) {
+    many.push({ who: '我', text: `第 ${n} 句` })
+    many.push({ who: '张三', text: `回第 ${n} 句` })
+  }
+  await tavern.writeChat(ws, id, { id, card: 'people/zhang-san.card.md', card_name: '张三', updated_at: '2026-10-24 20:00' }, many)
+  const memLlm = {
+    listProviders: async () => [{ provider: 'raccoon', models: [{ id: 'm' }] }],
+    listModels: async () => [],
+    stream: () => (async function* () {
+      yield { type: 'text-delta', text: '厂子倒闭那年他还在那儿。' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })(),
+  }
+  const ctxMem = {
+    webServer: { register: () => () => {} },
+    reflect: { get: () => undefined },
+    effect: (fn) => { fn(); return () => {} },
+    logger: { warn: () => {} },
+    get: (name) => (name === 'llm' ? memLlm : undefined),
+  }
+  const tableMem = api.buildApi(ctxMem, async () => ws, { workspace: ws })
+  const sum = await tableMem['tavern.summarize']({ id })
+  t('收尾成功', sum.ok === true, sum.error)
+  const afterSum = await tavern.readChat(ws, id)
+  t('备忘写进文件了', (afterSum.notes ?? []).some((x) => x.title === tavern.MEMORY_TITLE), afterSum.notes)
+  await tableMem['tavern.say']({ id, text: '后来呢？' })
+  const afterSay = await tavern.readChat(ws, id)
+  t('再说一句之后备忘还在（以前这里会被静默摘掉）', (afterSay.notes ?? []).some((x) => x.title === tavern.MEMORY_TITLE), afterSay.notes)
+  t('备忘的内容也还在', String((afterSay.notes ?? []).find((x) => x.title === tavern.MEMORY_TITLE)?.body ?? '').includes('倒闭'), afterSay.notes)
+  t('文件里那一段字没被抹（用户拿 Finder 也能看见）', String(afterSay.text ?? '').includes(`## ${tavern.MEMORY_TITLE}`), String(afterSay.text).slice(0, 120))
+}
+
+console.log('\n=== 10. 太长了不收，但刚打的那句不能丢 ===')
+{
+  const id = 'chat-long'
+  const many = []
+  for (let n = 0; n < tavern.MAX_TURNS + 2; n += 1) many.push({ who: '我', text: `第 ${n} 句` })
+  await tavern.writeChat(ws, id, { id, card: 'people/zhang-san.card.md', card_name: '张三' }, many)
+  const tableLong = api.buildApi(makeCtx(() => '嗯。'), async () => ws, { workspace: ws })
+  const r = await tableLong['tavern.say']({ id, text: '最后这句' })
+  t('太长了会拒绝并说清为什么', r.ok === false && String(r.error).includes('太长'), r.error)
+  const back = await tavern.readChat(ws, id)
+  t('刚打的那句已经落盘（界面照显的东西刷新之后还在）', (back.turns ?? []).some((x) => x.text === '最后这句'), (back.turns ?? []).length)
+}
+
+console.log('\n=== 11. 同时点两次发送不会丢一轮 ===')
+{
+  const id = 'chat-race'
+  await tavern.writeChat(ws, id, { id, card: 'people/zhang-san.card.md', card_name: '张三' }, [])
+  const tableRace = api.buildApi(makeCtx(() => '嗯。'), async () => ws, { workspace: ws })
+  await Promise.all([
+    tableRace['tavern.say']({ id, text: '第一句' }),
+    tableRace['tavern.say']({ id, text: '第二句' }),
+  ])
+  const back = await tavern.readChat(ws, id)
+  const texts = (back.turns ?? []).map((x) => x.text)
+  t('两句都在（以前后写的那次会以旧内容为基础把前一句吞掉）', texts.includes('第一句') && texts.includes('第二句'), texts)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)
