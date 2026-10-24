@@ -275,5 +275,54 @@ if (CardForm !== undefined) {
   }
 }
 
+// ── 存好之后，那份草稿不许又被写回来 ────────────────────────────
+// 卸载时会补发一次保存（上面那一段验的就是它）。可「点『存好』」走的也是
+// 卸载那条路：save() 先 draft.drop、再 onSaved()，组件这时才卸载，补发的那次
+// 落在 drop 之后 —— 草稿又回来了。下次打开这张卡会看到「上次写到一半，还留着。」，
+// 点「接着上次写」还会把卡拉回旧版。这是数据回退，比丢草稿严重。
+if (CardForm !== undefined) {
+  calls.length = 0
+  stores.clear()
+  applyRootPresets()
+  if (cardViewFn !== undefined) storeFor(cardViewFn).slots[0] = true
+  seen.clear()
+  deepRender(renderComponent(Root, { visible: true }))
+  const Form2 = seen.get('CardForm')
+  t('存好那一段也找得到编辑表单', Form2 !== undefined)
+
+  if (Form2 !== undefined) {
+    await settle()
+    const store = stores.get('CardForm')
+    store.slots[8] = true   // draftAsked
+    store.slots[9] = ''     // savedPrint
+    const props = { card: CARD, worlds: [], onCancel: () => {}, onSaved: () => {} }
+    let tree = deepRender(renderComponent(Form2, props))
+
+    // 改一句，让它落在「不足 1.5 秒就点了存好」的那个时间窗里。
+    const areas = collect(tree, (n) => n.type === 'textarea')
+    const target = areas.find((n) => String(n.props?.value ?? '').includes('厨房和工厂'))
+    if (target !== undefined) target.props.onChange({ target: { value: '她十九岁就进厂了，一直做到厂子关门。' } })
+    tree = deepRender(renderComponent(Form2, props))
+
+    const saveBtn = collect(tree, (n) => n.type === 'button' && String(n.props?.children ?? '') !== '' && JSON.stringify(n.props?.children).includes('存好'))[0]
+    t('找得到「存好」那个按钮', saveBtn !== undefined)
+    if (saveBtn !== undefined) {
+      saveBtn.props.onClick()
+      await settle()
+      const order = calls.map((c) => c.url.replace(/^.*\/api\/dsh-lifecard\//, ''))
+      const dropAt = order.indexOf('draft.drop')
+      t('点存好会真的存卡', order.includes('card.save'), JSON.stringify(order))
+      t('存好了才删草稿', dropAt !== -1, JSON.stringify(order))
+
+      // 真实现场：存好之后外壳会把这一页换掉，组件卸载。
+      unmount(Form2)
+      await settle()
+      const after = calls.map((c) => c.url.replace(/^.*\/api\/dsh-lifecard\//, ''))
+      const late = after.slice(dropAt + 1).filter((m) => m === 'draft.save')
+      t('删掉草稿之后不许再写回来', late.length === 0, JSON.stringify(after))
+    }
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

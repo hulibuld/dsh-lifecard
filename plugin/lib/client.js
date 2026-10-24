@@ -755,7 +755,13 @@ function LifeCardTab(props) {
   const [materialFor, setMaterialFor] = useState(null)
   const mounted = useRef(true)
 
-  useEffect(() => () => { mounted.current = false }, [])
+  // 挂载时就置回 true：宿主一旦按 StrictMode 那样「先卸再挂」跑一遍 effect，
+  // 只写卸载那一半会让这个 ref 永远是 false，之后每个 if (!mounted.current)
+  // 都提前 return，界面卡在「正在打开…」出不来。
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
 
   const flash = useCallback((message, tone) => {
     setToast({ message, tone: tone ?? 'ok' })
@@ -904,7 +910,7 @@ function LifeCardTab(props) {
   // 不这样清，刚看完某人的卡再回首页点「整理 N 份材料」，那一页会默默
   // 还选着刚才那个人。
   const go = useCallback((next) => {
-    if (next === VIEWS.analyze || next === VIEWS.interview) { setInterviewFor(null); setMaterialFor(null) }
+    if (next === VIEWS.analyze || next === VIEWS.interview || next === VIEWS.home) { setInterviewFor(null); setMaterialFor(null) }
     setView(next)
   }, [])
 
@@ -923,6 +929,35 @@ function LifeCardTab(props) {
     }
   }, [])
 
+  // 后台一断（宿主重启、插件没起来），这些点击以前就是「点了没反应」：
+  // 未捕获的 Promise 拒绝不会自己变成界面上的字。统一包一层，出错时说话。
+  // 故意写成普通函数而不是 useCallback——hook 槽位一动，
+  // render-all 里那些按号码摆状态的地方就全错位了。
+  // 这三处（首页两种形态 + 世界那一页）原本各抄了一份一模一样的处理，
+  // 而且都不接异常：后台一断，点「删掉」「检查一下」就是毫无反应。
+  const deleteMaterial = async (m) => {
+    const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
+      ? window.confirm(`确定删掉「${m.name}」吗？\n\n删了就真没了，AI 以后也读不到这一份。`)
+      : true
+    if (ok !== true) return
+    try {
+      const r = await call('material.delete', { path: m.path })
+      if (r?.ok === true) { flash(`删掉了「${m.name}」`); await refresh(state?.workspace) }
+      else setError(r?.error ?? '没删掉')
+    } catch (e) { setError(humanizeError(e)) }
+  }
+
+  // stayOnPage：在「检查一下」这一页点重新检查时原地刷，不要把人踢回别处。
+  const runDoctor = async (stayOnPage) => {
+    try {
+      const r = await call('doctor.run', {})
+      if (r?.ok !== true) { setError(r?.error ?? '检查没跑成'); return }
+      setDoctor(r)
+      if (stayOnPage === true) await refresh()
+      else setView(VIEWS.doctor)
+    } catch (e) { setError(humanizeError(e)) }
+  }
+
   const header = () => {
     const titles = {
       [VIEWS.home]: 'Life Cards',
@@ -940,7 +975,10 @@ function LifeCardTab(props) {
     // 但已经选过文件夹、是从首页主动进来换的时候要能退回去。
     const canBack = view !== VIEWS.home && (view !== VIEWS.setup || state?.exists === true)
     return h('div', { className: 'lc-head' },
-      canBack ? h('button', { className: 'lc-btn ghost sm', onClick: () => { setView(VIEWS.home); setError(null); setProposal(null) }, title: '回到列表', type: 'button' }, h(Icon, { name: 'back', size: 14 })) : null,
+      // 顶部返回一律当成「回首页」：上次打开的是谁、刚才点的是哪份材料、
+      // 看的是哪本世界书，到这里都作废。不这样清，从 A 的卡退回来再点别人的
+      // 材料，分析页会默默还认着 A，读出来的东西全记到 A 名下。
+      canBack ? h('button', { className: 'lc-btn ghost sm', onClick: () => { go(VIEWS.home); setError(null); setProposal(null); setActiveWorld(null) }, title: '回到列表', type: 'button' }, h(Icon, { name: 'back', size: 14 })) : null,
       h('div', { className: 'lc-grow lc-ellipsis' },
         h('div', { className: 'lc-title lc-ellipsis' }, titles[view] ?? 'Life Cards'),
         view === VIEWS.home
@@ -963,7 +1001,19 @@ function LifeCardTab(props) {
       return h('div', { className: 'lc-empty' }, h(Spinner), h('div', { className: 'lc-meta', style: { marginTop: 8 } }, '正在打开…'))
     }
     if (view === VIEWS.setup || state.exists === false) {
-      return h(SetupView, { state, onDone: async (ws) => { await call('workspace.init', { workspace: ws }); await refresh(ws); setView(VIEWS.home); flash('好了，可以开始了') } })
+      return h(SetupView, {
+        state,
+        onDone: async (ws) => {
+          // workspace.init 建不出来时是「成功回话 + ok:false」，不抛错。
+          // 不看返回值的话，用户会看到绿色「好了，可以开始了」，
+          // 下一秒又回到同一个「先挑一个文件夹」，再点几次还是这样。
+          const r = await call('workspace.init', { workspace: ws })
+          if (r?.ok !== true) throw new Error(r?.error ?? '这个文件夹没能用起来')
+          await refresh(ws)
+          setView(VIEWS.home)
+          flash(r?.remembered === false ? '好了，可以开始了。不过这次选的文件夹没记住，下次还得再选一遍' : '好了，可以开始了')
+        },
+      })
     }
     switch (view) {
       case VIEWS.import:
@@ -994,8 +1044,14 @@ function LifeCardTab(props) {
         // about 是个字符串，这个人还没建卡也能分析——分析结果会进提案，
         // 采纳时才建卡。
         return h(MemoryView, {
-          onBack: () => setView(VIEWS.home),
-          onDone: (about) => { setInterviewFor(about ?? null); setView(VIEWS.analyze) },
+          onBack: () => { setInterviewFor(null); setMaterialFor(null); setView(VIEWS.home) },
+          onDone: (about) => {
+            // 只认那份刚写出来的材料。不带 path 的话分析页不勾任何材料，
+            // 而「一个都不勾」等于全读，别人的人也会被读进来。
+            setMaterialFor(typeof about?.path === 'string' && about.path !== '' ? about.path : null)
+            setInterviewFor(about ?? null)
+            setView(VIEWS.analyze)
+          },
         })
       case VIEWS.analyze:
         return h(AnalyzeView, {
@@ -1010,15 +1066,7 @@ function LifeCardTab(props) {
         // 直接退回首页，用户点了没反应，还以为坏了。现在把清单单独摊开。
         return activeCard === null
           ? proposal === null
-            ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: async (m) => {
-            const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
-              ? window.confirm(`确定删掉「${m.name}」吗？\n\n删了就真没了，AI 以后也读不到这一份。`)
-              : true
-            if (ok !== true) return
-            const r = await call('material.delete', { path: m.path })
-            if (r?.ok === true) { flash(`删掉了「${m.name}」`); await refresh(state?.workspace) }
-            else setError(r?.error ?? '没删掉')
-          }, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+            ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor() })
             : h('div', { className: 'lc-pad lc-stack' },
                 proposal.about === undefined || String(proposal.about).trim() === ''
                   ? null
@@ -1048,7 +1096,15 @@ function LifeCardTab(props) {
               proposal,
               setProposal,
               flash,
-              onRefresh: async () => { const detail = await call('card.get', { path: activeCard.path }); setActiveCard(detail) },
+              onRefresh: async () => {
+                try {
+                  const detail = await call('card.get', { path: activeCard.path })
+                  // 卡文件被外面删掉/挪走时，以前会拿 {ok:false} 当卡画出来：
+                  // 一张「(还没起名字)」的空卡，还照样能点「存好」。
+                  if (detail?.ok !== true) { setError(detail?.error ?? '这张卡读不出来'); return }
+                  setActiveCard(detail)
+                } catch (e) { setError(humanizeError(e)) }
+              },
               onDeleted: async () => { setActiveCard(null); setView(VIEWS.home); await refresh() },
               onInterview: (preset) => { setInterviewFor(preset); setView(VIEWS.interview) },
               onAnalyze: () => { setInterviewFor({ id: activeCard.data?.id, name: activeCard.data?.name }); setView(VIEWS.analyze) },
@@ -1069,34 +1125,18 @@ function LifeCardTab(props) {
         })
       case VIEWS.world:
         return activeWorld === null
-          ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: async (m) => {
-            const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
-              ? window.confirm(`确定删掉「${m.name}」吗？\n\n删了就真没了，AI 以后也读不到这一份。`)
-              : true
-            if (ok !== true) return
-            const r = await call('material.delete', { path: m.path })
-            if (r?.ok === true) { flash(`删掉了「${m.name}」`); await refresh(state?.workspace) }
-            else setError(r?.error ?? '没删掉')
-          }, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+          ? h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor() })
           : h(WorldView, {
               world: activeWorld,
               listing,
               onOpenCard: openCard,
             })
       case VIEWS.doctor:
-        return h(DoctorView, { report: doctor, onOpenCard: openCard, onRun: async () => { const r = await call('doctor.run', {}); setDoctor(r); await refresh() } })
+        return h(DoctorView, { report: doctor, onOpenCard: openCard, onRun: () => runDoctor(true) })
       case VIEWS.jobs:
         return h(JobsView, { onBack: () => setView(VIEWS.home), flash })
       default:
-        return h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: async (m) => {
-            const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
-              ? window.confirm(`确定删掉「${m.name}」吗？\n\n删了就真没了，AI 以后也读不到这一份。`)
-              : true
-            if (ok !== true) return
-            const r = await call('material.delete', { path: m.path })
-            if (r?.ok === true) { flash(`删掉了「${m.name}」`); await refresh(state?.workspace) }
-            else setError(r?.error ?? '没删掉')
-          }, onDoDoctor: async () => { const r = await call('doctor.run', {}); setDoctor(r); setView(VIEWS.doctor) } })
+        return h(HomeView, { state, listing, onOpen: openCard, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor() })
     }
   }
 
@@ -1123,6 +1163,11 @@ function SetupView({ state, onDone }) {
   const [busy, setBusy] = useState(false)
   const [inspect, setInspect] = useState(null)
   const [err, setErr] = useState(null)
+  // 已经有一个库、是从首页「换个文件夹」进来的。这时输入框里预填的是
+  // 现在用的那个文件夹（不是用户目录下的默认位置），换走之前必须先说清楚
+  // 原来那些卡不会跟过来——不说，用户切过去看到空库会以为档案丢了。
+  const current = String(state?.workspace ?? '')
+  const switching = state?.exists === true && current !== ''
 
   const check = async () => {
     setBusy(true); setErr(null)
@@ -1134,15 +1179,25 @@ function SetupView({ state, onDone }) {
 
   const create = async () => {
     setBusy(true); setErr(null)
-    try { await onDone(target) } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
+    try {
+      if (switching && target.trim() !== current) {
+        const ask = typeof window !== 'undefined' && typeof window.confirm === 'function' ? window.confirm : () => true
+        const yes = ask(`现在用的是：\n${current}\n\n换成：\n${target.trim()}\n\n换过去之后，原来那些卡不会跟过来——它们还在原来的文件夹里，想换回去随时能再选一次。`)
+        if (!yes) return
+      }
+      await onDone(target)
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
   }
 
   return h('div', { className: 'lc-pad lc-stack' },
     h('div', { className: 'lc-empty', style: { paddingBottom: 12 } },
       h('div', { className: 'lc-empty-icon' }, h(Icon, { name: 'folder', size: 22 })),
-      h('h3', null, '先挑一个文件夹放你的档案'),
+      h('h3', null, switching ? '换一个文件夹放档案' : '先挑一个文件夹放你的档案'),
       h('div', { className: 'lc-meta' }, '每个人会变成这里的一个文本文件。', h('br'), '你随时能在访达（Finder）里找到它们，也能用别的软件打开。'),
     ),
+    switching
+      ? h(Note, { icon: 'folder' }, '现在用的是下面这个位置。换成别的文件夹之后，这里的卡不会跟过来——它们还在原处，想换回来再选一次就行。')
+      : null,
     h(Field, { label: '放在哪里', hint: '下面这个位置就行，直接点最下面的按钮。' },
       // 改了路径就把上一次「看看这个位置」的结论扔掉：不然下面还写着
       // 「这里已经有你的东西了：5 张卡」，用户会以为新路径接得上旧档案。
@@ -1374,7 +1429,9 @@ function HomeView({ state, listing, onOpen, onOpenWorld, onNavigate, onProposal,
           // 重装软件也改不回来。给一条明路。
           h('div', { className: 'lc-row', style: { marginTop: 6 } },
             h(Btn, { size: 'sm', ghost: true, icon: 'folder', onClick: () => onNavigate(VIEWS.setup) }, '换个文件夹'),
-            h('span', { className: 'lc-meta lc-ellipsis' }, state?.workspace ?? ''),
+            // 路径照实写出来：这是唯一一处「档案到底在哪儿」的线索。
+            // 藏起来，选错文件夹的人就永远找不回去了。
+            h('span', { className: 'lc-meta lc-ellipsis' }, state?.workspace === undefined || state?.workspace === '' ? '' : `档案在：${state.workspace}`),
           ),
         )
       : null,
@@ -1536,7 +1593,10 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
 
   useEffect(() => {
     let alive = true
-    if (card?.path === undefined || card?.path === '') { setMemFlag(null); return () => { alive = false } }
+    // 先清掉上一张卡的标：换到别人的卡上，新请求回来之前还挂着「！还缺 3 样」，
+    // 看着像是在说这张卡缺东西。
+    setMemFlag(null)
+    if (card?.path === undefined || card?.path === '') { return () => { alive = false } }
     call('card.memoryStatus', { path: card.path }).then((r) => {
       if (alive === true && r.ok === true && r.flag === true) setMemFlag(r)
       else if (alive === true) setMemFlag(null)
@@ -2081,6 +2141,10 @@ function CardForm({ card, onCancel, onSaved, worlds }) {
       }
       // 卡已经存进文件了，草稿的使命结束。不删的话，下次打开这张卡
       // 会拿旧草稿盖掉刚存的内容——那是数据回退，比丢草稿严重得多。
+      // 卸载时补发的那一次（见下面只挂一次的 effect）也得先作废：
+      // 不然「最后一次改动距点『存好』不到 1.5 秒」时，那份草稿会在 drop
+      // 之后又被写回来，下次打开看到「上次写到一半，还留着。」——一句假话。
+      flushRef.current = null
       if (cardId !== '') await call('draft.drop', { cardId }).catch(() => {})
       await onSaved()
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
@@ -3114,36 +3178,38 @@ function ImportView({ busy, onImport, onAnalyze, listing }) {
       h(Btn, { tone: tab === 'text' ? 'primary' : undefined, size: 'sm', icon: 'book', onClick: () => setTab('text') }, '一段文字'),
     ),
 
-    tab === 'card'
-      ? h('div', { className: 'lc-stack' },
-          h('div', {
-            className: 'lc-empty',
-            style: {
-              border: `2px dashed ${drag ? 'var(--lc-import)' : 'var(--lc-line-strong)'}`,
-              borderRadius: 'var(--lc-radius)',
-              background: drag ? 'var(--lc-import-soft)' : 'transparent',
-              transition: 'all .15s', cursor: 'pointer',
-            },
-            onClick: () => inputRef.current?.click(),
-            onDragOver: (e) => { e.preventDefault(); setDrag(true) },
-            onDragLeave: () => setDrag(false),
-            onDrop: (e) => { e.preventDefault(); setDrag(false); handleFiles(e.dataTransfer?.files) },
-          },
-            h('div', { className: 'lc-empty-icon', style: { background: 'var(--lc-import-soft)', color: 'var(--lc-import)' } }, h(Icon, { name: 'import', size: 22 })),
-            h('h3', null, drag ? '松手就行' : '把文件拖到这里，或者点一下去选'),
-            h('div', { className: 'lc-meta' }, '别人给你的角色卡都能读——图片也行，导出的文件也行。', h('br'), '可以一次选好几个。'),
-            h('input', {
-              ref: inputRef, type: 'file', multiple: true, accept: '.png,.json,.charx,.zip',
-              style: { display: 'none' }, onChange: (e) => handleFiles(e.target.files),
-            }),
-          ),
-          busy === 'import' ? h('div', { className: 'lc-row' }, h(Spinner), h('span', { className: 'lc-meta' }, '正在读…')) : null,
-          h(Note, { tone: undefined, icon: 'check' }, '导入进来的卡会原样保留所有内容，包括这个软件不认识的字段。你在这里改过的部分才会变，导出时一起带走。'),
-        )
-      : h('div', { className: 'lc-stack' },
-          h('div', { className: 'lc-meta' }, '访谈稿、聊天记录、日记、你写的散文——什么都可以。存进来之后，可以让 AI 读出里面的信息。'),
-          h(TextImport, { onAnalyze }),
-        ),
+    // 两边都常驻，只把不在前面的那一边藏起来。
+    // 以前是按 tab 条件挂载：粘了一长篇访谈稿，手滑点一下「角色卡文件」
+    // 再点回来，TextImport 整个被卸载，输入全丢了——既没提示，也没有草稿。
+    h('div', { className: 'lc-stack', style: tab === 'card' ? undefined : { display: 'none' } },
+      h('div', {
+        className: 'lc-empty',
+        style: {
+          border: `2px dashed ${drag ? 'var(--lc-import)' : 'var(--lc-line-strong)'}`,
+          borderRadius: 'var(--lc-radius)',
+          background: drag ? 'var(--lc-import-soft)' : 'transparent',
+          transition: 'all .15s', cursor: 'pointer',
+        },
+        onClick: () => inputRef.current?.click(),
+        onDragOver: (e) => { e.preventDefault(); setDrag(true) },
+        onDragLeave: () => setDrag(false),
+        onDrop: (e) => { e.preventDefault(); setDrag(false); handleFiles(e.dataTransfer?.files) },
+      },
+        h('div', { className: 'lc-empty-icon', style: { background: 'var(--lc-import-soft)', color: 'var(--lc-import)' } }, h(Icon, { name: 'import', size: 22 })),
+        h('h3', null, drag ? '松手就行' : '把文件拖到这里，或者点一下去选'),
+        h('div', { className: 'lc-meta' }, '别人给你的角色卡都能读——图片也行，导出的文件也行。', h('br'), '可以一次选好几个。'),
+        h('input', {
+          ref: inputRef, type: 'file', multiple: true, accept: '.png,.json,.charx,.zip',
+          style: { display: 'none' }, onChange: (e) => handleFiles(e.target.files),
+        }),
+      ),
+      busy === 'import' ? h('div', { className: 'lc-row' }, h(Spinner), h('span', { className: 'lc-meta' }, '正在读…')) : null,
+      h(Note, { tone: undefined, icon: 'check' }, '导入进来的卡会原样保留所有内容，包括这个软件不认识的字段。你在这里改过的部分才会变，导出时一起带走。'),
+    ),
+    h('div', { className: 'lc-stack', style: tab === 'text' ? undefined : { display: 'none' } },
+      h('div', { className: 'lc-meta' }, '访谈稿、聊天记录、日记、你写的散文——什么都可以。存进来之后，可以让 AI 读出里面的信息。'),
+      h(TextImport, { onAnalyze }),
+    ),
   )
 }
 
@@ -3328,14 +3394,19 @@ function MemoryView({ onDone, onBack }) {
               (f.missing ?? []).length === 0
                 ? null
                 : h('span', { className: 'lc-meta' }, ` · 还缺 ${f.missing.length} 样`)),
-            h(Btn, { size: 'sm', tone: 'analyze', icon: 'spark', onClick: () => onDone?.({ id: f.id, name: f.label }) }, '让 AI 读 TA'),
+            // 连材料路径一起带过去：只带人名的话，分析页那份「读哪些材料」
+            // 会一个都不勾，而「一个都不勾」的意思是全读——妈妈、同事、别人
+            // 日记的材料会一起读进来，结果全挂到这个人名下。
+            h(Btn, { size: 'sm', tone: 'analyze', icon: 'spark', onClick: () => onDone?.({ id: f.id, name: f.label, path: f.path }) }, '让 AI 读 TA'),
             // 正好在这里也能删：刚生成、扫一眼就知道不对的那一份，不必再回首页找。
             h(Btn, {
               size: 'sm', ghost: true, icon: 'trash', title: '删掉这一份',
               onClick: async () => {
-                const r = await call('material.delete', { path: f.path })
-                if (r?.ok === true) setMade(made.filter((x) => x.key !== f.key))
-                else setErr(r?.error ?? '没删掉')
+                try {
+                  const r = await call('material.delete', { path: f.path })
+                  if (r?.ok === true) setMade(made.filter((x) => x.key !== f.key))
+                  else setErr(r?.error ?? '没删掉')
+                } catch (e) { setErr(humanizeError(e)) }
               },
             }, '删'),
           )),
@@ -3447,6 +3518,10 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
   }
 
   const run = async () => {
+    // 「这一趟等了多久」从这里算。以前写成 startedAt 却没有声明，后台一连不上
+    // 就在 catch 里抛 ReferenceError，setErr 永远走不到——用户只看到按钮弹回来，
+    // 一句解释都没有。
+    const startedAt = Date.now()
     setBusy(true); setErr(null); setResult(null)
     try {
       const r = await call('analyze.run', {
@@ -3586,6 +3661,9 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
         h(Btn, { tone: 'primary', big: true, block: true, icon: 'check', onClick: async () => {
           try {
             const p = await call('proposal.get', { json: result.json })
+            // 读不出来当「没有新东西」会让界面绿字说「这一份里没有还没写进去的了」，
+            // 用户以为 AI 什么也没读出来——照着 openProposal 的写法先判一次。
+            if (p?.ok !== true) { setErr(p?.error ?? '这份建议读不出来'); return }
             onProposal(p)
           } catch (e) { setErr(humanizeError(e)) }
         } }, '看看读出了什么'),
@@ -3775,23 +3853,28 @@ function JobsView({ onBack, flash }) {
     if (draftRoles !== null) patch.target_roles = draftRoles
     if (draftPay !== null) patch.compensation = draftPay
     if (draftNo !== null) patch.dealbreakers = draftNo.split(/[、,，\n]/).map((s) => s.trim()).filter((s) => s !== '')
-    const r = await call('job.profile.set', { profile: patch })
-    if (r.ok !== true) { setErr(r.error ?? '没存上'); return }
-    setProfile(r.profile ?? null)
-    setDraftRoles(null); setDraftPay(null); setDraftNo(null)
-    flash('存好了')
+    try {
+      const r = await call('job.profile.set', { profile: patch })
+      if (r.ok !== true) { setErr(r.error ?? '没存上'); return }
+      setProfile(r.profile ?? null)
+      setDraftRoles(null); setDraftPay(null); setDraftNo(null)
+      flash('存好了')
+    } catch (e) { setErr(humanizeError(e)) }
   }
 
   // 记一笔之后立刻把「我的投递」也刷新：以前只把按钮置灰，那一栏还是旧的，
   // 用户点开发现自己刚记的那条不在里面，会以为没记上又点一次。
   const record = async (status) => {
     const row = { company: report?.company ?? company, role: report?.role ?? '', status, note: '' }
-    const r = await call('job.tracker.add', { row })
-    if (r.ok !== true) { setErr(r.error ?? '没记上'); return }
-    setLogged(true)
-    flash('记上了')
-    const again = await call('job.tracker.list', {})
-    if (again.ok === true) setTracker(again.rows ?? [])
+    try {
+      const r = await call('job.tracker.add', { row })
+      if (r.ok !== true) { setErr(r.error ?? '没记上'); return }
+      setLogged(true)
+      flash('记上了')
+      const again = await call('job.tracker.list', {})
+      if (again.ok === true) setTracker(again.rows ?? [])
+      else setErr(again.error ?? '记上了，但这一栏没刷新出来——切出去再进来一次')
+    } catch (e) { setErr(humanizeError(e)) }
   }
 
   const run = async () => {
@@ -4191,7 +4274,7 @@ function MockView({ company, role, requirements, onBack, flash }) {
       if (r.ok !== true) { setErr(r.error ?? '开不了'); return }
       setSession(r.session)
       await ask(r.session)
-    } catch (e) { setErr(humanizeError(e)); setBusy(false) }
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
   }
 
   const submit = async (skipped) => {
@@ -4203,7 +4286,7 @@ function MockView({ company, role, requirements, onBack, flash }) {
       setSession(r.session)
       setTips(r.tips ?? [])
       await ask(r.session)
-    } catch (e) { setErr(humanizeError(e)); setBusy(false) }
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
   }
 
   const finish = async () => {
@@ -4221,11 +4304,13 @@ function MockView({ company, role, requirements, onBack, flash }) {
 
   const loadPast = async () => {
     if (past !== null) { setPast(null); return }
-    const r = await call('job.interview.list', {})
-    // 读失败和「真的没练过」长得一样，但意思完全不同：面试前一晚
-    // 看到「还没练过」，会以为记录丢了。
-    if (r.ok !== true) { setErr(r.error ?? '练过的记录读不出来。'); return }
-    setPast(r.items ?? [])
+    try {
+      const r = await call('job.interview.list', {})
+      // 读失败和「真的没练过」长得一样，但意思完全不同：面试前一晚
+      // 看到「还没练过」，会以为记录丢了。
+      if (r.ok !== true) { setErr(r.error ?? '练过的记录读不出来。'); return }
+      setPast(r.items ?? [])
+    } catch (e) { setErr(humanizeError(e)) }
   }
 
   return h('div', { className: 'lc-pad lc-stack' },

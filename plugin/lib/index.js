@@ -67,6 +67,46 @@ function currentWorkspace(config) {
   return configured !== '' ? path.resolve(configured) : defaultWorkspace()
 }
 
+// ── 「上次选的文件夹」记在哪儿 ─────────────────────────────────────
+// 配置对象只活在内存里：workspace.init 改完，重启就回落到「用户目录/LifeCard」。
+// 用户第二天打开会看到一个空的库，以为档案丢了——所以另存一份小指针文件。
+// 只存一个路径，卡、材料、世界书都还在用户自己选的文件夹里，不搬也不复制。
+
+/** DSH 的根目录：优先 DSH_HOME，否则 ~/.dsh。 */
+function dshHome() {
+  const configured = typeof process.env.DSH_HOME === 'string' ? process.env.DSH_HOME.trim() : ''
+  return configured !== '' ? path.resolve(configured) : path.join(homedir(), '.dsh')
+}
+
+/** 指针文件的位置。参数只是为了测试能指到临时目录，正常调用不用传。 */
+export function workspacePointerFile(home) {
+  return path.join(typeof home === 'string' && home !== '' ? home : dshHome(), 'plugin-data', 'dsh-lifecard.json')
+}
+
+/** 取回上次选的文件夹。读不到、坏了、不是字符串，一律当没选过。 */
+export async function recallWorkspace(file) {
+  try {
+    const raw = await fs.readFile(file, 'utf8')
+    const parsed = JSON.parse(raw)
+    const ws = typeof parsed?.workspace === 'string' ? parsed.workspace.trim() : ''
+    return ws === '' ? '' : path.resolve(ws)
+  } catch {
+    return ''
+  }
+}
+
+/** 记下这次选的文件夹。记不住不该让「选文件夹」这一步失败，只留一条日志。 */
+export async function rememberWorkspace(file, ws) {
+  try {
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.writeFile(file, `${JSON.stringify({ workspace: ws }, null, 2)}\n`, 'utf8')
+    return { ok: true }
+  } catch (error) {
+    console.error('[lifecard] 没能记住这次选的文件夹：', error)
+    return { ok: false, error: String(error?.message ?? error) }
+  }
+}
+
 // ── HTTP 小工具 ────────────────────────────────────────────────────
 
 function writeJson(res, status, value) {
@@ -613,8 +653,9 @@ async function gatherMemoryPeople() {
  * @param {() => Promise<string>} workspace
  * @param {any} config
  */
-function buildApi(ctx, workspace, config) {
+function buildApi(ctx, workspace, config, options) {
   const settings = config ?? {}
+  const remember = typeof options?.remember === 'function' ? options.remember : null
   const root = async (body) => {
     // 请求里带 workspace 只作用于这一次调用；要记住得走 workspace.init。
     if (typeof body?.workspace === 'string' && body.workspace.trim() !== '') {
@@ -646,7 +687,7 @@ function buildApi(ctx, workspace, config) {
         exists,
         home: homedir(),
         hasLlm: ctx.get?.('llm') !== undefined && ctx.get?.('llm') !== null,
-        defaults: { workspace: defaultWorkspace() },
+        defaults: { workspace: ws },
         summary,
         relations: prompts.RELATION_TYPES,
       }
@@ -658,7 +699,12 @@ function buildApi(ctx, workspace, config) {
       const opened = await store.openWorkspace(ws, { create: true })
       if (!opened.ok) return { ok: false, error: opened.error }
       settings.workspace = ws
-      return { ok: true, workspace: ws, created: true }
+      // 只改内存里的配置不够：宿主重启后这个对象还是从配置里现读的，
+      // 会回落到「用户目录/LifeCard」。所以另存一份指针文件。
+      // 记不住不算这一步失败——这次照样能用，只是下次要重选。
+      let remembered = true
+      if (remember !== null) remembered = (await remember(ws))?.ok === true
+      return { ok: true, workspace: ws, created: true, remembered }
     },
 
     /** 只校验路径（选文件夹后先看一眼是不是已有的库）。 */
@@ -2326,8 +2372,24 @@ export function apply(ctx, config) {
   // 同一个配置对象贯穿 apply 与 buildApi，workspace.init 把选择记在这里，
   // 不写模块级变量，也不需要请求体每次都带 workspace。
   const settings = config ?? {}
-  const workspace = () => currentWorkspace(settings)
-  const api = buildApi(ctx, workspace, settings)
+  const pointerFile = workspacePointerFile()
+  // 配置里没写死 workspace 的时候，先看「上次在界面上选的那个文件夹」。
+  // 只查一次（recalled 记忆化），之后 currentWorkspace 自己就够用。
+  let recalled = null
+  const workspace = async () => {
+    if (recalled === null) {
+      recalled = await recallWorkspace(pointerFile)
+      const configured = typeof settings.workspace === 'string' ? settings.workspace.trim() : ''
+      if (configured === '' && recalled !== '') {
+        console.log(`[lifecard] 接着用上次选的文件夹：${recalled}`)
+        settings.workspace = recalled
+      }
+    }
+    return currentWorkspace(settings)
+  }
+  const api = buildApi(ctx, workspace, settings, {
+    remember: (ws) => rememberWorkspace(pointerFile, ws),
+  })
 
   registerInterviewSkill(ctx)
 

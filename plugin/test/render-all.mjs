@@ -1357,5 +1357,120 @@ for (const [label, tree] of [
   t(`${label}上每个按钮都点得动`, errs.length === 0, errs.slice(0, 3).join(' / '))
 }
 
+// ── 2026-10-24 前端审查那一批 ────────────────────────────────
+// 这一段钉的都是「点下去之后才会露出来」的错：标题看着正常、日志一片绿，
+// 但用户真的按了，屏幕上没有反应，或者档案被悄悄切走。
+{
+  // P0-1：已经有档案、从首页「换个文件夹」进来时，这一页不能装成第一次设置。
+  // 以前预填 ~/LifeCard、主按钮写着「就用这个文件夹」，一点就把库切到空文件夹，
+  // 界面上没有一个字说「原来那些卡还在别处」。
+  const st = { ok: true, exists: true, workspace: '/tmp/lc-old', defaults: { workspace: '/tmp/lc-old' }, relations: RELATIONS }
+  const tree = renderOne('选文件夹（已经有档案）', seen.get('SetupView'), { state: st, onDone: async () => {} }, { 0: '/tmp/lc-old' })
+  const words = textOf(expand(tree))
+  t('有档案时标题说的是「换一个文件夹」', words.includes('换一个文件夹放档案'), words.slice(0, 80))
+  t('不再装成第一次设置', !words.includes('先挑一个文件夹放你的档案'))
+  t('先说明原来的卡不会跟过来', words.includes('不会跟过来'))
+  t('标题里不出现文件夹路径之外的内部说法', !/workspace/i.test(words))
+}
+{
+  // 换到一个不一样的文件夹：先问一句。答「取消」，就一个请求都不许发。
+  const asked = []
+  const done = []
+  const posts = []
+  const realConfirm = fakeWindow.confirm
+  const realFetch = globalThis.fetch
+  fakeWindow.confirm = (msg) => { asked.push(String(msg)); return false }
+  globalThis.fetch = async (url) => { posts.push(String(url)); return { ok: true, json: async () => ({ ok: true }) } }
+  const st = { ok: true, exists: true, workspace: '/tmp/lc-old', defaults: { workspace: '/tmp/lc-new' }, relations: RELATIONS }
+  const tree = renderOne('选文件夹（要换到别处）', seen.get('SetupView'), { state: st, onDone: async (w) => { done.push(w) } }, { 0: '/tmp/lc-new' })
+  const clicked = clickByText(tree, '开始吧')
+  await new Promise((r) => setTimeout(r, 30))
+  t('换到别的文件夹时要先问一句', clicked === true && asked.length === 1, `asked=${asked.length}`)
+  t('问的时候把「原来的卡不会跟过来」说清楚', asked.length === 1 && asked[0].includes('不会跟过来'), asked[0])
+  // 别的组件自己也会发 state.get 之类的请求，这里只数「有没有真的去换库」。
+  const switched = posts.filter((u) => u.includes('workspace.init'))
+  t('答取消就什么都不做', done.length === 0 && switched.length === 0, JSON.stringify({ done, switched }))
+  fakeWindow.confirm = realConfirm
+  globalThis.fetch = realFetch
+}
+{
+  // 点名要换、也确认了，但后台说这个位置用不了：错误要摆在这一页上，
+  // 不许吞掉之后照样绿字说「好了，可以开始了」。
+  const realConfirm = fakeWindow.confirm
+  fakeWindow.confirm = () => true
+  const st = { ok: true, exists: true, workspace: '/tmp/lc-old', defaults: { workspace: '/tmp/lc-new' }, relations: RELATIONS }
+  const tree = renderOne('选文件夹（换了但没成）', seen.get('SetupView'), {
+    state: st,
+    onDone: async () => { throw new Error('这个文件夹写不进去。换一个你自己的文件夹试试。') },
+  }, { 0: '/tmp/lc-new' })
+  const clicked = clickByText(tree, '开始吧')
+  await new Promise((r) => setTimeout(r, 40))
+  t('「开始吧」点得动', clicked === true)
+  t('用不了的时候把原因摆在页面上', String(hookStore[3] ?? '').includes('写不进去'), String(hookStore[3]))
+  fakeWindow.confirm = realConfirm
+}
+{
+  // 分析页「看看读出了什么」：读失败时以前把 {ok:false} 当建议交上去，
+  // ProposalPanel 拿到空清单，显示绿字「这一份里没有还没写进去的了」。
+  const handed = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ ok: false, error: '这份建议读不出来' }) })
+  const RESULT = { accepted: 1, rejected: 0, json: { items: [] } }
+  const tree = renderOne('分析页（建议读不出来）', seen.get('AnalyzeView'), {
+    listing: LISTING, state: { ok: true, workspace: '/tmp/x', exists: true }, flash: () => {},
+    onProposal: (p) => { handed.push(p) }, presetAbout: null, presetMaterials: null,
+    onBack: () => {}, onNeedMaterial: () => {},
+  }, { 0: 'mama', 4: RESULT })
+  const clicked = clickByText(tree, '看看读出了什么')
+  await new Promise((r) => setTimeout(r, 30))
+  t('「看看读出了什么」点得动', clicked === true)
+  t('读不出来就不把空建议交上去', handed.length === 0, handed)
+  globalThis.fetch = realFetch
+}
+{
+  // 「一段文字」那一栏不能因为切一下 tab 就被卸载：粘了一半的长稿子，
+  // 手滑点一下「角色卡文件」再点回来，字全没了，既没提示也没有草稿。
+  const tree = renderOne('添加（停在角色卡文件这一栏）', seen.get('ImportView'), { busy: '', onImport: () => {}, onAnalyze: () => {}, listing: LISTING }, { 1: 'card' })
+  const dom = expand(tree)
+  const findTextarea = (n, out = []) => {
+    if (n === null || n === undefined) return out
+    if (Array.isArray(n)) { n.forEach((x) => findTextarea(x, out)); return out }
+    if (typeof n !== 'object') return out
+    if (n.type === 'textarea' && String(n.props?.placeholder ?? '').includes('把文字贴在这里')) out.push(n)
+    findTextarea(n.children, out)
+    return out
+  }
+  t('「一段文字」那一栏一直挂着（只是藏起来）', findTextarea(dom).length === 1)
+  const hidden = (n, seen2 = false) => {
+    if (n === null || n === undefined) return seen2
+    const mine = n?.props?.style?.display === 'none' || seen2
+    if (Array.isArray(n)) return n.some((x) => hidden(x, mine))
+    if (typeof n !== 'object') return false
+    if (n.type === 'textarea' && String(n.props?.placeholder ?? '').includes('把文字贴在这里')) return mine
+    return hidden(n.children, mine)
+  }
+  t('停在角色卡那一栏时它是藏着的', hidden(dom) === true)
+}
+{
+  // 模拟面试：后台回「开不了」（不是网络抛错，是后台自己的 ok:false）时，
+  // 按钮不能永远卡在「正在开始…」——这一页没有第二个入口，用户只能退出去重进。
+  // 以前只有 catch 里复位 busy，这条 ok:false 的出口直接 return 了。
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ ok: false, error: '这一份读不出公司名，先在招聘说明里写上公司。' }) })
+  const tree = renderOne('模拟面试（后台说开不了）', seen.get('MockView'), { company: '某公司', role: '后端', requirements: [], onBack: () => {}, flash: () => {} }, { 2: true })
+  const clicked = clickByText(tree, '正在开始…')
+  await new Promise((r) => setTimeout(r, 40))
+  t('「正在开始…」那个按钮点得着', clicked === true)
+  t('后台说开不了时按钮不会永远卡住', hookStore[2] === false, String(hookStore[2]))
+  t('并且把后台那句话说出来', String(hookStore[3] ?? '').includes('公司'), String(hookStore[3]))
+  globalThis.fetch = realFetch
+}
+{
+  // 首页那行路径：留着（选错文件夹的人靠它找回去），但要说清是什么。
+  const tree = renderRoot('首页（路径标签）', base('home'))
+  const words = textOf(expand(tree))
+  t('路径前面写着「档案在：」', !words.includes('/tmp/') || words.includes('档案在：'), words.includes('档案在：'))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

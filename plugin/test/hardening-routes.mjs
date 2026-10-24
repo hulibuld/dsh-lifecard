@@ -472,5 +472,108 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   t('分析本身跑通（假模型回了合法 JSON）', r.ok === true, r.error)
 }
 
+// ── 「上次选的文件夹」要记得住 ──────────────────────────────────
+// 以前 workspace.init 只改内存里的 config（`settings.workspace = ws`），
+// 一个字节都没落盘：重启之后回落 ~/LifeCard，第二天打开又是「先挑一个文件夹」，
+// 用户看到的是空库，会以为档案丢了。现在记在 dsh 的 plugin-data 里
+// （跟本机其他插件同一个约定），配置里写死了就不去动它。
+{
+  const home = path.join(tmpdir(), 'lifecard-home-' + stamp)
+  const file = api.workspacePointerFile(home)
+  t('指针文件落在 plugin-data 里', file === path.join(home, 'plugin-data', 'dsh-lifecard.json'), file)
+  t('还没选过的时候读出来是空的', (await api.recallWorkspace(file)) === '')
+  const wrote = await api.rememberWorkspace(file, ws)
+  t('记得住', wrote.ok === true, wrote)
+  t('再读出来还是刚才那个', path.resolve(await api.recallWorkspace(file)) === path.resolve(ws))
+  const json = JSON.parse(await fs.readFile(file, 'utf8'))
+  t('存的就是一个绝对路径', typeof json.workspace === 'string' && path.isAbsolute(json.workspace), json)
+  await fs.writeFile(file, '这不是 JSON', 'utf8')
+  t('文件坏了就当没记过，不许抛', (await api.recallWorkspace(file)) === '')
+  await fs.writeFile(file, JSON.stringify({ workspace: 42 }), 'utf8')
+  t('里面不是字符串也当没记过', (await api.recallWorkspace(file)) === '')
+  t('读不到的路径不会崩', (await api.recallWorkspace(path.join(home, '没有这个文件.json'))) === '')
+
+  // 路由层：state.get 要告诉界面「现在用的是哪个」，换文件夹那页才不会
+  // 永远预填 ~/LifeCard、一点就把库切走。
+  const remembered = []
+  const table3 = api.buildApi({}, async () => ws, {}, { remember: async (w) => { remembered.push(w); return { ok: true } } })
+  const st3 = await table3['state.get']({})
+  t('state.get 说的就是现在这个库', path.resolve(st3.defaults.workspace) === path.resolve(ws), st3.defaults)
+  const init3 = await table3['workspace.init']({ workspace: ws })
+  t('切换成功', init3.ok === true, init3)
+  t('切完把新位置记下来了', remembered.length === 1 && path.resolve(remembered[0]) === path.resolve(ws), remembered)
+  t('记下来了就照实说', init3.remembered === true, init3)
+
+  // 记不住不算失败：库已经能用了，只是下次还得再选一遍。
+  const table4 = api.buildApi({}, async () => ws, {}, { remember: async () => ({ ok: false }) })
+  const init4 = await table4['workspace.init']({ workspace: ws })
+  t('记不住也照样能开始用', init4.ok === true, init4)
+  t('记不住要照实说（界面据此提醒下次还得选）', init4.remembered === false, init4)
+}
+
+// ── 重启之后还记得上次选的文件夹 ────────────────────────────────
+// 这条是「开始用」这一步唯一会被用户当成「档案丢了」的地方：以前选完只改内存，
+// 宿主一重启就回落 ~/LifeCard，第二天打开是一张卡都没有的库。
+// 这里走真路由（apply 注册出来的 handler），不是直接调函数。
+{
+  const home = path.join(tmpdir(), 'lifecard-home-apply-' + stamp)
+  const ws2 = path.join(tmpdir(), 'lifecard-ws-apply-' + stamp)
+  const ws3 = path.join(tmpdir(), 'lifecard-ws-third-' + stamp)
+  await fs.mkdir(path.join(home, 'plugin-data'), { recursive: true })
+  await fs.mkdir(ws2, { recursive: true })
+  await fs.mkdir(ws3, { recursive: true })
+  await api.rememberWorkspace(path.join(home, 'plugin-data', 'dsh-lifecard.json'), ws2)
+
+  const oldHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  let handler = null
+  const ctx3 = {
+    webServer: { register: (spec) => { handler = spec.handler; return () => {} } },
+    reflect: { get: () => undefined },
+    effect: (fn) => { fn(); return () => {} },
+    get: () => undefined,
+    logger: { warn: () => {} },
+  }
+  const post = async (method, body) => {
+    let status = 0
+    let text = ''
+    const res = {
+      writeHead: (code) => { status = code },
+      end: (b) => { text = String(b ?? '') },
+    }
+    const payload = JSON.stringify(body ?? {})
+    const req = {
+      method: 'POST',
+      url: `/api/dsh-lifecard/${method}`,
+      async *[Symbol.asyncIterator]() { yield Buffer.from(payload) },
+      on: (event, fn) => { if (event === 'end') fn(); if (event === 'data') fn(Buffer.from(payload)) },
+    }
+    await handler(req, res)
+    return { status, body: text === '' ? null : JSON.parse(text) }
+  }
+
+  try {
+    api.apply(ctx3, {})
+    const st = await post('state.get', {})
+    t('重启之后接着用上次选的文件夹', path.resolve(st.body?.workspace ?? '') === path.resolve(ws2), st.body)
+    t('换文件夹那一页预填的也是这个', path.resolve(st.body?.defaults?.workspace ?? '') === path.resolve(ws2), st.body?.defaults)
+
+    // 再换一个：这一次要真的写进指针文件，下一次 apply 才有得读。
+    const moved = await post('workspace.init', { workspace: ws3 })
+    t('换文件夹成功', moved.body?.ok === true, moved.body)
+    const pointer = JSON.parse(await fs.readFile(path.join(home, 'plugin-data', 'dsh-lifecard.json'), 'utf8'))
+    t('换完把新位置写进指针文件', path.resolve(pointer.workspace) === path.resolve(ws3), pointer)
+
+    // 配置里写死了就以配置为准：别人的 cordis.yml 不会被这个指针改掉。
+    // （ctx3.webServer.register 每次都把 handler 换成最新注册的那个。）
+    api.apply(ctx3, { workspace: ws })
+    const st2 = await post('state.get', {})
+    t('配置写死了就听配置的', path.resolve(st2.body?.workspace ?? '') === path.resolve(ws), st2.body)
+  } finally {
+    if (oldHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = oldHome
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
