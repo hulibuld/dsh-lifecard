@@ -1,0 +1,34 @@
+{
+  "entries": {
+    "0": {
+      "uid": 0,
+      "key": [
+        "王城",
+        "白银之城"
+      ],
+      "keysecondary": [],
+      "comment": "首都",
+      "content": "王城阿斯特兰位于河谷北岸，城墙是白色的。",
+      "constant": false,
+      "selective": true,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "group": "",
+      "scanDepth": null,
+      "caseSensitive": null,
+      "matchWholeWords": null,
+      "useGroupScoring": null,
+      "automationId": "",
+      "role": null,
+      "vectorized": false,
+      "sticky": null,
+      "cooldown": null,
+      "delay": null
+    }
+  }
+}

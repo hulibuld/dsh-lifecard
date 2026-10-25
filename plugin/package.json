@@ -1,0 +1,74 @@
+{
+  "name": "dsh-lifecard",
+  "version": "0.1.0",
+  "description": "Life Cards — 把你认识的人和虚构角色写成档案。在对话里问出来，或导入酒馆角色卡；数据是你自己文件夹里的一组 Markdown 文件。",
+  "type": "module",
+  "icon": "icon.svg",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json",
+    "./icon.svg": "./icon.svg",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/core.js",
+    "lib/codec.js",
+    "lib/store.js",
+    "lib/prompts.js",
+    "lib/score.js",
+    "lib/memory.js",
+    "skills/**/SKILL.md",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "lib/jobs.js",
+    "lib/jobs-store.js",
+    "lib/jobs-interview.js",
+    "lib/tavern.js"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    },
+    "compatibility": {
+      "dsh": ">=0.2.0-rc.1 <0.3.0-0"
+    }
+  },
+  "scripts": {
+    "test": "node test/all.mjs",
+    "test:live": "node test/live.mjs"
+  },
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.2.0-rc.1 <0.3.0-0"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "author": "Yuzhou (https://github.com/hulibuld)",
+  "license": "MIT",
+  "keywords": [
+    "dsh-plugin",
+    "character-card",
+    "sillytavern",
+    "worldbook",
+    "lifecard",
+    "persona-archive",
+    "markdown"
+  ]
+}
