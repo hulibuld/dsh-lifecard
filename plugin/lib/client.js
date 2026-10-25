@@ -2719,7 +2719,7 @@ function BookView({ bookId, onBack, flash }) {
   )
 }
 
-function TavernView({ chat, onChat, onBack }) {
+function TavernView({ chat, onChat, onBack, flash }) {
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
@@ -2727,6 +2727,13 @@ function TavernView({ chat, onChat, onBack }) {
   // 「到这儿为止」那段备忘。它存在会话文件里，跟着 chat 一起下发。
   const [notes, setNotes] = useState(Array.isArray(chat?.notes) ? chat.notes : [])
   const scrollRef = useRef(null)
+  // 「把这一场变成小说的一章」。这几个 state 特意放在所有 hook 之后：
+  // 上面那几个槽位有测试按号码摆状态，插在中间会让它们全体错位。
+  const [toOpen, setToOpen] = useState(false)
+  const [toBooks, setToBooks] = useState([])
+  const [toBook, setToBook] = useState('')
+  const [toBusy, setToBusy] = useState(false)
+  const [toNote, setToNote] = useState('')
   const turns = Array.isArray(chat?.turns) ? chat.turns : []
   const rawName = String(chat?.card_name ?? '').trim()
   const name = rawName === '' ? 'TA' : rawName
@@ -2774,6 +2781,30 @@ function TavernView({ chat, onChat, onBack }) {
     } finally {
       setBusy(false)
     }
+  }
+
+  // 打开「变成小说的一章」时先问一次有哪些书。以前没有这条路，
+  // 酒馆里演得好的一场只能靠人手动复制粘贴进小说。
+  const openToChapter = async () => {
+    setToOpen(true); setToBusy(true); setErr(null)
+    try {
+      const r = await call('novel.books', {})
+      if (r?.ok !== true) { setErr(r?.error ?? '看不到书架'); return }
+      const list = Array.isArray(r.books) ? r.books : []
+      setToBooks(list)
+      setToBook(toBook !== '' ? toBook : String(list[0]?.id ?? ''))
+    } catch (e) { setErr(humanizeError(e)) } finally { setToBusy(false) }
+  }
+
+  const toChapter = async () => {
+    if (toBook === '') { setErr('还没有书。先回「写小说」那扇门建一本。'); return }
+    setToBusy(true); setErr(null)
+    try {
+      const r = await call('tavern.toChapter', { id: chat?.id, book: toBook, note: toNote })
+      if (r?.ok !== true) { setErr(r?.error ?? '没改成'); return }
+      setToOpen(false); setToNote('')
+      if (typeof flash === 'function') flash(`写成了第 ${r.chapter ?? '?'} 章`)
+    } catch (e) { setErr(humanizeError(e)) } finally { setToBusy(false) }
   }
 
   const remove = async () => {
@@ -2873,8 +2904,35 @@ function TavernView({ chat, onChat, onBack }) {
         onClick: summarize,
         title: '把前面发生过的事记成几句，之后每轮都带上',
       }, '收个尾'),
+      h(Btn, { size: 'sm', icon: 'book', disabled: busy || turns.length === 0, onClick: openToChapter, title: '把这一场改写成某本小说的一章' }, '变成小说的一章'),
       h(Btn, { size: 'sm', ghost: true, icon: 'trash', disabled: busy, onClick: () => setConfirmDelete(true) }, '这一场不要了'),
     ),
+    toOpen === true
+      ? h('div', { className: 'lc-sec lc-stack' },
+          h('div', { className: 'lc-fhint' }, '挑一本书，这一场会改写成它的下一章'),
+          toBusy && toBooks.length === 0
+            ? h(Spinner)
+            : toBooks.length === 0
+              ? h('div', { className: 'lc-meta' }, '还没有书。先去「写小说」那扇门建一本，再回来。')
+              : h('div', { className: 'lc-stack' },
+                  h('div', { className: 'lc-chips' }, toBooks.map((b) => h(Btn, {
+                    key: b.id,
+                    size: 'sm',
+                    tone: toBook === b.id ? 'primary' : undefined,
+                    onClick: () => setToBook(b.id),
+                  }, String(b.title ?? b.id)))),
+                  h('input', {
+                    className: 'lc-input', value: toNote, spellCheck: false,
+                    placeholder: '这一章要往哪走（可以不写）',
+                    onChange: (e) => setToNote(e.target.value),
+                  }),
+                  h('div', { className: 'lc-row' },
+                    h(Btn, { tone: 'primary', disabled: toBusy || toBook === '', onClick: toChapter }, toBusy ? '写着…' : '写成这一章'),
+                    h(Btn, { ghost: true, disabled: toBusy, onClick: () => setToOpen(false) }, '先不变'),
+                  ),
+                ),
+        )
+      : null,
     confirmDelete === true
       ? h('div', { className: 'lc-row' },
           h('span', { className: 'lc-meta', className: 'lc-meta' }, '这一场的记录会删掉，删了就找不回来了。'),

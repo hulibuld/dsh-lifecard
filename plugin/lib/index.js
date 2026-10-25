@@ -2468,7 +2468,56 @@ function buildApi(ctx, workspace, config, options) {
     },
 
     /** 酒馆：这一场不要了。 */
-    'tavern.delete': async (body) => {
+        /**
+     * 把酒馆里聊出来的一场，变成某本小说的一章。
+     *
+     * 这是「三扇门其实是一件事」的那一步：先在酒馆里把人立起来、把话演一遍，
+     * 演得满意的那一场直接变成小说的正文，而不是再从头写一遍。
+     */
+    'tavern.toChapter': async (body) => {
+      const ws = await root(body)
+      const mods = await ensureModules()
+      if (mods.tavern !== true) return missingFeature('tavern')
+      if (mods.novel !== true) return missingFeature('novel')
+
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '得先挑一场聊过的。' }
+      const book = String(body?.book ?? '').trim()
+      if (book === '') return { ok: false, error: '得先挑一本书。没有书的话，先回「写小说」那扇门建一本。' }
+
+      const chat = await tavern.readChat(ws, id)
+      if (chat.ok !== true) return chat
+      const turns = chat.turns ?? []
+      if (turns.length === 0) return { ok: false, error: '这一场还什么都没说。先在酒馆里聊几句，再变。' }
+
+      const target = await novel.readBook(ws, book)
+      if (target.ok !== true) return target
+      if (target.book === null) return { ok: false, error: '找不到这本书。它可能被删了。' }
+
+      const built = novel.buildChatToChapterPrompt({
+        cardName: chat.data?.card_name ?? '',
+        bookTitle: target.book?.title ?? '',
+        turns,
+        note: String(body?.note ?? ''),
+      })
+      const called = await callModel(ctx, { system: built.system, user: built.user, model: body?.model })
+      if (called.ok !== true) return { ok: false, error: `这次没改出来：${called.error ?? '过一会儿再试一次'}` }
+
+      const text = String(called.text ?? '').trim()
+      if (text === '') return { ok: false, error: '它这次什么都没写出来，再试一次。' }
+
+      // 章号接着最后一章往后排。用「最后一章的号 + 1」而不是「章数 + 1」：
+      // 中间删过章的话（第 2 章被删），章数是 2、最后一章是第 3 章，
+      // 用章数算出来的 3 会覆盖掉现成的第 3 章。
+      const list = Array.isArray(target.chapters) ? target.chapters : []
+      const last = list.length === 0 ? 0 : Number(list[list.length - 1]?.index ?? 0)
+      const next = (Number.isFinite(last) ? last : 0) + 1
+      const written = await novel.writeChapter(ws, book, next, text)
+      if (written.ok !== true) return written
+      return { ok: true, book, chapter: written.index ?? next, text, turns: turns.length }
+    },
+
+'tavern.delete': async (body) => {
       if ((await ensureModules()).tavern !== true) return missingFeature('tavern')
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()

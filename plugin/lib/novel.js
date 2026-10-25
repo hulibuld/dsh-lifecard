@@ -434,6 +434,52 @@ export async function writeOutline(root, id, text) {
 }
 
 /** 取一章结尾的若干字（给下一章当「上一章结尾」）。 */
+/**
+ * 把一场酒馆对话改写成小说的正文。
+ *
+ * 为什么不让它「原样搬」：屏幕上是两个人的对白，直接贴进小说里是剧本，
+ * 不是小说。要的是把「谁在什么时候说了什么、说的时候是什么样子」
+ * 变成叙述。所以要求它保留对话原意，但不许加新的情节。
+ */
+export function buildChatToChapterPrompt({ cardName, bookTitle, turns, note }) {
+  const lines = []
+  lines.push('你在把一段已经发生过的对话，改写成小说的正文。')
+  lines.push('')
+  lines.push('## 对话里的人')
+  lines.push(`- ${String(cardName ?? '').trim() === '' ? '对方' : cardName}（对话里的「TA」）`)
+  lines.push('- 「我」（对话里的「我」，在小说里也用「我」）')
+  lines.push('')
+
+  lines.push('## 这一场谈了什么')
+  for (const turn of turns) {
+    const who = String(turn?.who ?? '').trim() === '我' ? '我' : (String(cardName ?? '').trim() === '' ? 'TA' : cardName)
+    lines.push(`${who}：${String(turn?.text ?? '').trim()}`)
+  }
+  lines.push('')
+
+  if (String(note ?? '').trim() !== '') {
+    lines.push('## 这一章要往哪走')
+    lines.push(String(note).trim())
+    lines.push('')
+  }
+
+  const system = [
+    '你是在改稿，不是在下判断。只说要做的事，不要评价这段对话好不好。',
+    '',
+    '硬要求：',
+    '1. 写成小说正文，不是剧本。不要「A：xxx」这种一行一句的形式，谁说了什么要揉进叙述里。',
+    '2. 对话的意思要保住。别删掉关键的那几句，也别替他们加没说过的内容。',
+    '3. 可以把动作、停顿、屋里的样子补出来——只补「当时本来就在那儿」的东西。',
+    '4. 不许加新的情节，不许替角色做决定，不许在结尾下判断或总结道理。',
+    '5. 写 800 到 1500 字。不要小标题，不要分段编号，不要写「本章完」。',
+    '6. 不要用「命运的齿轮」「不禁」「仿佛」这类词。',
+    '',
+    `这本书叫《${String(bookTitle ?? '').trim() === '' ? '没起名' : bookTitle}》。`,
+  ].join('\n')
+
+  return { system, user: lines.join('\n') }
+}
+
 export function tailOf(body, chars = 600) {
   const text = String(body ?? '').trim()
   if (text.length <= chars) return text
