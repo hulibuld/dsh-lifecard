@@ -1982,6 +1982,7 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   const chat = { id: 'chat-1', card_name: '老张', world_name: '', turns: [{ who: '老张', text: '来了' }], notes: [{ title: '到这儿为止', body: '他答应明天去河边' }] }
   const tree = renderOne('酒馆（重进后备忘还在）', seen.get('TavernView'), { chat, onChat: () => {}, onBack: () => {}, flash: () => {} }, { 4: chat.notes })
   t('重进会话还看得见那段备忘', textOf(expand(tree)).includes('他答应明天去河边'), textOf(expand(tree)).slice(0, 400))
+  t('能挑几句进卡里', textOf(expand(tree)).includes('挑几句进卡里'), textOf(expand(tree)).slice(0, 400))
 }
 
 {
