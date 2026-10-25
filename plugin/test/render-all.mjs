@@ -363,6 +363,14 @@ function countPhotos(tree) {
   const own = tree.type === 'div' && String(tree.props?.className ?? '').includes('has-photo') ? 1 : 0
   return own + countPhotos(tree.children)
 }
+const flatInputs = (tree, out = []) => {
+  if (tree === null || tree === undefined) return out
+  if (Array.isArray(tree)) { for (const n of tree) flatInputs(n, out); return out }
+  if (typeof tree !== 'object') return out
+  if (tree.type === 'input') out.push(tree)
+  flatInputs(tree.children, out)
+  return out
+}
 const flatButtons = (tree, out = []) => {
   if (tree === null || tree === undefined) return out
   if (Array.isArray(tree)) { for (const n of tree) flatButtons(n, out); return out }
@@ -1867,6 +1875,20 @@ for (const [label, tree] of [
     t('发给后台的概念不会是上一次存的那份', !analyze.includes('上一次'), analyze.slice(0, 300))
   }
   globalThis.fetch = realFetch
+}
+
+{
+  // 「再加一条」以前点了没反应：空行是靠「值里带一个空串」占位的，
+  // 而保存那层每次都会把空串过掉 → 下一次渲染又只剩一行。
+  // 这条用会保留 hook 状态的写法，真的点两次、数行数。
+  const ListEditor = seen.get('ListEditor')
+  const CompetencyEditor = seen.get('CompetencyEditor')
+  t('找得到列表编辑器', ListEditor !== undefined && CompetencyEditor !== undefined)
+
+
+  // 这两个编辑器的「再加一条」由 test/editor-add-test.mjs 单独测：
+  // 那边的运行时会在点击后保留状态，这里（render-all）每次展开子组件都会清空状态，
+  // 跑不出「点一下 → 状态变 → 再渲染」这条链。
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

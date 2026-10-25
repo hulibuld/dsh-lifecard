@@ -2877,31 +2877,60 @@ function CardForm({ card, onCancel, onSaved, worlds }) {
   )
 }
 
-/** 一行一条的列表编辑器（禁忌、标签这类）。 */
+/**
+ * 一行一条的列表编辑器（禁忌、标签这类）。
+ *
+ * 「空行」必须由这个组件自己记着（`extras`），不能靠「值里带一个空串」来占位。
+ * 以前就是靠后者：点「再加一条」时把 `[{label:''}]` 交给上面，而上面那层
+ * 每次保存都会把空串过滤掉，于是下一次渲染又只剩一行——点几次都只有一行，
+ * 用户看到的就是「点了没反应」。
+ */
 function ListEditor({ items, onChange, placeholder }) {
   const rows = asArray(items).map((t) => (typeof t === 'string' ? t : t?.label ?? t?.key ?? '')).filter((t) => typeof t === 'string')
-  const list = rows.length === 0 ? [''] : rows
+  // 末尾留几个空行让用户填（至少一个，不然连入口都没有）
+  const [extras, setExtras] = useState(1)
+  const list = [...rows, ...Array.from({ length: Math.max(1, extras) }, () => '')]
+  const emit = (next) => onChange(next.filter((s) => String(s).trim() !== '').map((label) => ({ label })))
   const update = (i, v) => {
     const next = list.slice()
     next[i] = v
-    onChange(next.filter((s) => s.trim() !== '').map((label) => ({ label })))
+    emit(next)
   }
   return h('div', { className: 'lc-stack' },
     list.map((v, i) => h('div', { key: i, className: 'lc-listrow' },
-      h('input', { className: 'lc-input', value: v, onChange: (e) => update(i, e.target.value), placeholder, spellCheck: false }),
+      h('input', {
+        className: 'lc-input', value: v, placeholder, spellCheck: false,
+        onChange: (e) => update(i, e.target.value),
+      }),
+      // 空行也能删，只是删到只剩一个就不给了
       list.length === 1 && (v ?? '') === ''
         ? null
-        : h('button', { className: 'lc-iconbtn', type: 'button', title: '删掉这条', onClick: () => { const next = list.slice(); next.splice(i, 1); onChange(next.filter((s) => s.trim() !== '').map((label) => ({ label }))) } }, h(Icon, { name: 'trash', size: 12 })),
+        : h('button', {
+          className: 'lc-iconbtn', type: 'button', title: '删掉这条',
+          onClick: () => {
+            const next = list.slice()
+            next.splice(i, 1)
+            // 少一行空位；已经填了字的走正常保存
+            setExtras(Math.max(1, list.length - 1 - next.filter((x) => String(x).trim() !== '').length))
+            emit(next)
+          },
+        }, h(Icon, { name: 'trash', size: 12 })),
     )),
-    h('div', null, h(Btn, { size: 'sm', icon: 'plus', onClick: () => onChange([...list.filter((s) => s.trim() !== '').map((label) => ({ label })), { label: '' }]) }, '再加一条')),
+    h('div', null, h(Btn, {
+      size: 'sm', icon: 'plus',
+      onClick: () => setExtras(Math.max(1, extras) + 1),
+    }, '再加一条')),
   )
 }
 
 /** 「会什么」：一件能力 + 一个程度。 */
 function CompetencyEditor({ items, onChange }) {
   const rows = asArray(items).filter((c) => c !== null && typeof c === 'object').map((c) => ({ key: String(c.key ?? c.label ?? ''), level: String(c.level ?? '熟手') }))
-  const list = rows.length === 0 ? [{ key: '', level: '熟手' }] : rows
-  const emit = (next) => onChange(next.filter((r) => r.key.trim() !== ''))
+  // 同 ListEditor：空行由组件自己记着，不能靠「值里带一个空 key」占位，
+  // 否则上面那层一过滤，点「再加一件」就永远只有一行。
+  const [extras, setExtras] = useState(1)
+  const list = [...rows, ...Array.from({ length: Math.max(1, extras) }, () => ({ key: '', level: '熟手' }))]
+  const emit = (next) => onChange(next.filter((r) => String(r.key ?? '').trim() !== ''))
   const update = (i, patch) => { const next = list.map((r, n) => (n === i ? { ...r, ...patch } : r)); emit(next) }
   return h('div', { className: 'lc-stack' },
     list.map((r, i) => h('div', { key: i, className: 'lc-listrow' },
@@ -2910,10 +2939,17 @@ function CompetencyEditor({ items, onChange }) {
         LEVEL_LABEL.map((l) => h('option', { key: l, value: l }, l))),
       h('button', {
         className: 'lc-iconbtn', type: 'button', title: '删掉这条',
-        onClick: () => emit(list.filter((_, n) => n !== i)),
+        onClick: () => {
+          const next = list.filter((_, n) => n !== i)
+          setExtras(Math.max(1, next.filter((x) => String(x.key ?? '').trim() === '').length))
+          emit(next)
+        },
       }, h(Icon, { name: 'trash', size: 12 })),
     )),
-    h('div', null, h(Btn, { size: 'sm', icon: 'plus', onClick: () => emit([...list.filter((r) => r.key.trim() !== ''), { key: '', level: '熟手' }]) }, '再加一件')),
+    h('div', null, h(Btn, {
+      size: 'sm', icon: 'plus',
+      onClick: () => setExtras(Math.max(1, extras) + 1),
+    }, '再加一件')),
   )
 }
 
