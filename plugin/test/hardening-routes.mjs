@@ -575,6 +575,55 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   t('还没说话就变，要说人话', emptyConv.ok === false && String(emptyConv.error).includes('还什么都没说'), emptyConv.error)
 }
 
+// ── 把这一场里 TA 说过的话挑几句写回卡里 ─────────────────────────
+// 「性格：沉默寡言」模型只能猜；「他说话只答半句」是能照做的。
+// 这一条要真的落在卡的「对话示例」小节上，不是只回一句 ok。
+{
+  const picks = '- 「雨还没停，站着吧。」\n- 「伞我不要。」'
+  const exLlm = {
+    listProviders: async () => [{ provider: 'raccoon', models: [{ id: 'sn-deepseek-v4-1-flash-1017' }] }],
+    listModels: async () => [],
+    stream: async () => (async function* () {
+      yield { type: 'text-delta', text: picks }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })(),
+  }
+  const table4 = api.buildApi({ ...ctx, get: (n) => (n === 'llm' ? exLlm : undefined) }, async () => ws, { workspace: ws })
+
+  await table4['card.save']({
+    path: 'people/yu.card.md',
+    data: { id: 'yu', kind: 'fictional', name: '余', world: 'reality' },
+    sections: [{ title: '自述', body: '修伞的。' }],
+  })
+  const opened = await table4['tavern.start']({ card: 'yu' })
+  t('开一场来演', opened.ok === true, JSON.stringify(opened).slice(0, 120))
+
+  const noTalk = await table4['tavern.toExample']({ id: opened.id })
+  t('TA 还没说话时挑不出来', noTalk.ok === false && String(noTalk.error).includes('还没说过话'), noTalk.error)
+
+  await table4['tavern.say']({ id: opened.id, text: '你在修什么？' })
+  const picked = await table4['tavern.toExample']({ id: opened.id })
+  t('能挑出例句', picked.ok === true && Array.isArray(picked.picked) && picked.picked.length === 2, JSON.stringify(picked).slice(0, 200))
+  t('挑出来的是 TA 说过的那两句', picked.ok === true && String(picked.picked[0]).includes('雨还没停'), JSON.stringify(picked.picked))
+
+  const card = await table4['card.get']({ path: 'people/yu.card.md' })
+  const examples = (card.sections ?? []).find((x) => String(x.title ?? '') === '对话示例')
+  t('写进了「对话示例」', examples !== undefined && String(examples.body).includes('伞我不要'), JSON.stringify(examples))
+  t('原来别的小节一个字没动', (card.sections ?? []).some((x) => String(x.title ?? '') === '自述' && String(x.body).includes('修伞的')))
+
+  // 再挑一次：新增的接在后面，旧的不删
+  await table4['tavern.say']({ id: opened.id, text: '那把伞谁的？' })
+  const again = await table4['tavern.toExample']({ id: opened.id })
+  t('再挑一次也成', again.ok === true, JSON.stringify(again).slice(0, 120))
+  const card2 = await table4['card.get']({ path: 'people/yu.card.md' })
+  const examples2 = (card2.sections ?? []).find((x) => String(x.title ?? '') === '对话示例')
+  t('旧的例句还在（不是覆盖）', String(examples2.body).split(/\r?\n/).filter((x) => x.trim() !== '').length >= 2, String(examples2.body).slice(0, 200))
+
+  // 名字没存的会话：存不回去，要说清楚
+  const ghost = await table4['tavern.toExample']({ id: 'chat-nope' })
+  t('会话不在时说人话', ghost.ok === false && String(ghost.error).includes('不在了'), ghost.error)
+}
+
 // ── 「上次选的文件夹」要记得住 ──────────────────────────────────
 // 以前 workspace.init 只改内存里的 config（`settings.workspace = ws`），
 // 一个字节都没落盘：重启之后回落 ~/LifeCard，第二天打开又是「先挑一个文件夹」，

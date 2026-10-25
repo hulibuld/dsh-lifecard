@@ -2839,6 +2839,9 @@ function TavernView({ chat, onChat, onBack, flash }) {
   const [toBook, setToBook] = useState('')
   const [toBusy, setToBusy] = useState(false)
   const [toNote, setToNote] = useState('')
+  // 「挑几句写进卡里」。同样排在最后。
+  const [exBusy, setExBusy] = useState(false)
+  const [exNote, setExNote] = useState('')
   const turns = Array.isArray(chat?.turns) ? chat.turns : []
   const rawName = String(chat?.card_name ?? '').trim()
   const name = rawName === '' ? 'TA' : rawName
@@ -2890,6 +2893,28 @@ function TavernView({ chat, onChat, onBack, flash }) {
 
   // 打开「变成小说的一章」时先问一次有哪些书。以前没有这条路，
   // 酒馆里演得好的一场只能靠人手动复制粘贴进小说。
+  /**
+   * 把这一场里最能代表 TA 的几句话写回那张卡的「对话示例」。
+   *
+   * 「性格：沉默寡言」这种话模型只能猜；「他说话只答半句，句尾带个『呗』」
+   * 是能直接照做的。演着演着发现 TA 说话的样子比卡上写的准，就该固化下来。
+   */
+  const toExample = async () => {
+    if (exBusy || chat?.id === undefined) return
+    setExBusy(true); setExNote('')
+    try {
+      const r = await call('tavern.toExample', { id: chat.id })
+      if (r?.ok !== true) { setExNote(r?.error ?? '这次没挑出来'); return }
+      const picked = Array.isArray(r.picked) ? r.picked : []
+      setExNote(`写进卡里了，这次挑的是：${picked.map((x) => `「${x}」`).join('、')}`)
+      flash?.('卡上的「对话示例」又厚了一点')
+    } catch (e) {
+      setExNote(humanizeError(e))
+    } finally {
+      setExBusy(false)
+    }
+  }
+
   const openToChapter = async () => {
     setToOpen(true); setToBusy(true); setErr(null)
     try {
@@ -3010,6 +3035,7 @@ function TavernView({ chat, onChat, onBack, flash }) {
         title: '把前面发生过的事记成几句，之后每轮都带上',
       }, '收个尾'),
       h(Btn, { size: 'sm', icon: 'book', disabled: busy || turns.length === 0, onClick: openToChapter, title: '把这一场改写成某本小说的一章' }, '变成小说的一章'),
+      h(Btn, { size: 'sm', icon: 'chat', disabled: busy || exBusy || turns.length === 0, onClick: toExample, title: '挑几句 TA 说过的话，写进那张卡的「对话示例」' }, exBusy ? '正在挑…' : '挑几句进卡里'),
       h(Btn, { size: 'sm', ghost: true, icon: 'trash', disabled: busy, onClick: () => setConfirmDelete(true) }, '这一场不要了'),
     ),
     toOpen === true
@@ -3045,6 +3071,7 @@ function TavernView({ chat, onChat, onBack, flash }) {
           h(Btn, { size: 'sm', ghost: true, onClick: () => setConfirmDelete(false), disabled: busy }, '先不删'),
         )
       : null,
+    exNote === '' ? null : h(Note, { tone: 'ok', icon: 'check' }, exNote),
     h('div', { className: 'lc-meta' }, '每说一句都会存进「chats」里，退出再进来还能接着说。'),
   )
 }
