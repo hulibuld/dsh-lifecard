@@ -133,5 +133,23 @@ try {
   await fs.rm(tmp, { recursive: true, force: true })
 }
 
+console.log('\n=== 7. 玩家写的那段带换行和小标题，不能把后面的剧情吃掉 ===')
+// `> 我：...` 只保护第一行。以前续行是裸的：只要它以 `## ` 开头，下次读回来
+// 就会在那一行把「剧情」这一节切断，这一句之后的**所有轮次**一起消失，
+// 而且不报错、不提示，界面上就是「后面那段呢」。
+{
+  const turns = [
+    { kind: 'narrate', text: '雨还在下。' },
+    { kind: 'choose', text: '我把伞递过去\n## 三年前\n那时候也下过这样一场雨。', result: '她没有接。' },
+    { kind: 'narrate', text: '她把门推开一条缝。' },
+  ]
+  const text = game.renderPlayMarkdown({ id: 'p1', book: 'b1', title: '试' }, turns)
+  const back = game.parsePlayText(text)
+  t('带小标题的玩家输入也能读回来', back.ok === true, back.error)
+  t('轮次数没少', (back.turns ?? []).length === 3, (back.turns ?? []).length)
+  t('写完那一句之后的旁白还在', (back.turns ?? []).some((x) => String(x.text ?? '').includes('门推开一条缝')), back.turns)
+  t('玩家那句里的小标题被压成一行', String((back.turns ?? [])[1]?.text ?? '').includes('三年前'), (back.turns ?? [])[1])
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exitCode = 1

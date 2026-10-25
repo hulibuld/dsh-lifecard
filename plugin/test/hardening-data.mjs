@@ -499,5 +499,43 @@ await fs.rm(root, { recursive: true, force: true }).catch(() => {})
 await fs.rm(sibling, { recursive: true, force: true }).catch(() => {})
 await fs.rm(outsideCard, { force: true }).catch(() => {})
 
+console.log('\n=== 读不出来 ≠ 没有：不许拿「空」覆盖真数据 ===')
+// 这一组全是同一个毛病的不同面孔：把「读失败」当成「还没有」。
+// 后果一律是**安静地丢东西**——不报错，用户还以为存上了。
+{
+  const home = path.join(tmpdir(), 'lifecard-hd-' + Date.now())
+  await fs.mkdir(home, { recursive: true })
+
+  // 1) 配置坏了，不许被默认值重刷
+  await fs.writeFile(path.join(home, 'lifecard.config.json'), '{ 这不是 JSON', 'utf8')
+  const st = await store.readConfigState(home)
+  t('配置坏了要如实说坏了', st.ok === false && st.exists === true, st)
+  const written = await store.writeConfig(home, { intro_seen: true })
+  const kept = await fs.readFile(path.join(home, 'lifecard.config.json'), 'utf8')
+  t('坏掉的配置不会被悄悄重写', kept === '{ 这不是 JSON', kept)
+
+  // 2) 目录当成卡片来读：要说「读不出来」，不是「不存在」
+  const dirAsFile = path.join(home, 'people', 'x.card.md')
+  await fs.mkdir(dirAsFile, { recursive: true })
+  const read = await store.readCard(home, 'people/x.card.md')
+  t('目录冒充卡片时说读不出来', read.ok === false && String(read.error).includes('读不出来'), read)
+  t('而且带上错误码方便判断', String(read.code ?? '') !== '', read.code)
+
+  // 3) 存卡不留临时文件
+  const okCard = await store.writeCard(home, 'people/ok.card.md', { lifecard: '0.1', id: 'ok', kind: 'real', world: 'reality', name: '张三' }, [{ title: '自述', body: '一个人。' }], { force: true })
+  t('正常存卡成功', okCard.ok === true, okCard.error)
+  const names = await fs.readdir(path.join(home, 'people'))
+  t('没留下 .tmp 残渣', names.every((n) => !n.includes('.tmp-')), names)
+  const back = await store.readCard(home, 'people/ok.card.md')
+  t('存进去的能读回来', back.ok === true && String(back.text).includes('一个人。'))
+
+  // 4) 材料覆盖要留备份（材料是全库唯一没有快照的）
+  await store.appendMaterial(home, '甲', '第一版：他十九岁进厂。', { replace: true })
+  await store.appendMaterial(home, '甲', '第二版：他二十岁进厂。', { replace: true })
+  const mats = await fs.readdir(path.join(home, 'materials'))
+  t('覆盖材料时留了一份 .bak', mats.some((n) => n.includes('.bak-')), mats)
+  t('覆盖后的内容是新的', mats.some((n) => !n.includes('.bak-') && n.endsWith('.md')))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

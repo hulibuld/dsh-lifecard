@@ -79,6 +79,17 @@ function unescapeLines(text) {
     .join('\n')
 }
 
+/**
+ * 玩家自己写的那一段要压成一行。
+ *
+ * `> 我：...` 只有第一行被这个前缀包住，后面几行是**裸的**：只要续行以 `## `
+ * 开头，下一次读回来就会在那一行把「剧情」这一节切断，后面的所有轮次一起消失。
+ * 换行压成空格就够了 —— 这一步玩家写的是动作或一句话，不需要多段结构。
+ */
+function oneLine(text) {
+  return String(text ?? '').replace(/[\r\n]+/g, ' ').trim()
+}
+
 export function renderPlayMarkdown(data, turns) {
   const head = { lifecard: core.DATA_VERSION, kind: 'play', ...data }
   const lines = ['---']
@@ -91,20 +102,20 @@ export function renderPlayMarkdown(data, turns) {
   const scene = String(data?.scene ?? '').trim()
   if (scene !== '') lines.push(`## ${SCENE_TITLE}`, '', scene, '')
   const holding = Array.isArray(data?.holding) ? data.holding.filter((x) => String(x ?? '').trim() !== '') : []
-  if (holding.length > 0) lines.push(`## ${HOLD_TITLE}`, '', ...holding.map((h) => `- ${h}`), '')
+  if (holding.length > 0) lines.push(`## ${HOLD_TITLE}`, '', ...holding.map((h) => `- ${oneLine(h)}`), '')
   lines.push(`## ${STORY_TITLE}`, '')
   for (const turn of Array.isArray(turns) ? turns : []) {
     const kind = String(turn?.kind ?? 'say')
     if (kind === 'narrate') {
       lines.push(escapeLines(String(turn?.text ?? '').trim()), '')
     } else if (kind === 'choose') {
-      lines.push(`> 我：${String(turn?.text ?? '').trim()}`, '')
+      lines.push(`> 我：${oneLine(turn?.text)}`, '')
       const result = String(turn?.result ?? '').trim()
       if (result !== '') lines.push(escapeLines(result), '')
     } else {
-      lines.push(`> 我：${String(turn?.text ?? '').trim()}`, '')
+      lines.push(`> 我：${oneLine(turn?.text)}`, '')
       const reply = String(turn?.text2 ?? '').trim()
-      if (reply !== '') lines.push(reply, '')
+      if (reply !== '') lines.push(escapeLines(reply), '')
     }
   }
   return `${lines.join('\n').trimEnd()}\n`

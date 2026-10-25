@@ -871,8 +871,13 @@ function buildApi(ctx, workspace, config, options) {
       const ws = await root(body)
       const data = body?.data
       if (data === null || typeof data !== 'object') return { ok: false, error: '没收到卡片内容，重新试一次。' }
+      // 判空必须在 safeId **之前**：`core.safeId('')` 返回 `'unnamed'`，
+      // 于是下面那句 `if (id === '')` 永远不成立——没起名字的新卡会悄悄
+      // 变成一张叫「unnamed」的卡，之后所有空名字的卡还会互相覆盖。
+      if (String(data.id ?? data.name ?? '').trim() === '') {
+        return { ok: false, error: '这张卡还没有名字，先给它起一个。' }
+      }
       const id = core.safeId(data.id ?? data.name ?? '')
-      if (id === '') return { ok: false, error: '这张卡还没有名字，先给它起一个。' }
       data.id = id
       data.lifecard = core.DATA_VERSION
       let rel
@@ -1224,7 +1229,9 @@ function buildApi(ctx, workspace, config, options) {
       const name = String(body?.name ?? about ?? 'material')
       const block = body?.meta === undefined ? content : `${content}\n\n\`\`\`\n${body.meta}\n\`\`\``
       const saved = await store.appendMaterial(ws, name, block)
-      return { ok: true, ...saved }
+      // 以前这里无条件 `ok:true` 再展开 saved，把 `ok:false` 盖掉了：
+      // 存失败时界面照样说「已保存」。别的路由都是先判 saved.ok 再往下走。
+      if (saved?.ok !== true) return { ok: false, error: saved?.error ?? '这段材料没存进去。', ...saved }
     },
 
     /** 材料列表 + 全文（分析用）。 */
@@ -1905,7 +1912,7 @@ function buildApi(ctx, workspace, config, options) {
         ? all.filter((p) => body.people.includes(keyOf(p)))
         : all
       if (wanted.length === 0) return { ok: false, error: '勾选的人一个都没对上。' }
-      const at = new Date().toISOString().slice(0, 10)
+      const at = store.localDate()
       const files = []
       for (const p of wanted) {
         const label = p.name !== '' ? p.name : p.kin
@@ -1949,7 +1956,7 @@ function buildApi(ctx, workspace, config, options) {
         ? all.filter((p) => body.people.includes(p.name !== '' ? `${p.kin}:${p.name}` : p.kin))
         : all
       if (wanted.length === 0) return { ok: false, error: '勾选的人一个都没对上。' }
-      const md = memory.renderMemoryMaterial(wanted, { read_at: new Date().toISOString().slice(0, 10) })
+      const md = memory.renderMemoryMaterial(wanted, { read_at: store.localDate() })
       const saved = await store.appendMaterial(ws, `记忆里认出来的人`, md)
       if (saved.ok !== true) return saved
       // 记下「这些人还缺什么」。等他们变成卡之后，卡上那个红色感叹号
@@ -2446,6 +2453,9 @@ function buildApi(ctx, workspace, config, options) {
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '这一场找不到了' }
+      // 收尾也是一次「读 → 调模型（十几二十秒）→ 整文件写回」，跟 tavern.say 同一个形状。
+      // 不收进来排队的话，这段时间里说的任何一句都会被回写成收尾前那一版 —— 而且不留痕迹。
+      return oneAtATime(id, async () => {
       const got = await tavern.readChat(ws, id)
       if (got.ok !== true) return got
       const turns = Array.isArray(got.turns) ? got.turns.slice() : []
@@ -2465,6 +2475,7 @@ function buildApi(ctx, workspace, config, options) {
       const saved = await tavern.writeChat(ws, id, { ...got.data, notes, turns: turns.length, updated_at: tavernStamp() }, turns)
       if (saved.ok !== true) return { ok: false, error: `收好了，但没存下来：${saved.error}`, summary, turns }
       return { ok: true, id, summary, notes, turns }
+      })
     },
 
     /** 酒馆：这一场不要了。 */
@@ -2656,6 +2667,42 @@ function buildApi(ctx, workspace, config, options) {
       const saved = await novel.writeOutline(ws, id, text)
       if (saved.ok !== true) return saved
       return { ok: true, text, ...novel.parseOutline(text), path: saved.path }
+    },
+
+    /**
+     * 整本导出成一整篇文字。
+     *
+     * 用户电脑上只有这个插件，不会去翻 books/ 底下那一堆 001.md。
+     * 写完一本书要能一口气复制走，而不是一章一章点开来复制。
+     */
+    'novel.export': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      const got = await novel.readBook(ws, id)
+      if (got.ok !== true) return got
+
+      const lines = []
+      const title = String(got.data?.title ?? id).trim()
+      lines.push(`# ${title === '' ? '未命名' : title}`)
+      lines.push('')
+      if (String(got.idea ?? '').trim() !== '') {
+        lines.push(`> ${String(got.idea).trim()}`)
+        lines.push('')
+      }
+      let total = 0
+      for (const chapter of got.chapters) {
+        const one = await novel.readChapter(ws, id, chapter.index)
+        if (one.ok !== true) continue
+        lines.push(`## 第 ${chapter.index} 章`)
+        lines.push('')
+        lines.push(String(one.body ?? '').trim())
+        lines.push('')
+        total += 1
+      }
+      if (total === 0) return { ok: false, error: '这本书还一章都没有。先写一章，再导出。' }
+      return { ok: true, title, chapters: total, text: lines.join('\n').trim() + '\n' }
     },
 
     /**
@@ -2871,6 +2918,9 @@ function buildApi(ctx, workspace, config, options) {
       const bookId = String(body?.book ?? '').trim()
       const id = String(body?.id ?? '').trim()
       if (bookId === '' || id === '') return { ok: false, error: '这一局找不到了' }
+      // 同一局的两步必须排队：这里也是「读 → 调模型（几十秒）→ 整文件写回」。
+      // 键要带 bookId —— 两本书里各自有一局 `play-1` 是很正常的。
+      return oneAtATime(`game:${bookId}/${id}`, async () => {
       const got = await game.readPlay(ws, bookId, id)
       if (got.ok !== true) return got
       const turns = Array.isArray(got.turns) ? got.turns : []
@@ -2898,6 +2948,7 @@ function buildApi(ctx, workspace, config, options) {
         return { ok: false, error: `这一步记下了，但它没接上话：${called.error ?? '过一会儿再试一次'}`, turns: nextTurns, kept: true }
       }
       return { ok: true, id, text: parsed.body, choices: parsed.choices, turns: nextTurns }
+      })
     },
 
     /** 这一局不要了。 */
