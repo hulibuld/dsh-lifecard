@@ -234,8 +234,8 @@ const CSS = `
   flex-direction: column;
   background: var(--lc-bg);
   color: var(--lc-ink);
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: 15px;
+  line-height: 1.7;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   overflow: hidden;
 }
@@ -266,26 +266,26 @@ const CSS = `
 
 .lc-head {
   display: flex; align-items: center; gap: 8px;
-  padding: 10px 12px; border-bottom: 1px solid var(--lc-line);
+  padding: 13px 14px; border-bottom: 1px solid var(--lc-line);
   background: var(--lc-panel); flex-shrink: 0;
 }
-.lc-title { font-weight: 650; font-size: 13.5px; letter-spacing: .01em; }
-.lc-sub { color: var(--lc-muted); font-size: 11.5px; }
+.lc-title { font-weight: 700; font-size: 16.5px; letter-spacing: .01em; }
+.lc-sub { color: var(--lc-muted); font-size: 13.5px; }
 .lc-grow { flex: 1 1 auto; min-width: 0; }
 .lc-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .lc-body { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; }
-.lc-pad { padding: 12px; }
-.lc-stack { display: flex; flex-direction: column; gap: 8px; }
-.lc-row { display: flex; align-items: center; gap: 8px; }
+.lc-pad { padding: 14px; }
+.lc-stack { display: flex; flex-direction: column; gap: 11px; }
+.lc-row { display: flex; align-items: center; gap: 9px; }
 .lc-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* 按钮：颜色即语义 */
 .lc-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 5px;
-  padding: 6px 10px; border-radius: 8px; border: 1px solid var(--lc-line-strong);
+  padding: 9px 14px; border-radius: 10px; border: 1px solid var(--lc-line-strong);
   background: var(--lc-panel); color: var(--lc-ink);
-  font-size: 12.5px; font-weight: 550; cursor: pointer;
+  font-size: 14.5px; font-weight: 550; cursor: pointer; min-height: 36px;
   transition: background .12s, border-color .12s, transform .06s, box-shadow .12s;
   white-space: nowrap; font-family: inherit;
 }
@@ -302,9 +302,9 @@ const CSS = `
 .lc-btn.danger { background: var(--lc-danger-soft); border-color: var(--lc-danger); color: var(--lc-danger); }
 .lc-btn.ghost { background: transparent; border-color: transparent; color: var(--lc-muted); }
 .lc-btn.ghost:hover { background: var(--lc-accent-soft); color: var(--lc-accent); }
-.lc-btn.sm { padding: 4px 8px; font-size: 12px; }
+.lc-btn.sm { padding: 6px 11px; font-size: 14px; min-height: 30px; }
 .lc-btn.block { width: 100%; }
-.lc-btn.big { padding: 10px 14px; font-size: 13.5px; border-radius: 10px; }
+.lc-btn.big { padding: 13px 18px; font-size: 15.5px; border-radius: 12px; min-height: 46px; }
 
 /* 大动作卡：首页与空状态用它，一个按钮占一行，说清「按了会怎样」 */
 .lc-action {
@@ -320,8 +320,8 @@ const CSS = `
   display: flex; align-items: center; justify-content: center;
   background: var(--lc-accent-soft); color: var(--lc-accent);
 }
-.lc-action .t { font-weight: 650; font-size: 13.5px; }
-.lc-action .d { color: var(--lc-muted); font-size: 11.5px; margin-top: 2px; }
+.lc-action .t { font-weight: 650; font-size: 15.5px; }
+.lc-action .d { color: var(--lc-muted); font-size: 13.5px; margin-top: 2px; }
 .lc-action.interview { border-color: #d9d0f7; }
 .lc-action.interview .ico { background: var(--lc-interview-soft); color: var(--lc-interview); }
 .lc-action.import { border-color: #c3e6ea; }
@@ -330,11 +330,12 @@ const CSS = `
 
 /* 输入 */
 .lc-input, .lc-textarea, .lc-select {
-  width: 100%; box-sizing: border-box; font-family: inherit; font-size: 12.5px;
-  padding: 7px 9px; border-radius: 8px;
+  width: 100%; box-sizing: border-box; font-family: inherit; font-size: 14.5px;
+  padding: 10px 12px; border-radius: 10px;
   border: 1px solid var(--lc-line-strong); background: var(--lc-panel); color: var(--lc-ink);
+  line-height: 1.6; min-height: 40px;
 }
-.lc-textarea { resize: vertical; min-height: 72px; line-height: 1.6; }
+.lc-textarea { resize: vertical; min-height: 96px; line-height: 1.7; }
 .lc-input:focus, .lc-textarea:focus, .lc-select:focus {
   outline: none; border-color: var(--lc-accent); box-shadow: 0 0 0 3px var(--lc-accent-soft);
 }
@@ -342,11 +343,11 @@ const CSS = `
 /* 表单：一组「问题 + 控件 + 一句解释」 */
 .lc-fset { display: flex; flex-direction: column; gap: 14px; }
 .lc-fitem { display: flex; flex-direction: column; gap: 4px; }
-.lc-flabel { font-size: 12.5px; font-weight: 600; color: var(--lc-ink); }
-.lc-fhint { font-size: 11.5px; color: var(--lc-muted); }
+.lc-flabel { font-size: 14.5px; font-weight: 600; color: var(--lc-ink); }
+.lc-fhint { font-size: 13.5px; color: var(--lc-muted); }
 .lc-fgroup {
   display: flex; align-items: center; gap: 7px; margin: 16px 0 2px;
-  font-size: 12px; font-weight: 650; color: var(--lc-muted); letter-spacing: .03em;
+  font-size: 14px; font-weight: 650; color: var(--lc-muted); letter-spacing: .03em;
 }
 .lc-fgroup:first-child { margin-top: 0; }
 .lc-fgroup::after { content: ''; flex: 1 1 auto; height: 1px; background: var(--lc-line); }
@@ -375,10 +376,10 @@ const CSS = `
 .lc-avatar {
   width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
-  font-weight: 650; font-size: 13px;
+  font-weight: 650; font-size: 15px;
   background: var(--lc-accent-soft); color: var(--lc-accent);
 }
-.lc-avatar.big { width: 46px; height: 46px; border-radius: 12px; font-size: 19px; }
+.lc-avatar.big { width: 46px; height: 46px; border-radius: 12px; font-size: 22px; }
 .lc-avatar.has-photo { padding: 0; overflow: hidden; background: var(--lc-line); }
 .lc-avatar.has-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
@@ -398,15 +399,15 @@ const CSS = `
     linear-gradient(to bottom, transparent 33.2%, rgba(255,255,255,.28) 33.3%, rgba(255,255,255,.28) 33.6%, transparent 33.7%),
     linear-gradient(to bottom, transparent 66.2%, rgba(255,255,255,.28) 66.3%, rgba(255,255,255,.28) 66.6%, transparent 66.7%);
 }
-.lc-crop-hint { text-align: center; color: var(--lc-muted); font-size: 11.5px; margin-top: 6px; }
+.lc-crop-hint { text-align: center; color: var(--lc-muted); font-size: 13.5px; margin-top: 6px; }
 .lc-avatar.real { background: var(--lc-doctor-soft); color: var(--lc-doctor); }
 .lc-avatar.fictional { background: var(--lc-interview-soft); color: var(--lc-interview); }
 .lc-avatar.world { background: var(--lc-analyze-soft); color: var(--lc-analyze); }
 
-.lc-meta { color: var(--lc-muted); font-size: 11.5px; }
+.lc-meta { color: var(--lc-muted); font-size: 13.5px; }
 .lc-tag {
   display: inline-flex; align-items: center; gap: 3px;
-  padding: 1px 6px; border-radius: 999px; font-size: 11px;
+  padding: 1px 6px; border-radius: 999px; font-size: 12.5px;
   background: var(--lc-accent-soft); color: var(--lc-accent);
 }
 .lc-tag.warn { background: var(--lc-analyze-soft); color: var(--lc-analyze); }
@@ -424,10 +425,10 @@ const CSS = `
   display: flex; align-items: center; justify-content: center;
   background: var(--lc-accent-soft); color: var(--lc-accent);
 }
-.lc-empty h3 { margin: 0 0 4px; font-size: 13.5px; color: var(--lc-ink); font-weight: 650; }
+.lc-empty h3 { margin: 0 0 4px; font-size: 15.5px; color: var(--lc-ink); font-weight: 650; }
 
 /* 分组标题 */
-.lc-group { display: flex; align-items: center; gap: 6px; margin: 14px 0 6px; color: var(--lc-muted); font-size: 11.5px; font-weight: 600; letter-spacing: .04em; }
+.lc-group { display: flex; align-items: center; gap: 6px; margin: 14px 0 6px; color: var(--lc-muted); font-size: 13.5px; font-weight: 600; letter-spacing: .04em; }
 .lc-group:first-child { margin-top: 0; }
 .lc-group i { width: 3px; height: 12px; border-radius: 2px; background: var(--lc-accent); display: block; }
 .lc-group.import i { background: var(--lc-import); }
@@ -438,7 +439,7 @@ const CSS = `
 /* 提示条 */
 .lc-note {
   display: flex; gap: 8px; padding: 9px 10px; border-radius: var(--lc-radius);
-  background: var(--lc-accent-soft); color: var(--lc-ink); font-size: 12px;
+  background: var(--lc-accent-soft); color: var(--lc-ink); font-size: 14px;
   border-left: 3px solid var(--lc-accent);
 }
 .lc-note.warn { background: var(--lc-analyze-soft); border-left-color: var(--lc-analyze); }
@@ -459,27 +460,27 @@ const CSS = `
 }
 .lc-check.on { background: var(--lc-doctor); border-color: var(--lc-doctor); color: #fff; }
 .lc-quote {
-  font-size: 11px; color: var(--lc-muted);
+  font-size: 12.5px; color: var(--lc-muted);
   background: var(--lc-bg); border-left: 2px solid var(--lc-line-strong);
   padding: 3px 7px; border-radius: 0 4px 4px 0; margin-top: 3px;
   overflow-wrap: anywhere;
 }
 
 /* 访谈对话 */
-.lc-bubble { padding: 9px 11px; border-radius: 12px; font-size: 12.5px; max-width: 100%; }
+.lc-bubble { padding: 9px 11px; border-radius: 12px; font-size: 14.5px; max-width: 100%; }
 .lc-bubble.bot { background: var(--lc-interview-soft); border: 1px solid var(--lc-interview); color: var(--lc-ink); border-top-left-radius: 4px; }
 .lc-bubble.me { background: var(--lc-panel); border: 1px solid var(--lc-line); color: var(--lc-ink); border-top-right-radius: 4px; margin-left: 22px; }
 .lc-opt {
   display: flex; gap: 8px; align-items: flex-start; width: 100%; text-align: left;
   padding: 7px 9px; border-radius: 8px; border: 1px solid var(--lc-line-strong);
-  background: var(--lc-panel); cursor: pointer; font-family: inherit; font-size: 12.5px; color: inherit;
+  background: var(--lc-panel); cursor: pointer; font-family: inherit; font-size: 14.5px; color: inherit;
   transition: border-color .1s, background .1s;
 }
 .lc-opt:hover { border-color: var(--lc-interview); background: var(--lc-interview-soft); }
 .lc-opt-num {
   width: 17px; height: 17px; border-radius: 50%; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
-  font-size: 10.5px; font-weight: 650;
+  font-size: 12px; font-weight: 650;
   background: var(--lc-interview-soft); color: var(--lc-interview); border: 1px solid var(--lc-interview);
 }
 
@@ -487,7 +488,7 @@ const CSS = `
 .lc-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .lc-chip {
   padding: 5px 11px; border-radius: 999px; border: 1px solid var(--lc-line-strong);
-  background: var(--lc-panel); color: inherit; font-family: inherit; font-size: 12.5px;
+  background: var(--lc-panel); color: inherit; font-family: inherit; font-size: 14.5px;
   cursor: pointer; transition: border-color .1s, background .1s, color .1s;
 }
 .lc-chip:hover { border-color: var(--lc-interview); background: var(--lc-interview-soft); }
@@ -499,7 +500,7 @@ const CSS = `
    免得看成一主多从的并列关系 */
 .lc-chip.add { border-style: dashed; }
 .lc-chip.add.on { border-style: solid; font-weight: 400; }
-.lc-chip.sm { padding: 3px 9px; font-size: 11.5px; }
+.lc-chip.sm { padding: 3px 9px; font-size: 13.5px; }
 
 /* 「或者直接写」那一段被打字栏接管时的样子。
    强调色从上面那排词挪到这里——一次只能有一个地方是「正在生效的」，
@@ -509,14 +510,14 @@ const CSS = `
 .lc-more { margin-top: 2px; }
 .lc-more-open {
   border: 0; background: none; padding: 2px 0; color: var(--lc-muted);
-  font-family: inherit; font-size: 12.5px; cursor: pointer;
+  font-family: inherit; font-size: 14.5px; cursor: pointer;
 }
 .lc-more-open:hover { color: var(--lc-interview); text-decoration: underline; }
 /* 收起来的那一行「还有什么」：灰色小字、没有边框，看着不像按钮——
    它是个入口，不是要人去点的动作。 */
 .lc-linkweak {
   background: none; border: 0; padding: 0; margin: 0;
-  color: var(--lc-muted); font-family: inherit; font-size: 11.5px;
+  color: var(--lc-muted); font-family: inherit; font-size: 13.5px;
   cursor: pointer; text-align: left;
 }
 .lc-linkweak:hover { color: inherit; text-decoration: underline; }
@@ -525,7 +526,7 @@ const CSS = `
 .lc-line-input {
   width: 100%; padding: 6px 0; border: 0;
   border-bottom: 1px solid var(--lc-line-strong); border-radius: 0;
-  background: transparent; color: inherit; font-family: inherit; font-size: 13px;
+  background: transparent; color: inherit; font-family: inherit; font-size: 15px;
   outline: none;
 }
 .lc-line-input:focus { border-bottom-color: var(--lc-interview); }
@@ -533,7 +534,7 @@ const CSS = `
 
 /* 正文小节（阅读态） */
 .lc-sec { padding: 9px 11px; border-radius: 9px; background: var(--lc-panel); border: 1px solid var(--lc-line); }
-.lc-sec .st { font-size: 11.5px; font-weight: 650; color: var(--lc-muted); letter-spacing: .03em; margin-bottom: 3px; }
+.lc-sec .st { font-size: 13.5px; font-weight: 650; color: var(--lc-muted); letter-spacing: .03em; margin-bottom: 3px; }
 .lc-sec .sb { white-space: pre-wrap; }
 /* 世界书条目：条数可能上百，正文给个上限，别让人滚到看不见底。 */
 .lc-sec .sb.lc-clamp { max-height: 220px; overflow-y: auto; }
@@ -1172,7 +1173,10 @@ function LifeCardTab(props) {
               ? cards.find((c) => c.id === id)
               : cards.find((c) => String(c.name ?? '').trim() === name)
             setMaterialFor(typeof info?.path === 'string' && info.path !== '' ? info.path : null)
-            setInterviewFor(hit !== undefined ? { id: hit.id, name: hit.name } : (name === '' ? null : { name }))
+            // 把「要建成真人还是虚构角色」一起带过去：分析页要靠它决定
+            // 读出来的东西往哪种卡里放（虚构的别建成一张真人卡）。
+            const wantKind = info?.kind === 'fictional' ? 'fictional' : 'real'
+            setInterviewFor(hit !== undefined ? { id: hit.id, name: hit.name, kind: hit.kind ?? wantKind } : (name === '' ? null : { name, kind: wantKind }))
             setView(VIEWS.analyze)
           },
         })
@@ -1409,7 +1413,7 @@ function DoorsView({ onPick, state }) {
     },
   },
     h('div', { style: { flex: '0 0 auto', paddingBottom: 10 } },
-      h('h2', { style: { margin: '2px 0 0', fontSize: 20 } }, '你要用哪个？'),
+      h('h2', { style: { margin: '2px 0 0', fontSize: 22 } }, '你要用哪个？'),
       h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '推一扇门进去。随时能换——卡和世界书都在同一个文件夹里。'),
     ),
     // 三扇门横向并排；窄窗口时自动换行（flexWrap），免得挤成三条缝
@@ -1445,7 +1449,7 @@ function DoorsView({ onPick, state }) {
               background: t.bg, color: t.fg, marginTop: 4,
             },
           }, h(Icon, { name: t.icon, size: 26 })),
-          h('div', { style: { fontSize: 16, fontWeight: 700, lineHeight: 1.35 } }, door.title),
+          h('div', { style: { fontSize: 17.5, fontWeight: 700, lineHeight: 1.35 } }, door.title),
           h('div', { className: 'lc-meta', style: { lineHeight: 1.6 } }, door.desc),
           h('div', { style: { flex: '1 1 auto' } }),
           (door.bullets ?? []).length === 0 ? null : h('div', {
@@ -1461,7 +1465,7 @@ function DoorsView({ onPick, state }) {
             style: {
               flex: '0 0 auto', marginTop: 4, paddingTop: 10, width: '100%',
               borderTop: '1px solid var(--lc-line)',
-              color: t.fg, fontWeight: 700, fontSize: 13,
+              color: t.fg, fontWeight: 700, fontSize: 15,
             },
           }, '推门进去 →'),
         )
@@ -1579,6 +1583,16 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
         desc: '一张空表，一个字段一个字段地写。',
         onClick: () => onNavigate(VIEWS.newCard),
       }),
+      // 写小说最常用的其实不是填表：手里已经有一篇小说、一段人物小传，
+      // 想让它读成人设。这条路以前只在「真实人物」那扇门里有。
+      h(Action, {
+        tone: 'analyze', icon: 'spark',
+        title: isReal ? '贴一段材料，让 AI 读出信息' : '贴一段文章，让 AI 读成这个角色',
+        desc: isReal
+          ? '访谈稿、聊天记录、日记都行。它只会说材料里写过的东西，每条都标出原句。'
+          : '小说片段、人物小传、你写的设定都行。读出来的东西先给你看，你点了才写进卡。',
+        onClick: () => onNavigate(VIEWS.import),
+      }),
     )
   }
 
@@ -1599,7 +1613,11 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
         ? h(Btn, { tone: 'primary', size: 'sm', icon: 'briefcase', onClick: () => onNavigate(VIEWS.jobs), title: '贴一份招聘说明，看看该不该投；或者练一轮面试' }, '下一步')
         : null,
       h('div', { className: 'lc-grow' }),
-      isReal && materials.length > 0 ? h(Btn, { tone: 'analyze', size: 'sm', icon: 'spark', onClick: () => onNavigate(VIEWS.analyze) }, `整理 ${materials.length} 份材料`) : null,
+      // 「贴一段文章让 AI 读」不是只有记录真人才用得上：写小说、酒馆里
+      // 手里有一段人物设定/小说片段，一样想让它读成人设。所以三扇门都给。
+      materials.length > 0
+        ? h(Btn, { tone: 'analyze', size: 'sm', icon: 'spark', onClick: () => onNavigate(VIEWS.analyze) }, isReal ? `整理 ${materials.length} 份材料` : `读那 ${materials.length} 段材料`)
+        : null,
     ),
 
     // 酒馆门里先列「说过的场次」：这是回来的路。没有它，用户退出一场
@@ -1615,7 +1633,7 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
             onClick: () => onOpenChat?.(c),
           },
             h('div', { className: 'lc-row', style: { gap: 6 } },
-              h('div', { className: 'lc-grow lc-ellipsis', style: { fontWeight: 650, fontSize: 12.5 } }, `和「${String(c.card_name ?? '').trim() === '' ? 'TA' : c.card_name}」`),
+              h('div', { className: 'lc-grow lc-ellipsis', style: { fontWeight: 650, fontSize: 14.5 } }, `和「${String(c.card_name ?? '').trim() === '' ? 'TA' : c.card_name}」`),
               h('span', { className: 'lc-meta' }, `${c.turns ?? 0} 句`),
             ),
             String(c.last ?? '').trim() === ''
@@ -2024,10 +2042,10 @@ function TavernView({ chat, onChat, onBack }) {
           padding: '7px 10px',
           whiteSpace: 'pre-wrap',
           lineHeight: 1.65,
-          fontSize: 13,
+          fontSize: 15,
         },
       },
-        h('div', { className: 'lc-meta', style: { marginBottom: 2, fontSize: 10.5 } }, turn.who),
+        h('div', { className: 'lc-meta', style: { marginBottom: 2, fontSize: 12 } }, turn.who),
         turn.text,
       ),
     )
@@ -2192,7 +2210,7 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
     h('div', { className: 'lc-row' },
       h(Avatar, { name: data.name, kind: data.kind, big: true, photo: card?.avatar ?? null }),
       h('div', { className: 'lc-grow' },
-        h('div', { style: { fontWeight: 650, fontSize: 15, display: 'flex', alignItems: 'center', gap: 6 } },
+        h('div', { style: { fontWeight: 650, fontSize: 16.5, display: 'flex', alignItems: 'center', gap: 6 } },
           h('span', null, data.name ?? '(还没起名字)'),
           // 红点：这条是从记忆里认出来的，记忆里只写了半句。
           // 文案只说「还缺什么」，不解释「记忆」是什么——那是别的软件的事。
@@ -2223,7 +2241,7 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
 
     cov === undefined ? null : h('div', null,
       h('div', { className: 'lc-row' },
-        h('span', { className: 'lc-label', style: { fontSize: 11.5, color: 'var(--lc-muted)', fontWeight: 600 } }, '写完了多少'),
+        h('span', { className: 'lc-label', style: { fontSize: 13.5, color: 'var(--lc-muted)', fontWeight: 600 } }, '写完了多少'),
         h('span', { className: 'lc-grow' }),
         h('span', { className: 'lc-meta' }, `${cov.percent}%`),
       ),
@@ -3842,6 +3860,8 @@ function TextImport({ onAnalyze }) {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState(null)
   const fileRef = useRef(null)
+  // 这张卡是真人还是虚构角色：决定读出来的东西往哪种卡里放。
+  const [kind, setKind] = useState('real')
 
   const save = async () => {
     setBusy(true); setMsg(null)
@@ -3867,6 +3887,18 @@ function TextImport({ onAnalyze }) {
   }
 
   return h('div', { className: 'lc-fset' },
+    h('div', { className: 'lc-meta', style: { lineHeight: 1.7 } },
+      '把一大段话贴进来——小说片段、人物小传、你随口讲的关于某个人的事都行。',
+      h('br'),
+      '存完点「让 AI 读一读」，它会把里面的信息整理成一张卡。**只认原文里写过的**，编的会被丢掉。'),
+    h(Field, { label: '这是要建成什么人' },
+      h('div', { className: 'lc-row' },
+        h(Btn, { size: 'sm', tone: kind === 'real' ? 'interview' : undefined, onClick: () => setKind('real') }, '现实里的人'),
+        h(Btn, { size: 'sm', tone: kind === 'fictional' ? 'import' : undefined, onClick: () => setKind('fictional') }, '小说 / 角色'),
+      ),
+      h('div', { className: 'lc-meta', style: { marginTop: 4 } },
+        kind === 'real' ? '建成现实里的人：卡上写什么，最好都是他真有过的事。' : '建成虚构角色：可以拿去写小说，也可以拿去酒馆里演。'),
+    ),
     h(Field, { label: '这是关于谁的' },
       h('div', { className: 'lc-row' },
         h('input', { className: 'lc-input', value: about, onChange: (e) => setAbout(e.target.value), placeholder: '爷爷', spellCheck: false }),
@@ -3884,7 +3916,7 @@ function TextImport({ onAnalyze }) {
     msg?.tone === 'ok'
       ? h('div', null, h(Btn, {
           tone: 'analyze', size: 'sm', icon: 'spark',
-          onClick: () => onAnalyze?.({ name: about.trim(), path: msg?.path }),
+          onClick: () => onAnalyze?.({ name: about.trim(), path: msg?.path, kind }),
         }, '让 AI 读一读'))
       : null,
   )
@@ -4157,6 +4189,8 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
         name: cards.find((c) => c.id === about)?.name ?? about,
         materials: chosen.length > 0 ? chosen : undefined,
         concept: conceptForRun === null ? undefined : conceptForRun,
+        // 这个人是真人还是虚构角色：采纳时如果卡还不存在，就按这个身份现建。
+        kind: String(presetAbout?.kind ?? '').trim() === 'fictional' ? 'fictional' : 'real',
       })
       if (r.ok !== true) { setErr(r.error ?? '没跑成'); return }
       setResult(r)
@@ -4665,7 +4699,7 @@ function JobsView({ onBack, flash }) {
       ),
       // 数字对不上是这里最要紧的提示：简历上编一个百分比，面试第一个问题就会问到它。
       written.warning === null ? null : h(Note, { tone: 'warn', icon: 'warning' }, h('div', { style: { whiteSpace: 'pre-wrap' } }, written.warning)),
-      h('div', { style: { whiteSpace: 'pre-wrap', fontSize: 12.5, lineHeight: 1.65, marginTop: 6 } }, written.markdown),
+      h('div', { style: { whiteSpace: 'pre-wrap', fontSize: 14.5, lineHeight: 1.65, marginTop: 6 } }, written.markdown),
       written.path === null ? null : h('div', { className: 'lc-meta', style: { marginTop: 6 } }, '也存了一份在工作文件夹里，回头能找到。'),
     ),
 

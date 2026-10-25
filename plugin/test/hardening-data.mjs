@@ -459,6 +459,42 @@ console.log('=== 12. 快照写不下就不覆盖；格式坏的卡要报错 ==='
 }
 
 // ── 收尾 ───────────────────────────────────────────────────────────
+// ── 「贴一段文字，让它整理成一张卡」：卡还不存在时采纳要能现建一张 ──
+// 以前 applyProposal 里有一句 `找不到 ${aboutId} 这张卡` 就直接返回失败，
+// 于是这条路必须先手动建一张空卡才走得通——而对用户来说，「我讲了一大段，
+// 它帮我整理成一张卡」最自然的期待就是不用先建卡。
+{
+  const mats = { 'materials/一段话.md': '她叫林小雨，爱笑，话很密，一紧张就重复同一句话。' }
+  // 采纳时会拿引文对着**现在**的材料再验一遍，所以材料得真的在盘上。
+  await store.appendMaterial(root, '一段话', mats['materials/一段话.md'], { replace: true })
+  const onDisk = await store.readMaterials(root)
+  const matKey = Object.keys(onDisk).find((k) => k.includes('一段话')) ?? Object.keys(onDisk)[0]
+  // 提案里的 material 字段要用盘上真实的那条路径，否则引文找不到出处
+  const proposalItems = null
+  void proposalItems
+  const proposal = {
+    about: { id: 'lin-xiaoyu', name: '林小雨', kind: 'fictional' },
+    items: [
+      { field: '自述', value: '爱笑，话很密。', source_level: '自述', evidence: { material: matKey, quote: '爱笑，话很密' } },
+      { field: '口癖', value: '一紧张就重复同一句话。', source_level: '自述', evidence: { material: matKey, quote: '一紧张就重复同一句话' } },
+    ],
+  }
+  const saved = await store.saveProposal(root, 'lin-xiaoyu', proposal, { [matKey]: mats['materials/一段话.md'] })
+  t('两条都过闸门', saved.accepted === 2, saved)
+
+  const rec = await store.readProposal(root, saved.json)
+  t('提案里记下了名字', rec.record?.about?.name === '林小雨', rec.record?.about)
+  t('提案里记下了身份（虚构角色）', rec.record?.about?.kind === 'fictional', rec.record?.about)
+
+  const applied = await store.applyProposal(root, saved.json, { checked: [0, 1] })
+  t('卡不存在时采纳也能成功（现建一张）', applied.ok === true, applied)
+  const made = await store.readCard(root, 'people/lin-xiaoyu.card.md')
+  t('建出来的卡读得回', made.ok === true, made.error ?? '')
+  t('卡名对', made.data?.name === '林小雨', made.data?.name)
+  t('身份是虚构角色，没建成真人', made.data?.kind === 'fictional', made.data?.kind)
+  t('正文真的写进去了', (made.sections ?? []).some((x) => String(x.body).includes('爱笑')), made.sections)
+}
+
 await fs.rm(root, { recursive: true, force: true }).catch(() => {})
 await fs.rm(sibling, { recursive: true, force: true }).catch(() => {})
 await fs.rm(outsideCard, { force: true }).catch(() => {})

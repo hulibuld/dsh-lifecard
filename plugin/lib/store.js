@@ -959,9 +959,17 @@ export async function saveProposal(root, aboutId, proposal, materials) {
 
   const md = renderProposalMarkdown({ aboutId, date, gate, proposal })
   await fs.writeFile(abs(mdRel), md, 'utf8')
+  // about 里连名字和身份一起存：这个人可能还没有卡（「说一大段话让它整理成卡」
+  // 就是这种情况），采纳时要靠这几个字段现建一张，名字不能丢。
+  const aboutMeta = proposal?.about !== null && typeof proposal?.about === 'object' ? proposal.about : {}
   const record = {
     spec: core.PROPOSAL_VERSION,
-    about: { id: aboutId },
+    about: {
+      id: aboutId,
+      ...(typeof aboutMeta.name === 'string' && aboutMeta.name.trim() !== '' ? { name: aboutMeta.name.trim() } : {}),
+      ...(typeof aboutMeta.kind === 'string' && aboutMeta.kind !== '' ? { kind: aboutMeta.kind } : {}),
+      ...(typeof aboutMeta.world === 'string' && aboutMeta.world !== '' ? { world: aboutMeta.world } : {}),
+    },
     generated_at: new Date().toISOString(),
     material: Object.keys(materials ?? {}),
     accepted: gate.accepted,
@@ -1270,8 +1278,24 @@ export async function applyProposal(root, jsonRel, options = {}) {
   if (!read.ok) return read
   const aboutId = read.record?.about?.id
   if (typeof aboutId !== 'string' || aboutId === '') return { ok: false, error: '提案里没有 about.id' }
-  const target = await findCardByRelOrId(root, aboutId)
-  if (target === null) return { ok: false, error: `找不到 ${aboutId} 这张卡` }
+  let target = await findCardByRelOrId(root, aboutId)
+  if (target === null) {
+    // 卡还不存在——这正是「说一大段话，让它整理成一张卡」的正常情况。
+    // 以前这里直接报「找不到这张卡」，于是那条路必须先手动建一张空卡才走得通。
+    // 现在按提案里的 about 现建一张：kind 跟着提案走（虚构角色别建成真人）。
+    const about = read.record?.about ?? {}
+    const name = String(about.name ?? aboutId).trim() === '' ? aboutId : String(about.name).trim()
+    const kind = ['real', 'fictional', 'hybrid', 'self'].includes(String(about.kind)) ? String(about.kind) : 'real'
+    target = cardRelPath(aboutId, about.world)
+    const made = await writeCard(root, target, {
+      lifecard: core.DATA_VERSION,
+      id: aboutId,
+      kind,
+      world: String(about.world ?? 'reality'),
+      name,
+    }, [])
+    if (made.ok !== true) return { ok: false, error: made.error ?? '这张卡没能建起来，重试一次。' }
+  }
   const card = await readCard(root, target)
   if (!card.ok) return card
   const chosen = read.items.filter((i) => i.checked)

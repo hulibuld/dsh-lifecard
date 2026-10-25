@@ -2014,7 +2014,19 @@ function buildApi(ctx, workspace, config, options) {
           hint: '可以把材料拆短一点再试一次。',
         }
       }
-      const saved = await store.saveProposal(ws, aboutId, proposal, chosen)
+      // 补上 about 的身份信息再存：这个人可能还没有卡（「贴一段文字让它
+      // 整理成一张卡」就是这种情况），采纳时要靠它现建一张，名字和身份不能丢。
+      const kindWant = String(body?.kind ?? '').trim()
+      const enriched = {
+        ...proposal,
+        about: {
+          ...(proposal?.about !== null && typeof proposal?.about === 'object' ? proposal.about : {}),
+          id: aboutId,
+          name: String(proposal?.about?.name ?? aboutName).trim() || aboutName,
+          ...(kindWant === 'fictional' ? { kind: 'fictional' } : {}),
+        },
+      }
+      const saved = await store.saveProposal(ws, aboutId, enriched, chosen)
       return {
         ok: true,
         ...saved,
