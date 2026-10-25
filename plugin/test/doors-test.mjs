@@ -145,7 +145,7 @@ function renderRoot(presets = {}) {
 // 根组件的槽：0 view / 1 state / 2 listing / 3 busy / 4 error / 5 toast /
 // 6 activeCard / 7 proposal / 8 doctor / 9 interviewFor / 10 showMore /
 // 11 activeWorld / 12 pendingAbout / 13 introSeen / 14 materialFor / 15 ref /
-// 16 chat / 17 chats / 23 door（实测见文件顶注释）
+// 16 chat / 17 chats / 24 door / 25 activeBook / 26 books（实测，每次加 state 都要重探）
 const base = (view, extra = {}) => ({ 0: view, 1: STATE, 2: LISTING, 3: '', 4: null, 5: null, 6: null, 7: null, 8: null, 9: null, 10: false, 11: null, 12: '', 13: true, 14: null, ...extra })
 
 console.log('\n=== 1. 点哪扇门，「聊着建」就说哪扇门的话 ===')
@@ -162,7 +162,7 @@ for (const [doorLabel, doorId, expectWord, forbidWord] of [
   t(`点「${doorLabel}」进到那一屏`, viewAfterDoor === (doorId === 'real' ? 'home' : doorId), String(viewAfterDoor))
 
   // ② 在那一扇门的首页点「聊着建」（酒馆那扇门是「立一个人」，写小说也是）
-  const home = renderRoot({ ...base(viewAfterDoor), 23: doorId })
+  const home = renderRoot({ ...base(viewAfterDoor), 24: doorId })
   const wanted = doorId === 'real' ? '陪我聊聊' : (doorId === 'tavern' ? '聊着立一个能演的角色' : '聊着立一个小说角色')
   const clicked = clickButtonWith(home, wanted)
   const viewAfterClick = hookStore[0]
@@ -170,7 +170,7 @@ for (const [doorLabel, doorId, expectWord, forbidWord] of [
   t(`点完进到聊着建那一屏（${doorLabel}）`, viewAfterClick === 'interview', String(viewAfterClick))
 
   // ③ 关键：这一屏说的话，是不是这一扇门的
-  const interview = renderRoot({ ...base('interview'), 23: doorId })
+  const interview = renderRoot({ ...base('interview'), 24: doorId })
   const words = textOf(interview)
   t(`「${doorLabel}」的聊着建说的是「${expectWord}」`, words.includes(expectWord), words.slice(0, 300))
   if (forbidWord !== null) {
@@ -182,7 +182,7 @@ console.log('\n=== 2. 门记住之后，进别的子页面也不丢 ===')
 {
   // 从酒馆门进「聊着建」，再进卡片页、分析页——门还是酒馆
   for (const view of ['interview', 'card', 'analyze', 'import', 'newCard']) {
-    const tree = renderRoot({ ...base(view), 23: 'tavern' })
+    const tree = renderRoot({ ...base(view), 24: 'tavern' })
     const json = JSON.stringify(seenProps.get('HomeView') ?? {})
     // 只有首页类视图才会渲染 HomeView；别的时候检查标题栏那句话
     if (view === 'interview') {

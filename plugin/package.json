@@ -32,7 +32,8 @@
     "lib/jobs.js",
     "lib/jobs-store.js",
     "lib/jobs-interview.js",
-    "lib/tavern.js"
+    "lib/tavern.js",
+    "lib/novel.js"
   ],
   "dsh": {
     "bundle": {
