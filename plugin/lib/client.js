@@ -1082,7 +1082,7 @@ function LifeCardTab(props) {
     try {
       const r = await call('tavern.get', { id: row?.id })
       if (r?.ok !== true) throw new Error(r?.error ?? '这一场打不开')
-      setChat({ id: r.id, card_name: r.card_name, world_name: r.world_name, turns: r.turns ?? [], err: null, busy: false })
+      setChat({ id: r.id, card_name: r.card_name, world_name: r.world_name, turns: r.turns ?? [], notes: r.notes ?? [], err: null, busy: false })
       setView(VIEWS.tavernChat)
     } catch (e) {
       setError(humanizeError(e))
@@ -1097,7 +1097,7 @@ function LifeCardTab(props) {
     try {
       const r = await call('tavern.start', { card: card?.path ?? String(card?.id ?? '') })
       if (r?.ok !== true) throw new Error(r?.error ?? '这一场没开起来')
-      setChat({ id: r.id, card_name: r.card_name, world_name: r.world_name, turns: r.turns ?? [], err: null, busy: false })
+      setChat({ id: r.id, card_name: r.card_name, world_name: r.world_name, turns: r.turns ?? [], notes: r.notes ?? [], err: null, busy: false })
       setView(VIEWS.tavernChat)
     } catch (e) {
       setError(humanizeError(e))
@@ -1233,7 +1233,12 @@ function LifeCardTab(props) {
         return h(InterviewView, {
           state, listing, preset: interviewFor, onRecorded: refresh, flash, mode,
           onDone: () => { setInterviewFor(null); setMaterialFor(null); setView(VIEWS.home); refresh() },
-          onAnalyze: (about) => { setInterviewFor(about ?? null); setView(VIEWS.analyze) },
+          onAnalyze: (about) => {
+            const list = Array.isArray(about?.materials) ? about.materials.filter((x) => typeof x === 'string' && x !== '') : []
+            setMaterialFor(list.length > 0 ? list : null)
+            setInterviewFor(about ?? null)
+            setView(VIEWS.analyze)
+          },
         })
       case VIEWS.memory:
         // 提取完直接跳到「让 AI 读」，省掉用户自己再想「我刚存的材料去哪了」。
@@ -1598,7 +1603,7 @@ function DoorsView({ onPick, state, features }) {
         )
       }),
     ),
-    workspace === '' ? null : h('div', { className: 'lc-meta', style: { flex: '0 0 auto', paddingTop: 10 } }, `档案在：${workspace}`),
+    workspace === '' ? null : h('div', { className: 'lc-meta', style: { flex: '0 0 auto', paddingTop: 10 } }, '档案就在你选的那个文件夹里'),
   )
 }
 
@@ -1983,7 +1988,7 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
             h(Btn, { size: 'sm', ghost: true, icon: 'folder', onClick: () => onNavigate(VIEWS.setup) }, '换个文件夹'),
             // 路径照实写出来：这是唯一一处「档案到底在哪儿」的线索。
             // 藏起来，选错文件夹的人就永远找不回去了。
-            h('span', { className: 'lc-meta lc-ellipsis' }, state?.workspace === undefined || state?.workspace === '' ? '' : `档案在：${state.workspace}`),
+            h('span', { className: 'lc-meta lc-ellipsis' }, state?.workspace === undefined || state?.workspace === '' ? '' : '档案就在你选的那个文件夹里'),
           ),
         )
       : null,
@@ -2229,6 +2234,16 @@ function GameView({ bookId, onBack, flash }) {
   const [toOpen, setToOpen] = useState(false)
   const [toNote, setToNote] = useState('')
   const [toBusy, setToBusy] = useState(false)
+  // 以前这一局退出就找不回来了，而界面还写着「退出再进来还能接着走」。
+  // 存档后台一直都有（game.list），缺的就是这半截入口。
+  const [plays, setPlays] = useState([])
+
+  const loadPlays = async () => {
+    try {
+      const r = await call('game.list', { book: bookId })
+      if (r?.ok === true) setPlays(Array.isArray(r.items) ? r.items : [])
+    } catch { /* 列不出来不影响新开一局 */ }
+  }
 
   const toChapter = async () => {
     if (play === null) return
@@ -2252,6 +2267,7 @@ function GameView({ bookId, onBack, flash }) {
 
   useEffect(() => {
     let gone = false
+    loadPlays()
     call('novel.get', { id: bookId })
       .then((r) => { if (!gone && r?.ok === true) setChapterList(Array.isArray(r.chapters) ? r.chapters : []) })
       .catch(() => {})
@@ -2295,6 +2311,15 @@ function GameView({ bookId, onBack, flash }) {
       h(PresetBar, { mode: 'game', value: preset, onChange: setPreset }),
       h(Btn, { tone: 'primary', block: true, icon: 'spark', disabled: busy !== '', onClick: start },
         busy === 'start' ? '正在开局…' : '进这一段'),
+      plays.length === 0
+        ? null
+        : h('div', { className: 'lc-stack', style: { gap: 6, marginTop: 10 } },
+            h('div', { className: 'lc-fhint' }, `之前玩到一半的 · ${plays.length}`),
+            plays.map((row) => h(Btn, {
+              key: row.id, block: true, size: 'sm', icon: 'history',
+              onClick: () => open(row),
+            }, `${String(row.scene ?? '').trim() === '' ? '那一局' : String(row.scene)} · 走了 ${Number(row.turns ?? 0)} 步`)),
+          ),
       err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
     )
   }
@@ -2386,7 +2411,8 @@ function CareerView({ onBack, flash }) {
     let gone = false
     call('career.get', {})
       .then((r) => {
-        if (gone || r?.ok !== true) return
+        if (gone) return
+        if (r?.ok !== true) { setErr(r?.error ?? '你的简历这一份读不出来'); return }
         setProfile(buildCareerForm(r.profileSections ?? {}))
         setGoal(String(r.plan?.goal ?? ''))
         setHorizon(String(r.plan?.horizon ?? '1年'))
@@ -2420,7 +2446,19 @@ function CareerView({ onBack, flash }) {
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
   }
 
-  if (profile === null) return h('div', { className: 'lc-pad' }, h(Spinner))
+  // 先看有没有出错：出错的渲染在下面（要 profile 读出来才轮得到），
+  // 所以这里必须自己先把错说出来，否则用户看到的是一辈子转圈。
+  if (profile === null) {
+    return h('div', { className: 'lc-pad lc-stack' },
+      h(Btn, { size: 'sm', icon: 'back', onClick: onBack }, '回首页'),
+      err === null
+        ? h(Spinner)
+        : h('div', { className: 'lc-stack' },
+            h(Note, { tone: 'err', icon: 'warning' }, err),
+            h(Btn, { block: true, onClick: () => { setErr(null); call('career.get', {}) } }, '再试一次'),
+          ),
+    )
+  }
 
   const field = (key, label, rows, placeholder) => h('div', { className: 'lc-stack', style: { gap: 6 } },
     h('div', { className: 'lc-fhint' }, label),
@@ -2531,6 +2569,8 @@ function BookView({ bookId, onBack, flash }) {
   const [ask, setAsk] = useState('')
   const [editingOutline, setEditingOutline] = useState(false)
   const [outlineText, setOutlineText] = useState('')
+  // 这一章的正文有没有还没存下的改动。切章之前必须先处理，否则写的东西会没。
+  const [bodyDirty, setBodyDirty] = useState(false)
 
   const load = async (want) => {
     setErr(null)
@@ -2555,6 +2595,24 @@ function BookView({ bookId, onBack, flash }) {
     } catch (e) { setErr(humanizeError(e)) }
   }
 
+  // 切章之前先把没存的正文收好。存不上就留在这一章，别让人以为写进去了。
+  const keepBody = async () => {
+    if (bodyDirty !== true) return true
+    if (body.trim() === '') { setBodyDirty(false); return true }
+    try {
+      const r = await call('novel.chapter.save', { id: bookId, index: chapterIndex, body })
+      if (r?.ok !== true) { setErr(r?.error ?? '这一章没存上，先别走'); return false }
+      setBodyDirty(false)
+      return true
+    } catch (e) { setErr(humanizeError(e)); return false }
+  }
+
+  const goChapter = async (index) => {
+    if ((await keepBody()) !== true) return
+    setChapterIndex(index)
+    await openChapter(index)
+  }
+
   useEffect(() => { load(0) }, [bookId])
 
   const doPlan = async () => {
@@ -2572,7 +2630,16 @@ function BookView({ bookId, onBack, flash }) {
     try {
       const r = await call('novel.outline.save', { id: bookId, text: outlineText })
       if (r?.ok !== true) { setErr(r?.error ?? '大纲没存上'); return }
-      setOutline({ ...(outline ?? {}), ...r, text: outlineText })
+      // 只取存盘结果里跟大纲正文有关的那几样。服务端回的 chapters 是「几条」这个数字，
+      // 整包铺出去会把本地那份逐章列表盖掉，下一屏渲染就会拿数字去 find。
+      setOutline({
+        ok: true,
+        path: r.path,
+        text: outlineText,
+        theme: r.theme,
+        ending: r.ending,
+        chapters: Array.isArray(outline?.chapters) ? outline.chapters : [],
+      })
       setEditingOutline(false)
       flash?.('大纲存好了')
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
@@ -2594,7 +2661,7 @@ function BookView({ bookId, onBack, flash }) {
       const merged = body.trim() === '' ? draft : `${body.trim()}\n\n${draft}`
       const r = await call('novel.chapter.save', { id: bookId, index: chapterIndex, body: merged })
       if (r?.ok !== true) { setErr(r?.error ?? '没存上'); return }
-      setBody(merged); setDraft(null)
+      setBody(merged); setDraft(null); setBodyDirty(false)
       flash?.(`第 ${chapterIndex} 章存好了`)
       await load(chapterIndex)
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
@@ -2605,12 +2672,16 @@ function BookView({ bookId, onBack, flash }) {
     try {
       const r = await call('novel.chapter.save', { id: bookId, index: chapterIndex, body })
       if (r?.ok !== true) { setErr(r?.error ?? '没存上'); return }
+      setBodyDirty(false)
       flash?.(`第 ${chapterIndex} 章存好了`)
       await load(chapterIndex)
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
   }
 
   const doReview = async () => {
+    // 挑毛病看的是存下来的那一版，所以正文有没存的改动就先存一次，
+    // 否则你会以为它评的是刚写的那段。
+    if ((await keepBody()) !== true) return
     setBusy('review'); setErr(null)
     try {
       const r = await call('novel.chapter.review', { id: bookId, index: chapterIndex })
@@ -2627,13 +2698,13 @@ function BookView({ bookId, onBack, flash }) {
   }
 
   const chapters = Array.isArray(book.chapters) ? book.chapters : []
-  const plan = outline?.ok === true ? (outline.chapters ?? []) : []
+  const plan = outline?.ok === true && Array.isArray(outline.chapters) ? outline.chapters : []
   const planItem = plan.find((c) => c.index === chapterIndex)
   const title = String(book.data?.title ?? bookId)
 
   return h('div', { className: 'lc-pad lc-stack', style: { gap: 12 } },
     h('div', { className: 'lc-row' },
-      h(Btn, { size: 'sm', icon: 'back', onClick: onBack }, '回书架'),
+      h(Btn, { size: 'sm', icon: 'back', onClick: async () => { if ((await keepBody()) === true) onBack() } }, '回书架'),
       h('div', { className: 'lc-grow lc-ellipsis', style: { fontWeight: 700, fontSize: 16.5 } }, `《${title}》`),
       h('span', { className: 'lc-meta' }, `${chapters.length} 章`),
     ),
@@ -2663,7 +2734,7 @@ function BookView({ bookId, onBack, flash }) {
                 background: c.index === chapterIndex ? 'var(--lc-accent-soft)' : 'transparent',
                 color: c.index === chapterIndex ? 'var(--lc-accent)' : undefined,
               },
-              onClick: () => { setChapterIndex(c.index); openChapter(c.index) },
+              onClick: () => { goChapter(c.index) },
             }, `第 ${c.index} 章 · ${c.plan}`))),
             outline.ending === '' ? null : h('div', { className: 'lc-meta' }, `结局：${outline.ending}`),
           ),
@@ -2729,7 +2800,7 @@ function BookView({ bookId, onBack, flash }) {
         spellCheck: false,
         placeholder: '这一章还空着。让 AI 写一段，或者自己动手。',
         style: { minHeight: 260, marginTop: 6, lineHeight: 1.85 },
-        onChange: (e) => setBody(e.target.value),
+        onChange: (e) => { setBody(e.target.value); setBodyDirty(true) },
       }),
       h('div', { className: 'lc-row' },
         h(Btn, { size: 'sm', tone: 'primary', icon: 'check', disabled: busy !== '', onClick: saveBody }, busy === 'save' ? '正在存…' : '存好这一章'),
@@ -2738,8 +2809,7 @@ function BookView({ bookId, onBack, flash }) {
         h('div', { className: 'lc-grow' }),
         h(Btn, { size: 'sm', ghost: true, icon: 'plus', onClick: async () => {
           const next = chapterIndex + 1
-          setChapterIndex(next)
-          await openChapter(next)
+          await goChapter(next)
         } }, `写第 ${chapterIndex + 1} 章`),
       ),
       review === null
@@ -4296,6 +4366,9 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
   // 结束页以前一律说「你说的都记下来了」；可要是手一滑点了结束，
   // 正在写的那句其实没存进去——那句话就得改口。
   const [dropped, setDropped] = useState(false)
+  // 这一场访谈写出去的材料（interview.record 每次回传一份）。结束页要带上它们，
+  // 不然分析页一条都不勾，而「一条都不勾」= 全读——别人的材料会被读进这张卡。
+  const [materialPaths, setMaterialPaths] = useState([])
   const scrollRef = useRef(null)
 
   // 宿主给什么就用什么；一个都没有（还没重启、旧版宿主）就用本地这份。
@@ -4436,6 +4509,12 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
         setErr(rec?.error ?? '这一句没记上。检查一下文件夹还在不在，再点一次。')
         return
       }
+      // interview.record 会把你这一场的问答另存成一份材料。攒着它的路径，
+      // 结束页「整理进卡里」必须带上——分析页一条不勾等于「全读」，
+      // 别人说的那些也会被读进这张卡。
+      if (typeof rec.material === 'string' && rec.material !== '') {
+        setMaterialPaths((prev) => (prev.includes(rec.material) ? prev : [...prev, rec.material]))
+      }
       if (status === 'answered') {
         setLog((prev) => [...prev, { role: 'bot', text: q.ask, options: q.options }, { role: 'me', text: answer.trim() }])
       } else {
@@ -4446,6 +4525,12 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
       const rest = queue.slice(1)
       if (rest.length === 0) {
         const p = await call('interview.plan', { about: aboutId, relation, limit: 3, kind: fiction ? 'fictional' : 'real' })
+        // 没问着问题不等于问完了。以前这里不看结果：AI 没连上、模型抽风、
+        // 文件夹读不出来，界面都会直接跳到结束页，还写「现在写满了 undefined%」。
+        if (p?.ok !== true) {
+          setErr(`${p?.error ?? '想不出下一题'}。刚才那一句已经记下了，这里是没接上——过一会儿点「再问一题」接着来。`)
+          return
+        }
         setPlan(p)
         setQueue(p.next ?? [])
         setCurrent((p.next ?? [])[0] ?? null)
@@ -4603,7 +4688,7 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
       plan === null || (plan.empty ?? []).length === 0
         ? null
         : h('div', { className: 'lc-meta' }, `还空着：${(plan.empty ?? []).slice(0, 8).join('、')}`),
-      h(Btn, { tone: 'primary', big: true, block: true, onClick: () => onAnalyze({ id: aboutId, name: preset?.name ?? name }) }, '把刚才说的整理进卡里'),
+      h(Btn, { tone: 'primary', big: true, block: true, onClick: () => onAnalyze({ id: aboutId, name: preset?.name ?? name, materials: materialPaths }) }, '把刚才说的整理进卡里'),
       h(Btn, { block: true, onClick: () => { onDone() } }, '先这样，回头再说'),
       h('div', { className: 'lc-meta', style: { textAlign: 'center' } }, '你说的每句话都存成了材料。整理时会标出原文出处，编不出来的。'),
     )
@@ -4666,9 +4751,16 @@ function ImportView({ busy, onImport, onAnalyze, listing }) {
   const [drag, setDrag] = useState(false)
   const [tab, setTab] = useState('card')
   const inputRef = useRef(null)
+  const [skipNote, setSkipNote] = useState('')
 
   const handleFiles = (fileList) => {
-    const files = Array.from(fileList ?? []).filter((f) => /\.(png|json|charx|zip)$/i.test(f.name))
+    const all = Array.from(fileList ?? [])
+    const files = all.filter((f) => /\.(png|json|charx|zip)$/i.test(f.name))
+    // 以前过滤完直接就 return：拖进来的是一张 jpg 头像或一份 md 设定，
+    // 界面上什么都不发生，用户只会以为这块坏了。
+    setSkipNote(files.length > 0 || all.length === 0
+      ? ''
+      : `这些认不出来：${all.map((f) => f.name).join('、')}。只认角色卡文件（.png / .json / .charx / .zip）。想贴一段文字，就切到上面「一段文字」。`)
     if (files.length === 0) return
     onImport(files)
   }
@@ -4704,6 +4796,7 @@ function ImportView({ busy, onImport, onAnalyze, listing }) {
           style: { display: 'none' }, onChange: (e) => handleFiles(e.target.files),
         }),
       ),
+      skipNote === '' ? null : h(Note, { tone: 'warn', icon: 'warning' }, skipNote),
       busy === 'import' ? h('div', { className: 'lc-row' }, h(Spinner), h('span', { className: 'lc-meta' }, '正在读…')) : null,
       h(Note, { tone: undefined, icon: 'check' }, '导入进来的卡会原样保留所有内容，包括这个软件不认识的字段。你在这里改过的部分才会变，导出时一起带走。'),
     ),
@@ -4751,7 +4844,7 @@ function TextImport({ onAnalyze }) {
     h('div', { className: 'lc-meta', style: { lineHeight: 1.7 } },
       '把一大段话贴进来——小说片段、人物小传、你随口讲的关于某个人的事都行。',
       h('br'),
-      '存完点「让 AI 读一读」，它会把里面的信息整理成一张卡。**只认原文里写过的**，编的会被丢掉。'),
+      '存完点「让 AI 读一读」，它会把里面的信息整理成一张卡。只认原文里写过的，编的会被丢掉。'),
     h(Field, { label: '这是要建成什么人' },
       h('div', { className: 'lc-row' },
         h(Btn, { size: 'sm', tone: kind === 'real' ? 'interview' : undefined, onClick: () => setKind('real') }, '现实里的人'),
@@ -4953,7 +5046,13 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
   const presetId = String(presetAbout?.id ?? '').trim()
   const presetName = String(presetAbout?.name ?? '').trim()
   const [about, setAbout] = useState(presetId !== '' ? presetId : presetName)
-  const [chosen, setChosen] = useState(presetMaterials === undefined || presetMaterials === null ? [] : [presetMaterials])
+  // 带过来的材料可能是一份，也可能是好几份（访谈一路上记下来的）。
+  // 不认数组的话会变成「[一份, 另一份]」被当成一个路径，一条都勾不上，
+  // 而一条都不勾等于全读。
+  const [chosen, setChosen] = useState(() => {
+    if (Array.isArray(presetMaterials)) return presetMaterials.filter((x) => typeof x === 'string' && x !== '')
+    return presetMaterials === undefined || presetMaterials === null ? [] : [presetMaterials]
+  })
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
   const [result, setResult] = useState(null)
@@ -5369,6 +5468,7 @@ function JobsView({ onBack, flash }) {
   // 这一页开头要读好几样东西（求职设置、以前读过的、投递表、故事）。
   // 读失败时以前是静默吞掉——界面上就是「一片空」，跟「你还没填」长得一样。
   const [loadFail, setLoadFail] = useState(false)
+  const [savingStory, setSavingStory] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -5666,14 +5766,28 @@ function JobsView({ onBack, flash }) {
           h('input', { className: 'lc-input', value: newStoryTitle, onChange: (e) => setNewStoryTitle(e.target.value), placeholder: '一次线上事故', spellCheck: false }),
         ),
         h('textarea', { className: 'lc-textarea', value: newStoryBody, onChange: (e) => setNewStoryBody(e.target.value), placeholder: '凌晨两点被告警叫起来…', spellCheck: false }),
-        h(Btn, { size: 'sm', icon: 'plus', disabled: newStoryTitle.trim() === '' || newStoryBody.trim() === '', onClick: async () => {
-          const r = await call('job.story.add', { story: { title: newStoryTitle.trim(), body: newStoryBody.trim() } })
-          if (r.ok !== true) { setErr(r.error ?? '没存上'); return }
-          setNewStoryTitle(''); setNewStoryBody('')
-          const again = await call('job.stories', {})
-          if (again.ok === true) setStories(again.stories ?? [])
-          flash('记下来了')
-        } }, '存下这段'),
+        h(Btn, {
+          size: 'sm', icon: 'plus',
+          disabled: savingStory || newStoryTitle.trim() === '' || newStoryBody.trim() === '',
+          onClick: async () => {
+            // 以前这里没有 try/catch：后台断了点它一声不响，用户只会以为按钮坏了；
+            // 也没有忙等，网络慢连点两下会存出两条同名的记录。
+            if (savingStory) return
+            setSavingStory(true); setErr(null)
+            try {
+              const r = await call('job.story.add', { story: { title: newStoryTitle.trim(), body: newStoryBody.trim() } })
+              if (r?.ok !== true) { setErr(r?.error ?? '没存上'); return }
+              setNewStoryTitle(''); setNewStoryBody('')
+              const again = await call('job.stories', {})
+              if (again?.ok === true) setStories(again.stories ?? [])
+              flash('记下来了')
+            } catch (e) {
+              setErr(humanizeError(e))
+            } finally {
+              setSavingStory(false)
+            }
+          },
+        }, savingStory ? '正在存…' : '存下这段'),
       ),
     ),
 

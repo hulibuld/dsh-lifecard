@@ -1932,5 +1932,85 @@ for (const [label, tree] of [
   const novelHome = JSON.stringify(expand(renderRoot('首页（写小说门，带书架数）', base('novel'))))
   t('写小说门多一个「书」这个数', novelHome.includes('"书"'))
 }
+
+// ── 2026-10-26 前端审查那一批 ─────────────────────────────────────
+// 先把这几个组件注册进 seen（它们只在对应那一屏才被渲染到）。
+renderRoot('书（逐章写，先注册组件）', base('book', { 25: { id: 'demo', title: '示范' } }))
+renderRoot('简历与规划（先注册组件）', base('career'))
+renderRoot('玩一段（先注册组件）', base('game', { 25: { id: 'demo', title: '示范' } }))
+renderRoot('导入（先注册组件）', base('import'))
+renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
+
+{
+  // P0：改完大纲点「存好」，以前整屏白屏。
+  // novel.outline.save 回的 chapters 是「几条」这个数字，而本地那份是逐章数组。
+  // 这里就按服务端真实形状（数字）喂进去：渲染不出来就说明又被盖掉了。
+  const BOOK = { ok: true, id: 'demo', data: { title: '长夜', genre: '悬疑' }, idea: '一个镇子', chapters: [{ index: 1 }, { index: 2 }] }
+  const tree = renderOne('逐章写（大纲存回来后 chapters 是数字）', seen.get('BookView'), { bookId: 'demo', flash: () => {}, onBack: () => {} }, { 0: BOOK, 1: { ok: true, chapters: 12, text: '主线：找人', theme: '找人', ending: '找到了' }, 2: 1, 3: '第一章写了一半' })
+  const words = textOf(expand(tree))
+  t('大纲是数字也不白屏', tree !== null)
+  t('书名叫出来了', words.includes('长夜'), words.slice(0, 200))
+  t('存好这一章的按钮还在', words.includes('存好这一章'), words.slice(0, 400))
+  t('列出了两章的正文框', words.includes('正文'), words.slice(0, 400))
+}
+
+{
+  // P1：简历文件读不出来时，以前只有一个永远转的圈。
+  const tree = renderOne('简历读不出来（有话说）', seen.get('CareerView'), { flash: () => {}, onBack: () => {} }, { 0: null, 6: '你的简历这一份读不出来' })
+  const words = textOf(expand(tree))
+  t('简历读不出来时说清楚', words.includes('读不出来'), words.slice(0, 300))
+  t('给一个「再试一次」', words.includes('再试一次'), words.slice(0, 300))
+}
+
+{
+  // P1：界面一直写着「退出再进来还能接着走」，但入口根本没做。
+  const tree = renderOne('玩一段（有存档可以接着走）', seen.get('GameView'), { bookId: 'demo', flash: () => {}, onBack: () => {} }, { 0: null, 10: [{ id: 'play-1', scene: '镇口', turns: 3 }] })
+  const words = textOf(expand(tree))
+  t('列出之前玩到一半的', words.includes('之前玩到一半的'), words.slice(0, 400))
+  t('存档能点回去', words.includes('镇口'), words.slice(0, 400))
+  t('告诉人走了几步', words.includes('走了 3 步'), words.slice(0, 400))
+}
+
+{
+  // P2：拖进来不认识的格式，以前什么都不发生。
+  const tree = renderOne('导入（拖错了格式）', seen.get('ImportView'), { busy: '', onImport: () => {}, onAnalyze: () => {}, listing: LISTING }, { 3: '这些认不出来：头像.jpg。只认角色卡文件（.png / .json / .charx / .zip）。' })
+  t('拖错格式要说一句', textOf(expand(tree)).includes('认不出来'), textOf(expand(tree)).slice(0, 300))
+}
+
+{
+  // P2：「到这儿为止」的备忘重进会话后以前看不见（chat 里带着，界面读不到）。
+  const chat = { id: 'chat-1', card_name: '老张', world_name: '', turns: [{ who: '老张', text: '来了' }], notes: [{ title: '到这儿为止', body: '他答应明天去河边' }] }
+  const tree = renderOne('酒馆（重进后备忘还在）', seen.get('TavernView'), { chat, onChat: () => {}, onBack: () => {}, flash: () => {} }, { 4: chat.notes })
+  t('重进会话还看得见那段备忘', textOf(expand(tree)).includes('他答应明天去河边'), textOf(expand(tree)).slice(0, 400))
+}
+
+{
+  // 文案门禁补两条：不许把绝对路径摆给用户看，也不许把 markdown 的星号漏出来。
+  const doorsWords = textOf(expand(renderRoot('选门（路径不摆出来）', base('doors'))))
+  t('选门那一屏不显示绝对路径', doorsWords.includes('/tmp/x') === false, doorsWords.slice(0, 300))
+  t('只说档案在选的那个文件夹里', doorsWords.includes('档案就在你选的那个文件夹里'), doorsWords.slice(0, 300))
+
+  const analyze = textOf(expand(renderRoot('分析页（不放星号）', base('analyze'))))
+  t('界面文案不漏 markdown 的星号', analyze.includes('**') === false, analyze.slice(0, 300))
+  t('导入那一屏也说清只认原文', textOf(expand(renderRoot('导入（文案）', base('import')))).includes('只认原文里写过的'), '')
+
+{
+  // 访谈结束点「整理进卡里」时必须带上一路上写下的材料路径。
+  // 不带的话分析页一条都不勾，而「一条都不勾」= 全读——别人说的也被读进这张卡。
+  let got = null
+  // InterviewView 槽：0 phase / 1 name / 2 relation / 12 busy / 14 aboutId / 15 dropped / 16 materialPaths
+  const tree = renderOne('访谈结束（带着材料去整理）', seen.get('InterviewView'), {
+    state: STATE, listing: LISTING, preset: { id: 'mama', name: '妈妈' },
+    onRecorded: async () => {}, flash: () => {}, onDone: () => {}, mode: 'real',
+    onAnalyze: (about) => { got = about },
+  }, { 0: 'done', 1: '妈妈', 14: 'mama', 16: ['materials/m1.md', 'materials/m2.md'] })
+  const btn = flatButtons(expand(tree)).find((b) => textOf(b).includes('整理进卡里'))
+  if (btn !== undefined) btn.props.onClick()
+  t('整理进卡里带上了材料路径', got !== null && Array.isArray(got.materials) && got.materials.length === 2, JSON.stringify(got))
+  t('带的是那两份材料', got !== null && got.materials.includes('materials/m1.md'), JSON.stringify(got))
+}
+
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

@@ -2478,6 +2478,57 @@ function buildApi(ctx, workspace, config, options) {
       })
     },
 
+    /**
+     * 把这一场里最能代表 TA 的几句，写进那张卡的「对话示例」。
+     *
+     * 「对话示例」是下次演 TA 时最管用的材料：比「性格：沉默寡言」具体得多，
+     * 因为它就是那个人真的说过的话。演着演着发现 TA 说话的样子比卡上写的准，
+     * 这里就能把它固化下来。
+     */
+    'tavern.toExample': async (body) => {
+      if ((await ensureModules()).tavern !== true) return missingFeature('tavern')
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '这一场找不到了' }
+      return oneAtATime(id, async () => {
+        const got = await tavern.readChat(ws, id)
+        if (got.ok !== true) return got
+        const turns = Array.isArray(got.turns) ? got.turns : []
+        if (turns.filter((t) => String(t?.who ?? '').trim() !== '我').length === 0) {
+          return { ok: false, error: 'TA 还没说过话，挑不出例句。' }
+        }
+        const cardName = String(got.data?.card_name ?? '').trim()
+        const prompt = tavern.buildExamplePrompt({ cardName, turns })
+        const called = await callModel(ctx, { system: prompt.system, user: prompt.user, model: body?.model })
+        if (called.ok !== true) return { ok: false, error: `没挑出来：${called.error ?? '过一会儿再试一次'}` }
+        const picked = tavern.cleanExamples(called.text)
+        if (picked.length === 0) return { ok: false, error: '这一次没挑出能用的句子，过一会儿再试一次。' }
+
+        const want = String(got.data?.card ?? '').trim()
+        if (want === '') return { ok: false, error: '这一场不知道是跟哪张卡演的，存不回去。' }
+        const card = await store.findCardByRelOrId(ws, want)
+        if (card === null) return { ok: false, error: '那张卡找不到了，它可能被删掉了。' }
+        const read = await store.readCard(ws, card)
+        if (read.ok !== true) return read
+        const sections = Array.isArray(read.sections) ? read.sections.map((x) => ({ ...x })) : []
+        const title = '对话示例'
+        const at = sections.findIndex((x) => String(x.title ?? '').trim() === title)
+        const block = picked.map((line) => `- ${line}`).join('\n')
+        if (at === -1) sections.push({ title, body: block })
+        else {
+          const oldBody = String(sections[at].body ?? '').trim()
+          const merged = oldBody === '' || oldBody === '_（还没写）_' ? block : `${oldBody}\n${block}`
+          // 例句越攒越多会把这个小节撑爆，之后每演一句都把这些全塞进提示词。
+          // 只留最后 24 行——它们是最靠近「现在这个人」的样子。
+          const lines = merged.split(/\r?\n/).filter((x) => x.trim() !== '')
+          sections[at] = { ...sections[at], body: lines.slice(-24).join('\n') }
+        }
+        const written = await store.writeCard(ws, card, read.data, sections)
+        if (written.ok !== true) return written
+        return { ok: true, path: written.path, picked }
+      })
+    },
+
     /** 酒馆：这一场不要了。 */
         /**
      * 把酒馆里聊出来的一场，变成某本小说的一章。
@@ -2666,7 +2717,19 @@ function buildApi(ctx, workspace, config, options) {
       if (text === '') return { ok: false, error: 'AI 这次没给出东西，再点一次试试。' }
       const saved = await novel.writeOutline(ws, id, text)
       if (saved.ok !== true) return saved
-      return { ok: true, text, ...novel.parseOutline(text), path: saved.path }
+      // 以前这里把 parseOutline 的结果展开在 ok:true 后面，而它自带一个
+      // ok（=「扒到几章」是否大于 0）。AI 写得散、一行「第 N 章：」都没有时，
+      // 文件其实已经写进去了，却返回 ok:false，界面报「这次没想出一个字」。
+      const parsed = novel.parseOutline(text)
+      return {
+        ok: true,
+        text,
+        path: saved.path,
+        theme: parsed.theme,
+        ending: parsed.ending,
+        chapters: parsed.chapters,
+        ...(parsed.chapters.length > 0 ? {} : { warning: '这一版大纲里没认出「第 N 章：」这样的行，文件已经存下了，你可以自己补上章号。' }),
+      }
     },
 
     /**
