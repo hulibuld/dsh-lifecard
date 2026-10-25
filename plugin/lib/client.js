@@ -1761,6 +1761,37 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
         : null,
     ),
 
+    // 一眼看到「这里有多少东西」：以前首页只有标题和一排按钮，一大片空。
+    // 数字本身就是内容，也让人知道还有多少没用起来。
+    h('div', { className: 'lc-sec', style: { paddingTop: 2 } },
+      h('div', { className: 'lc-row', style: { flexWrap: 'wrap', gap: 14 } },
+        h('div', { className: 'lc-stack', style: { gap: 1, minWidth: 62 } },
+          h('div', { style: { fontSize: 22, fontWeight: 700, lineHeight: 1.2 } }, String(cards.length)),
+          h('div', { className: 'lc-meta' }, isReal ? '认识的人' : '角色'),
+        ),
+        h('div', { className: 'lc-stack', style: { gap: 1, minWidth: 62 } },
+          h('div', { style: { fontSize: 22, fontWeight: 700, lineHeight: 1.2 } }, String(materials.length)),
+          h('div', { className: 'lc-meta' }, '材料'),
+        ),
+        h('div', { className: 'lc-stack', style: { gap: 1, minWidth: 62 } },
+          h('div', { style: { fontSize: 22, fontWeight: 700, lineHeight: 1.2 } }, String(pendingProposals.length)),
+          h('div', { className: 'lc-meta' }, '待你看'),
+        ),
+        mode === 'novel'
+          ? h('div', { className: 'lc-stack', style: { gap: 1, minWidth: 62 } },
+              h('div', { style: { fontSize: 22, fontWeight: 700, lineHeight: 1.2 } }, String((books ?? []).length)),
+              h('div', { className: 'lc-meta' }, '书'),
+            )
+          : null,
+        mode === 'tavern'
+          ? h('div', { className: 'lc-stack', style: { gap: 1, minWidth: 62 } },
+              h('div', { style: { fontSize: 22, fontWeight: 700, lineHeight: 1.2 } }, String((chats ?? []).length)),
+              h('div', { className: 'lc-meta' }, '聊过的场'),
+            )
+          : null,
+      ),
+    ),
+
     // 写小说那扇门：先列书架。没有它，用户建了一本书再回来就找不到了。
     mode === 'novel'
       ? h('div', null,

@@ -1920,5 +1920,17 @@ for (const [label, tree] of [
   globalThis.fetch = realFetch
 }
 
+{
+  // 首页以前只有标题和一排按钮，一大片空。现在顶上有一排数字：
+  // 有几张卡、几份材料、几条等着看。数字是内容，也让人知道还差什么。
+  const home = renderRoot('首页（顶上那排数字）', base('home'))
+  const words = JSON.stringify(expand(home))
+  t('首页标出「材料」这个数', words.includes('"材料"'))
+  t('首页标出「待你看」这个数', words.includes('待你看'))
+  t('真人门里说的是「认识的人」', words.includes('认识的人'))
+
+  const novelHome = JSON.stringify(expand(renderRoot('首页（写小说门，带书架数）', base('novel'))))
+  t('写小说门多一个「书」这个数', novelHome.includes('"书"'))
+}
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
