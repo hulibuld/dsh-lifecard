@@ -727,7 +727,7 @@ const SECTIONS_REL = [
 
 // ── 主界面 ────────────────────────────────────────────────────────
 
-const VIEWS = { doors: 'doors', novel: 'novel', book: 'book', game: 'game', tavern: 'tavern', tavernChat: 'tavernChat', home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs' }
+const VIEWS = { doors: 'doors', novel: 'novel', book: 'book', game: 'game', career: 'career', tavern: 'tavern', tavernChat: 'tavernChat', home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs' }
 
 /**
  * tab 组件。接收宿主给的 props（ctx / store / scope / tab / visible）。
@@ -1127,6 +1127,7 @@ function LifeCardTab(props) {
       [VIEWS.home]: '真实人物记录',
       [VIEWS.novel]: '写小说',
       [VIEWS.game]: '玩一段',
+      [VIEWS.career]: '简历与规划',
       [VIEWS.book]: activeBook?.title === undefined || String(activeBook.title).trim() === '' ? '这本书' : String(activeBook.title),
       [VIEWS.tavern]: '酒馆',
       [VIEWS.tavernChat]: chat === null ? '聊一场' : (String(chat.card_name ?? '').trim() === '' ? '聊一场' : String(chat.card_name)),
@@ -1340,6 +1341,8 @@ function LifeCardTab(props) {
         })
       case VIEWS.doctor:
         return h(DoctorView, { report: doctor, onOpenCard: openCard, onRun: () => runDoctor(true) })
+      case VIEWS.career:
+        return h(CareerView, { flash, onBack: () => setView(VIEWS.home) })
       case VIEWS.jobs:
         return h(JobsView, { onBack: () => setView(VIEWS.home), flash })
       default:
@@ -1738,6 +1741,9 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
         : null,
       isReal
         ? h(Btn, { tone: 'primary', size: 'sm', icon: 'briefcase', onClick: () => onNavigate(VIEWS.jobs), title: '贴一份招聘说明，看看该不该投；或者练一轮面试' }, '下一步')
+        : null,
+      isReal
+        ? h(Btn, { size: 'sm', icon: 'book', onClick: () => onNavigate(VIEWS.career), title: '把自己的情况写清楚，让 AI 帮你看简历、算差距、规划怎么走' }, '简历与规划')
         : null,
       h('div', { className: 'lc-grow' }),
       // 「贴一段文章让 AI 读」不是只有记录真人才用得上：写小说、酒馆里
@@ -2283,6 +2289,160 @@ function GameView({ bookId, onBack, flash }) {
     err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
     h('div', { className: 'lc-meta' }, '每一步都会存下来，退出再进来还能接着走。'),
   )
+}
+
+/**
+ * 简历与规划。放在「真实人物记录」那扇门里（写小说和酒馆用不上）。
+ *
+ * 为什么分成「先把自己写清楚」和「再让 AI 帮忙」两步：
+ * 简历这东西最怕 AI 编。先把真实情况填进去，AI 只做整理和措辞，
+ * 不编经历——不然投出去被问一句就露了。
+ */
+function CareerView({ onBack, flash }) {
+  const [profile, setProfile] = useState(null)
+  const [target, setTarget] = useState('')
+  const [goal, setGoal] = useState('')
+  const [horizon, setHorizon] = useState('1年')
+  const [out, setOut] = useState(null)
+  const [busy, setBusy] = useState('')
+  const [err, setErr] = useState(null)
+  const [dirty, setDirty] = useState(false)
+
+  useEffect(() => {
+    let gone = false
+    call('career.get', {})
+      .then((r) => {
+        if (gone || r?.ok !== true) return
+        setProfile(buildCareerForm(r.profileSections ?? {}))
+        setGoal(String(r.plan?.goal ?? ''))
+        setHorizon(String(r.plan?.horizon ?? '1年'))
+      })
+      .catch((e) => { if (!gone) setErr(humanizeError(e)) })
+    return () => { gone = true }
+  }, [])
+
+  const setField = (key, value) => { setProfile({ ...(profile ?? {}), [key]: value }); setDirty(true) }
+
+  const save = async () => {
+    setBusy('save'); setErr(null)
+    try {
+      const r = await call('career.profile.save', { profile: profile ?? {} })
+      if (r?.ok !== true) { setErr(r?.error ?? '没存下来'); return }
+      setDirty(false); flash?.('存好了')
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  const run = async (kind) => {
+    if (dirty) { setErr('简历改过了，先点「存好」再让它做。'); return }
+    setBusy(kind); setErr(null); setOut(null)
+    try {
+      const r = kind === 'resume'
+        ? await call('career.resume', { target })
+        : kind === 'gap'
+          ? await call('career.gap', { target })
+          : await call('career.path', { goal, horizon })
+      if (r?.ok !== true) { setErr(r?.error ?? '没做成'); return }
+      setOut({ kind, text: String(r.text ?? ''), steps: r.steps ?? [] })
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  if (profile === null) return h('div', { className: 'lc-pad' }, h(Spinner))
+
+  const field = (key, label, rows, placeholder) => h('div', { className: 'lc-stack', style: { gap: 6 } },
+    h('div', { className: 'lc-fhint' }, label),
+    h('textarea', {
+      className: 'lc-textarea', rows, value: String(profile[key] ?? ''), placeholder, spellCheck: false,
+      onChange: (e) => setField(key, e.target.value),
+    }),
+  )
+
+  return h('div', { className: 'lc-pad lc-stack', style: { gap: 12 } },
+    h('div', { className: 'lc-row' },
+      h(Btn, { size: 'sm', icon: 'back', onClick: onBack }, '回首页'),
+      h('div', { className: 'lc-grow' }),
+      h(Btn, { size: 'sm', tone: dirty ? 'primary' : undefined, icon: 'check', disabled: busy !== '', onClick: save },
+        busy === 'save' ? '存着…' : (dirty ? '存好' : '存好了')),
+    ),
+    h('div', { className: 'lc-meta' }, '先把真事写在这儿。AI 只帮你整理，不会替你编经历。'),
+
+    h('div', { className: 'lc-sec lc-stack' },
+      field('基本情况', '基本情况', 3, '哪个学校、什么专业、几年级、现在在哪'),
+      field('学过什么', '学过什么（一行一门）', 4, '现代汉语｜能讲清音韵那套\n写作｜能改到能发'),
+      field('做过什么', '做过什么（一行一件）', 4, '校刊编辑｜2025 秋｜出了两期\n家教｜2025 夏｜带过一个高三'),
+      field('会用哪些工具', '会用哪些工具（一行一个）', 2, 'Word\n剪映'),
+      field('想去哪', '想去哪', 3, '公司加岗位，或者学校加专业。写具体一点。'),
+      field('还差什么', '你自己觉得还差什么（一行一条）', 3, '六级还没过\n没写过正式的报告'),
+    ),
+
+    h('div', { className: 'lc-sec lc-stack' },
+      h('div', { className: 'lc-fhint' }, '让 AI 帮忙'),
+      h('input', {
+        className: 'lc-input', value: target, spellCheck: false,
+        placeholder: '要投哪儿：公司加岗位，或者学校加专业',
+        onChange: (e) => setTarget(e.target.value),
+      }),
+      h('div', { className: 'lc-row', style: { flexWrap: 'wrap' } },
+        h(Btn, { disabled: busy !== '' || target.trim() === '', onClick: () => run('resume') }, busy === 'resume' ? '写着…' : '照这个写简历'),
+        h(Btn, { disabled: busy !== '' || target.trim() === '', onClick: () => run('gap') }, busy === 'gap' ? '算着…' : '看差在哪'),
+      ),
+      h('div', { className: 'lc-row' },
+        h('input', {
+          className: 'lc-input', value: goal, spellCheck: false,
+          placeholder: '想到哪儿去（一句具体的）',
+          onChange: (e) => setGoal(e.target.value),
+        }),
+        h('select', { className: 'lc-select', value: horizon, onChange: (e) => setHorizon(e.target.value), style: { maxWidth: 110 } },
+          ['3个月', '1年', '4年'].map((x) => h('option', { key: x, value: x }, x))),
+      ),
+      h(Btn, { block: true, disabled: busy !== '' || goal.trim() === '', onClick: () => run('path') },
+        busy === 'path' ? '规划着…' : '规划怎么走'),
+    ),
+
+    err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
+    out === null ? null : h('div', { className: 'lc-sec lc-stack' },
+      h('div', { className: 'lc-row' },
+        h('div', { className: 'lc-grow lc-fhint' },
+          out.kind === 'resume' ? '写好的简历' : out.kind === 'gap' ? '差在哪' : '怎么走'),
+        h(Btn, { size: 'sm', icon: 'download', onClick: () => copyText(out.text) }, '复制'),
+      ),
+      h('div', { style: { whiteSpace: 'pre-wrap', lineHeight: 1.8, fontSize: 14.5 } }, out.text),
+      out.steps.length === 0 ? null : h('div', { className: 'lc-meta' }, `认出 ${out.steps.length} 步`),
+    ),
+  )
+}
+
+/** 把后端读出来的小节拍平成表单能直接用的字段。 */
+function buildCareerForm(sections) {
+  const pick = (key) => {
+    const v = sections?.[key]
+    if (Array.isArray(v)) return v.join('\n')
+    return String(v ?? '')
+  }
+  return {
+    基本情况: pick('基本情况'),
+    学过什么: pick('学过什么'),
+    做过什么: pick('做过什么'),
+    会用哪些工具: pick('会用哪些工具'),
+    想去哪: pick('想去哪'),
+    还差什么: pick('还差什么'),
+  }
+}
+
+/** 复制到剪贴板；不支持就退回「选中让用户自己复制」。 */
+function copyText(text) {
+  const value = String(text ?? '')
+  if (typeof navigator !== 'undefined' && navigator?.clipboard?.writeText !== undefined) {
+    navigator.clipboard.writeText(value).catch(() => {})
+    return
+  }
+  if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+    const box = document.createElement('textarea')
+    box.value = value
+    document.body.appendChild(box)
+    box.select()
+    try { document.execCommand('copy') } catch { /* 复制不了就算了 */ }
+    document.body.removeChild(box)
+  }
 }
 
 function BookView({ bookId, onBack, flash }) {

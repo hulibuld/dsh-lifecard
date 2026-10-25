@@ -33,8 +33,9 @@ let tavern = null
 let novel = null
 let presets = null
 let game = null
+let career = null
 /** 哪个功能没装（给用户看的名字）。 */
-const FEATURE_NAMES = { tavern: '酒馆', novel: '写小说', presets: '预设', game: '文字小说游戏' }
+const FEATURE_NAMES = { tavern: '酒馆', novel: '写小说', presets: '预设', game: '文字小说游戏', career: '简历与规划' }
 /**
  * 按需把四个模块加载进来。已经加载过的不会重复加载。
  * @returns {Promise<Record<string, boolean>>} 每个模块现在在不在
@@ -44,7 +45,8 @@ async function ensureModules() {
   if (novel === null) novel = await import('./novel.js').catch(() => null)
   if (presets === null) presets = await import('./presets.js').catch(() => null)
   if (game === null) game = await import('./game.js').catch(() => null)
-  return { tavern: tavern !== null, novel: novel !== null, presets: presets !== null, game: game !== null }
+  if (career === null) career = await import('./career.js').catch(() => null)
+  return { tavern: tavern !== null, novel: novel !== null, presets: presets !== null, game: game !== null, career: career !== null }
 }
 /** 这个功能没装的时候，统一回一句人话。 */
 function missingFeature(name) {
@@ -2672,6 +2674,84 @@ function buildApi(ctx, workspace, config, options) {
     },
 
     /** 读一章。 */
+    // ── 简历与规划：写简历、看差距、规划怎么走 ─────────────────
+
+    /** 读简历和规划（还没写过也正常，返回 null）。 */
+    'career.get': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
+      const profile = await career.readProfile(ws)
+      if (profile.ok !== true) return profile
+      const plan = await career.readPlan(ws)
+      if (plan.ok !== true) return plan
+      return {
+        ok: true,
+        profile: profile.data,
+        profileSections: profile.sections,
+        plan: plan.data,
+        planSections: plan.sections,
+      }
+    },
+
+    /** 存简历。 */
+    'career.profile.save': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
+      const saved = await career.writeProfile(ws, body?.profile ?? {})
+      if (saved.ok !== true) return saved
+      return { ok: true, path: career.PROFILE_REL }
+    },
+
+    /** 存规划。 */
+    'career.plan.save': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
+      const saved = await career.writePlan(ws, body?.plan ?? {})
+      if (saved.ok !== true) return saved
+      return { ok: true, path: career.PURPOSE_REL }
+    },
+
+    /** 让 AI 照简历写一份投这个岗位/学校的简历。 */
+    'career.resume': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
+      const profile = await career.readProfile(ws)
+      if (profile.ok !== true) return profile
+      if (profile.data === null) return { ok: false, error: '还没有简历。先填一下基本情况、学过什么、做过什么。' }
+      const target = String(body?.target ?? '').trim()
+      if (target === '') return { ok: false, error: '先写清楚要投哪儿——公司加岗位，或者学校加专业。' }
+      const built = career.buildResumePrompt({ profile: profile.sections, target })
+      const called = await callModel(ctx, { system: built.system, user: built.user, model: body?.model })
+      if (called.ok !== true) return { ok: false, error: `这次没写出来：${called.error ?? '过一会儿再试一次'}` }
+      return { ok: true, target, text: String(called.text ?? '').trim() }
+    },
+
+    /** 看差距：目标要求的 vs 你现在有的。 */
+    'career.gap': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
+      const profile = await career.readProfile(ws)
+      if (profile.ok !== true) return profile
+      if (profile.data === null) return { ok: false, error: '还没有简历。先填一下基本情况、学过什么、做过什么。' }
+      const target = String(body?.target ?? '').trim()
+      if (target === '') return { ok: false, error: '先写清楚要够到哪儿——公司加岗位，或者学校加专业。' }
+      const built = career.buildGapPrompt({ profile: profile.sections, target })
+      const called = await callModel(ctx, { system: built.system, user: built.user, model: body?.model })
+      if (called.ok !== true) return { ok: false, error: `这次没算出来：${called.error ?? '过一会儿再试一次'}` }
+      return { ok: true, target, text: String(called.text ?? '').trim() }
+    },
+
+    /** 规划怎么走。 */
+    'career.path': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
+      const profile = await career.readProfile(ws)
+      if (profile.ok !== true) return profile
+      if (profile.data === null) return { ok: false, error: '还没有简历。先填一下基本情况、学过什么、做过什么。' }
+      const goal = String(body?.goal ?? '').trim()
+      if (goal === '') return { ok: false, error: '先写一句「想到哪儿去」——具体的岗位、学校或状态。' }
+      const horizon = String(body?.horizon ?? '1年').trim()
+      const built = career.buildPathPrompt({ profile: profile.sections, goal, horizon })
+      const called = await callModel(ctx, { system: built.system, user: built.user, model: body?.model })
+      if (called.ok !== true) return { ok: false, error: `这次没规划出来：${called.error ?? '过一会儿再试一次'}` }
+      const text = String(called.text ?? '').trim()
+      return { ok: true, goal, horizon, text, steps: career.parseSteps(text) }
+    },
+
     // ── 文字小说游戏：进到情节里，你来选，它来推 ────────────────
 
     /** 一本书能开哪几局。 */
@@ -2794,6 +2874,7 @@ function buildApi(ctx, workspace, config, options) {
           novel: mods.novel === true,
           presets: mods.presets === true,
           game: mods.game === true && mods.novel === true,
+          career: mods.career === true,
         },
       }
     },
