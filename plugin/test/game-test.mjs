@@ -151,5 +151,24 @@ console.log('\n=== 7. 玩家写的那段带换行和小标题，不能把后面�
   t('玩家那句里的小标题被压成一行', String((back.turns ?? [])[1]?.text ?? '').includes('三年前'), (back.turns ?? [])[1])
 }
 
+console.log('\n=== 8. 「把这一局写成小说的一章」要发给模型的话 ===')
+// 这一段最要紧的一条是「玩家选过的那几步不能丢」：玩出来的东西一旦被
+// 改写成小说就抹掉选择，用户会觉得自己白走了那些步。
+{
+  const turns = [
+    { kind: 'narrate', text: '雨把路灯泡成一团黄。' },
+    { kind: 'choose', text: '我把伞递过去', result: '她没接，只是看着我的手。' },
+    { kind: 'say', text: '走吧。', text2: '她终于接过去了。' },
+  ]
+  const p = game.buildPlayToChapterPrompt({ bookTitle: '雨里的门', turns, note: '停在她接伞那一刻' })
+  t('要求写成小说而不是剧本', String(p.system).includes('不是剧本'), p.system.slice(0, 80))
+  t('要求保留玩家选过的那几步', String(p.system).includes('必须保留'), p.system)
+  t('不许新加人和情节', String(p.system).includes('不要新加人'), p.system)
+  t('带上了书名', String(p.system).includes('雨里的门'), p.system.slice(0, 120))
+  t('正文里有选的那一步', String(p.user).includes('我把伞递过去'), p.user)
+  t('带上了「这一章想往哪走」', String(p.user).includes('停在她接伞那一刻'), p.user)
+  t('段落顺序是「先旁白、再选择」', String(p.user).indexOf('路灯') < String(p.user).indexOf('我把伞'), p.user)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exitCode = 1

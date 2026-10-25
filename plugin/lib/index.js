@@ -2951,6 +2951,41 @@ function buildApi(ctx, workspace, config, options) {
       })
     },
 
+    /**
+     * 把这一局演出来的东西，写成这本书的一章。
+     *
+     * 和酒馆那条是一个意思：演着演着发现这一段真好，就把它定下来变成正文，
+     * 而不是让人自己回去照着复述一遍。
+     */
+    'game.toChapter': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.game !== true) return missingFeature('game')
+      if (mods.novel !== true) return missingFeature('novel')
+      const bookId = String(body?.book ?? '').trim()
+      const id = String(body?.id ?? '').trim()
+      if (bookId === '' || id === '') return { ok: false, error: '这一局找不到了' }
+      const got = await game.readPlay(ws, bookId, id)
+      if (got.ok !== true) return got
+      const turns = Array.isArray(got.turns) ? got.turns : []
+      if (turns.length === 0) return { ok: false, error: '这一局还什么都没发生，先走一步再变成一章。' }
+      const book = await novel.readBook(ws, bookId)
+      if (book.ok !== true) return book
+      const prompt = game.buildPlayToChapterPrompt({
+        bookTitle: String(book.data?.title ?? bookId),
+        turns,
+        note: body?.note,
+      })
+      const called = await callModel(ctx, { system: prompt.system, user: prompt.user, model: body?.model })
+      if (called.ok !== true) return { ok: false, error: `没写成：${called.error ?? '过一会儿再试一次'}`, kept: true }
+      const text = String(called.text ?? '').trim()
+      if (text === '') return { ok: false, error: '这次什么都没写出来，过一会儿再试一次。' }
+      const list = Array.isArray(book.chapters) ? book.chapters : []
+      const last = list.length === 0 ? 0 : Number(list[list.length - 1]?.index ?? 0)
+      const next = (Number.isFinite(last) ? last : 0) + 1
+      const saved = await novel.writeChapter(ws, bookId, next, text)
+      if (saved.ok !== true) return saved
+      return { ok: true, chapter: next, text, warning: saved.warning }
+    },
+
     /** 这一局不要了。 */
     'game.delete': async (body) => {
       const ws = await root(body); const mods = await ensureModules(); if (mods.game !== true) return missingFeature('game')

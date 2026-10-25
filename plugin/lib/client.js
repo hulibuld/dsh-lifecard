@@ -2224,6 +2224,22 @@ function GameView({ bookId, onBack, flash }) {
   const [preset, setPreset] = useState('')
   const [chapter, setChapter] = useState(0)
   const [chapterList, setChapterList] = useState([])
+  // 「把这一局写成小说的一章」。这几个 state 放在所有 hook 之后：
+  // 上面那几个槽位有测试按号码摆状态，插在中间会全体错位。
+  const [toOpen, setToOpen] = useState(false)
+  const [toNote, setToNote] = useState('')
+  const [toBusy, setToBusy] = useState(false)
+
+  const toChapter = async () => {
+    if (play === null) return
+    setToBusy(true); setErr(null)
+    try {
+      const r = await call('game.toChapter', { book: bookId, id: play.id, note: toNote })
+      if (r?.ok !== true) { setErr(r?.error ?? '没写成'); return }
+      setToOpen(false); setToNote('')
+      if (typeof flash === 'function') flash(`写成了第 ${r.chapter ?? '?'} 章`)
+    } catch (e) { setErr(humanizeError(e)) } finally { setToBusy(false) }
+  }
 
   const open = async (row) => {
     setErr(null)
@@ -2290,7 +2306,26 @@ function GameView({ bookId, onBack, flash }) {
       h('div', { className: 'lc-grow lc-meta' },
         [play.chapter > 0 ? `从第 ${play.chapter} 章进来的` : '从头开的',
          `已经走了 ${(play.turns ?? []).filter((t) => t.kind === 'choose').length} 步`].join(' · ')),
+      h(Btn, {
+        size: 'sm', icon: 'book',
+        disabled: busy !== '' || (play.turns ?? []).length === 0,
+        onClick: () => setToOpen(true),
+      }, '写成小说的一章'),
     ),
+    toOpen === true
+      ? h('div', { className: 'lc-sec lc-stack' },
+          h('div', { className: 'lc-fhint' }, '这一局会改写成《' + bookId + '》的下一章'),
+          h('input', {
+            className: 'lc-input', value: toNote, spellCheck: false,
+            placeholder: '这一章要往哪走（可以不写）',
+            onChange: (e) => setToNote(e.target.value),
+          }),
+          h('div', { className: 'lc-row' },
+            h(Btn, { tone: 'primary', disabled: toBusy, onClick: toChapter }, toBusy ? '写着…' : '写成这一章'),
+            h(Btn, { ghost: true, disabled: toBusy, onClick: () => setToOpen(false) }, '先不变'),
+          ),
+        )
+      : null,
     String(play.scene ?? '').trim() === '' ? null : h(Note, { icon: 'book' }, play.scene),
     Array.isArray(play.holding) && play.holding.length > 0
       ? h('div', { className: 'lc-meta' }, `手上的：${play.holding.join('、')}`)

@@ -299,6 +299,45 @@ export function buildGmUser({ turns, move, fromChapter }) {
 }
 
 /**
+ * 「这一局演到这里，把它写成小说的一章」要发给模型的话。
+ *
+ * 和酒馆那一天用的是同一个思路，但有一处不一样：这里玩家是**选了方向**
+ * 才往下走的，所以改写的重点不是「保住对话」，而是「保住他选的那几步」——
+ * 那几步才是这一段剧情真正的骨架，不能因为改写成小说就被抹平。
+ */
+export function buildPlayToChapterPrompt({ bookTitle, turns, note }) {
+  const system = [
+    '你是一个写小说的人。下面这一段是玩出来的剧情，你要把它改写成这本书的一章正文。',
+    '',
+    `这本书叫《${String(bookTitle ?? '').trim() === '' ? '未命名' : String(bookTitle).trim()}》。`,
+    '',
+    '怎么改：',
+    '1. 写成小说，不是剧本、不是「他做了一个选择」这种记录。',
+    '2. **玩家选过的那几步必须保留**：他选了什么，就一定发生过什么，不能因为不好写就跳过。',
+    '3. 可以补动作、天气、别人脸上的表情、没说出口的话——这些本来就该在。',
+    '4. 不要新加人和新情节。这一段里没出现的人，不要凭空让他进来。',
+    '5. 八百到一千五百字。分几段，不要写小标题。',
+    '6. 只输出正文，不要解释你改了什么。',
+  ].join('\n')
+
+  const lines = []
+  const recent = Array.isArray(turns) ? turns : []
+  if (recent.length > 0) {
+    lines.push('【这一局是怎么走过来的】')
+    for (const turn of recent) {
+      const kind = String(turn?.kind ?? 'say')
+      if (kind === 'narrate') lines.push(String(turn.text ?? '').trim())
+      else if (kind === 'choose') lines.push(`（我选了：${String(turn.text ?? '').trim()}）`, String(turn.result ?? '').trim())
+      else lines.push(`（我说：${String(turn.text ?? '').trim()}）`, String(turn.text2 ?? '').trim())
+    }
+  }
+  const hint = String(note ?? '').trim()
+  if (hint !== '') lines.push('', `【这一章想往哪走】${hint}`)
+  lines.push('', '把上面这一段写成小说正文。')
+  return { system, user: lines.join('\n') }
+}
+
+/**
  * 从 AI 那一段里把三个方向拆出来。
  *
  * 模型经常不老实：写在正文里、用「1. 2. 3.」、用「- 」，或者干脆只给两个。
@@ -330,5 +369,5 @@ export default {
   SCENE_TITLE, HOLD_TITLE, STORY_TITLE,
   playRelPath, newPlayId, renderPlayMarkdown, parsePlayText,
   readPlay, writePlay, deletePlay, listPlays,
-  buildGmSystem, buildGmUser, parseChoices,
+  buildGmSystem, buildGmUser, buildPlayToChapterPrompt, parseChoices,
 }
