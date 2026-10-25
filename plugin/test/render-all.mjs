@@ -1894,5 +1894,31 @@ for (const [label, tree] of [
   // 跑不出「点一下 → 状态变 → 再渲染」这条链。
 }
 
+{
+  // 写小说和酒馆里读完材料就该有一张能用的卡，不该再访谈一遍。
+  // 虚构角色才给这个一键；真人的卡要人自己填关系，不能一键生成。
+  const RESULT = { accepted: 2, rejected: 0, json: { items: [] } }
+  const fakeFetch = async () => ({ ok: true, json: async () => ({ ok: true, applied: 2, path: 'people/lin.card.md' }) })
+  const realFetch = globalThis.fetch
+
+  globalThis.fetch = fakeFetch
+  const fiction = renderOne('分析页（虚构角色，读完能一键建卡）', seen.get('AnalyzeView'), {
+    listing: LISTING, state: { ok: true, workspace: '/tmp/x', exists: true }, flash: () => {},
+    onProposal: () => {}, presetAbout: { name: '林小雨', kind: 'fictional' }, presetMaterials: null,
+    onBack: () => {}, onNeedMaterial: () => {}, onAppliedCard: () => {},
+  }, { 0: 'lin', 4: RESULT })
+  t('虚构角色给「直接建成角色卡」', textOf(fiction).includes('直接建成角色卡'))
+  t('并说明不用再访谈一遍', textOf(fiction).includes('不用再访谈一遍'))
+
+  const real = renderOne('分析页（真人，不给一键建卡）', seen.get('AnalyzeView'), {
+    listing: LISTING, state: { ok: true, workspace: '/tmp/x', exists: true }, flash: () => {},
+    onProposal: () => {}, presetAbout: { name: '妈妈', kind: 'real' }, presetMaterials: null,
+    onBack: () => {}, onNeedMaterial: () => {}, onAppliedCard: () => {},
+  }, { 0: 'mama', 4: RESULT })
+  t('真人不给「直接建成角色卡」', textOf(real).includes('直接建成角色卡') === false)
+  t('真人还是走「看看读出了什么」', textOf(real).includes('看看读出了什么'))
+  globalThis.fetch = realFetch
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

@@ -1255,6 +1255,14 @@ function LifeCardTab(props) {
           onProposal: showProposal,
           onBack: () => { setInterviewFor(null); setMaterialFor(null); setView(VIEWS.home) },
           onNeedMaterial: () => setView(VIEWS.import),
+          // 一键建成卡之后直接把人带到那张卡上：建完就站在门口看着，
+          // 不知道它在哪儿、还得自己回列表找，等于没建。
+          onAppliedCard: async (path) => {
+            const hit = (listing?.cards ?? []).find((c) => c.path === path)
+            await refresh(state?.workspace)
+            if (hit !== undefined) await openCard(hit)
+            else setView(VIEWS.home)
+          },
         })
       case VIEWS.card:
         // 首页那条「还等着你看的建议」点进来时，如果这个人还没有卡（很正常：
@@ -4812,7 +4820,7 @@ function peopleKey(p) {
 
 // ── 让 AI 读材料 ──────────────────────────────────────────────────
 
-function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMaterials, onBack, onNeedMaterial }) {
+function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMaterials, onBack, onNeedMaterial, onAppliedCard }) {
   const materials = listing?.materials ?? []
   const cards = listing?.cards ?? []
   // 从别的页带过来的人，可能只有一个名字：材料刚存下、卡还没建。
@@ -4855,6 +4863,12 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
   // 卸载时补存一次，别让刚想出来的那句话白写。
   const conceptDraftRef = useRef(null)
   conceptDraftRef.current = conceptDraft
+  // 下面这两个特意放在所有 hook 之后：上面那些槽位是有测试按号码摆状态的，
+  // 中间插一个新 state 会让它们全体错位（conceptDraft 就是被这么挪过一次）。
+  const [oneClick, setOneClick] = useState('')
+  // 这一趟读的是虚构角色还是真人：虚构的才给「直接建成卡」，
+  // 真人的卡要人自己填关系那些，不能一键生成。
+  const isFiction = String(presetAbout?.kind ?? '').trim() === 'fictional'
   useEffect(() => () => {
     const pending = conceptDraftRef.current
     if (pending === null || pending === undefined) return
@@ -5047,8 +5061,31 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
         h('div', null, `读出了 ${result.accepted} 条。`),
         result.rejected > 0 ? h('div', { className: 'lc-meta', style: { marginTop: 3 } }, `另有 ${result.rejected} 条在材料里找不到原句，已经丢掉——AI 编的东西进不来。`) : null,
       ),
+      // 写小说和酒馆里，用户要的是「读完就有一张能用的角色卡」，
+      // 不是再去访谈一遍——虚构角色本来就没有「他是我的什么人」这种问题，
+      // 那些细节它自己会从材料里编。所以这里直接给一个一键建卡的入口。
+      isFiction && result.json !== undefined
+        ? h('div', { style: { marginTop: 8 } },
+            h(Btn, { tone: 'primary', big: true, block: true, icon: 'check', disabled: oneClick !== '', onClick: async () => {
+              setOneClick('on')
+              try {
+                // 提案里默认一条都不勾（勾选是人的动作），所以这里要先把
+                // 所有条目都勾上再采纳，否则只会得到「还没有勾选任何一条」。
+                const got = await call('proposal.get', { json: result.json })
+                if (got?.ok !== true) { setErr(got?.error ?? '这份建议读不出来'); return }
+                const every = (got.items ?? []).map((item) => item.index).filter((n) => typeof n === 'number')
+                if (every.length === 0) { setErr('这一份里没有能写进卡里的条目。'); return }
+                const r = await call('proposal.apply', { json: result.json, checked: every })
+                if (r?.ok !== true) { setErr(r?.error ?? '没能建成卡'); return }
+                flash(`建好了，写进去 ${r.applied ?? every.length} 条`)
+                if (typeof onAppliedCard === 'function' && r.path !== undefined) onAppliedCard(r.path)
+              } catch (e) { setErr(humanizeError(e)) } finally { setOneClick('') }
+            } }, oneClick === 'on' ? '正在建…' : '直接建成角色卡'),
+            h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '不用再访谈一遍。材料里读到什么就写什么，建完还能在卡上改。'),
+          )
+        : null,
       h('div', { style: { marginTop: 8 } },
-        h(Btn, { tone: 'primary', big: true, block: true, icon: 'check', onClick: async () => {
+        h(Btn, { tone: isFiction ? undefined : 'primary', big: true, block: true, icon: 'check', onClick: async () => {
           try {
             const p = await call('proposal.get', { json: result.json })
             // 读不出来当「没有新东西」会让界面绿字说「这一份里没有还没写进去的了」，

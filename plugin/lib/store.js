@@ -1278,6 +1278,11 @@ export async function applyProposal(root, jsonRel, options = {}) {
   if (!read.ok) return read
   const aboutId = read.record?.about?.id
   if (typeof aboutId !== 'string' || aboutId === '') return { ok: false, error: '提案里没有 about.id' }
+  // 「一条都没勾」要在建卡之前判掉。以前是先建卡再判，于是点了采纳却又
+  // 什么都没勾时，工作区里会多出一张空卡，界面上只看到一句「还没有勾选任何一条」——
+  // 用户根本不知道刚才那次点击留下了一张空壳。
+  const chosenFirst = read.items.filter((i) => i.checked)
+  if (chosenFirst.length === 0) return { ok: false, error: '还没有勾选任何一条。先点一下要留下的条目。' }
   let target = await findCardByRelOrId(root, aboutId)
   if (target === null) {
     // 卡还不存在——这正是「说一大段话，让它整理成一张卡」的正常情况。
@@ -1298,8 +1303,7 @@ export async function applyProposal(root, jsonRel, options = {}) {
   }
   const card = await readCard(root, target)
   if (!card.ok) return card
-  const chosen = read.items.filter((i) => i.checked)
-  if (chosen.length === 0) return { ok: false, error: '还没有勾选任何一条。先点一下要留下的条目。' }
+  const chosen = chosenFirst
 
   // 写进卡之前，引文要对着**现在**的材料再验一遍。
   //
