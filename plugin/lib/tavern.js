@@ -347,7 +347,7 @@ export function pickWorldEntries(entries, recentText) {
  * 刻意写死几句约束：不替对方说话、不跳出角色解释、不加括号注释。
  * 这三样是角色扮演最容易崩的地方，不写清楚模型每次都会犯。
  */
-export function buildRoleplaySystem({ cardName, persona, worldNotes, memory }) {
+export function buildRoleplaySystem({ cardName, persona, worldNotes, memory, preset }) {
   const name = cardName === '' ? '这个人' : cardName
   const lines = [
     `你正在演一个角色扮演对话。你只演「${name}」这一个人，对方是「我」。`,
@@ -376,6 +376,10 @@ export function buildRoleplaySystem({ cardName, persona, worldNotes, memory }) {
     '',
     '直接写你要说的话，不要写「' + name + '：」这样的前缀。',
   )
+  // 演法预设排在最后：它是「这一次想怎么演」，比上面那些通用约束更具体，
+  // 放前面会被一长串规则冲淡。
+  const flavour = String(preset ?? '').trim()
+  if (flavour !== '') lines.push('', '【这一次的演法】', flavour)
   return lines.join('\n')
 }
 

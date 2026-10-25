@@ -25,8 +25,32 @@ import * as memory from './memory.js'
 import * as jobs from './jobs.js'
 import * as jobsStore from './jobs-store.js'
 import * as interview from './jobs-interview.js'
-import * as tavern from './tavern.js'
-import * as novel from './novel.js'
+// 这四个是「可以整个删掉」的功能模块：酒馆、写小说、预设、文字游戏。
+// 用「用到才加载」而不是文件顶上的静态 import —— 静态 import 一个不存在的
+// 文件会让整个插件起不来，那就不是「能删」而是「删了就全废」。
+// 删掉对应文件之后，只有那个功能报「这个功能没装」，别的照常。
+let tavern = null
+let novel = null
+let presets = null
+let game = null
+/** 哪个功能没装（给用户看的名字）。 */
+const FEATURE_NAMES = { tavern: '酒馆', novel: '写小说', presets: '预设', game: '文字小说游戏' }
+/**
+ * 按需把四个模块加载进来。已经加载过的不会重复加载。
+ * @returns {Promise<Record<string, boolean>>} 每个模块现在在不在
+ */
+async function ensureModules() {
+  if (tavern === null) tavern = await import('./tavern.js').catch(() => null)
+  if (novel === null) novel = await import('./novel.js').catch(() => null)
+  if (presets === null) presets = await import('./presets.js').catch(() => null)
+  if (game === null) game = await import('./game.js').catch(() => null)
+  return { tavern: tavern !== null, novel: novel !== null, presets: presets !== null, game: game !== null }
+}
+/** 这个功能没装的时候，统一回一句人话。 */
+function missingFeature(name) {
+  const label = FEATURE_NAMES[name] ?? name
+  return { ok: false, error: `「${label}」这个功能没装（对应的文件被删掉了）。别的功能不受影响。`, missingFeature: name }
+}
 export const name = 'dsh-lifecard'
 
 /** 需要宿主提供的服务。缺 webServer 就什么都不做（明确失败胜过静默半死）。 */
@@ -2252,6 +2276,7 @@ function buildApi(ctx, workspace, config, options) {
 
     /** 酒馆：说过的这几场。 */
     'tavern.list': async (body) => {
+      if ((await ensureModules()).tavern !== true) return missingFeature('tavern')
       const ws = await root(body)
       return await tavern.listChats(ws)
     },
@@ -2263,6 +2288,7 @@ function buildApi(ctx, workspace, config, options) {
      * 而不是对着一个空框想「我该说什么」。
      */
     'tavern.start': async (body) => {
+      if ((await ensureModules()).tavern !== true) return missingFeature('tavern')
       const ws = await root(body)
       const want = String(body?.card ?? '').trim()
       if (want === '') return { ok: false, error: '得先挑一个人，才能开始。' }
@@ -2304,6 +2330,7 @@ function buildApi(ctx, workspace, config, options) {
 
     /** 酒馆：读这一场。 */
     'tavern.get': async (body) => {
+      if ((await ensureModules()).tavern !== true) return missingFeature('tavern')
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '这一场找不到了' }
@@ -2331,6 +2358,8 @@ function buildApi(ctx, workspace, config, options) {
      * 断网一次就全没了。
      */
     'tavern.say': async (body) => {
+      if ((await ensureModules()).tavern !== true) return missingFeature('tavern')
+      if ((await ensureModules()).presets !== true) return missingFeature('presets')
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '这一场找不到了' }
       // 同一场会话一次只处理一句：读-改-写之间夹着一次模型调用，
@@ -2374,7 +2403,11 @@ function buildApi(ctx, workspace, config, options) {
         const memoryNote = (Array.isArray(got.notes) ? got.notes : [])
           .find((n) => String(n?.title ?? '').trim() === tavern.MEMORY_TITLE)
         const memory = memoryNote === undefined ? '' : String(memoryNote.body ?? '')
-        const system = tavern.buildRoleplaySystem({ cardName, persona: persona.text, worldNotes, memory })
+        // 演法预设：选了就把它那套要求拼在最后。找不到预设（用户删了）就不拼，
+        // 不能因为这一条让整场对话报错。
+        const roleplayPreset = await presets.resolve(ws, body?.preset)
+        const presetNote = roleplayPreset.ok === true && roleplayPreset.preset !== null ? String(roleplayPreset.preset.prompt ?? '') : ''
+        const system = tavern.buildRoleplaySystem({ cardName, persona: persona.text, worldNotes, memory, preset: presetNote })
         const user = tavern.buildRoleplayUser({ cardName, turns })
         const called = await callModel(ctx, { system, user, model: body?.model })
         const now = tavernStamp()
@@ -2407,6 +2440,7 @@ function buildApi(ctx, workspace, config, options) {
      * 让它别把之前发生过的事记错。
      */
     'tavern.summarize': async (body) => {
+      if ((await ensureModules()).tavern !== true) return missingFeature('tavern')
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '这一场找不到了' }
@@ -2433,6 +2467,7 @@ function buildApi(ctx, workspace, config, options) {
 
     /** 酒馆：这一场不要了。 */
     'tavern.delete': async (body) => {
+      if ((await ensureModules()).tavern !== true) return missingFeature('tavern')
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '这一场找不到了' }
@@ -2443,12 +2478,14 @@ function buildApi(ctx, workspace, config, options) {
 
     /** 书架：所有书。 */
     'novel.books': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
       const ws = await root(body)
       return await novel.listBooks(ws)
     },
 
     /** 新开一本。 */
     'novel.create': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
       const ws = await root(body)
       return await novel.createBook(ws, {
         title: body?.title,
@@ -2459,6 +2496,7 @@ function buildApi(ctx, workspace, config, options) {
 
     /** 打开一本书（含章节清单）。 */
     'novel.get': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '没有说是哪本书' }
@@ -2467,6 +2505,7 @@ function buildApi(ctx, workspace, config, options) {
 
     /** 改书的元信息（书名 / 题材 / 一句话）。 */
     'novel.update': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '没有说是哪本书' }
@@ -2479,6 +2518,7 @@ function buildApi(ctx, workspace, config, options) {
 
     /** 这一章不要了。 */
     'novel.chapter.delete': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '没有说是哪本书' }
@@ -2487,6 +2527,7 @@ function buildApi(ctx, workspace, config, options) {
 
     /** 整本书不要了。 */
     'novel.delete': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '没有说是哪本书' }
@@ -2497,6 +2538,7 @@ function buildApi(ctx, workspace, config, options) {
 
     /** 读大纲。 */
     'novel.outline.get': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '没有说是哪本书' }
@@ -2505,6 +2547,7 @@ function buildApi(ctx, workspace, config, options) {
 
     /** 自己写 / 改大纲（人也在这里改）。 */
     'novel.outline.save': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '没有说是哪本书' }
@@ -2518,6 +2561,8 @@ function buildApi(ctx, workspace, config, options) {
      * 改完再一章一章让它写。不落盘的话刷新一下就没了，白等一次模型。
      */
     'novel.outline.draft': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
+      if ((await ensureModules()).presets !== true) return missingFeature('presets')
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '没有说是哪本书' }
@@ -2544,8 +2589,13 @@ function buildApi(ctx, workspace, config, options) {
         chapters: Number(body?.chapters) || 12,
         ask: body?.ask,
       })
+      const outlinePreset = await presets.resolve(ws, body?.preset)
+      const outlineNote = outlinePreset.ok === true && outlinePreset.preset !== null ? String(outlinePreset.preset.prompt ?? '') : ''
       const called = await callModel(ctx, {
-        system: '你是一个会写长篇小说的人。你先想清楚整本书怎么走，再动手写。',
+        system: [
+          '你是一个会写长篇小说的人。你先想清楚整本书怎么走，再动手写。',
+          outlineNote === '' ? '' : `\n【这本书怎么写】\n${outlineNote}`,
+        ].filter((x) => x !== '').join('\n'),
         user: users,
         model: body?.model,
       })
@@ -2564,51 +2614,218 @@ function buildApi(ctx, workspace, config, options) {
      * 不要它夸——「写得很好」这种话对写东西的人毫无用处。
      */
     'novel.chapter.review': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '没有说是哪本书' }
-      const book = await novel.readBook(ws, id)
-      if (book.ok !== true) return book
       const index = Number(body?.index) || 0
       const got = await novel.readChapter(ws, id, index)
       if (got.ok !== true) return got
       const bodyText = String(got.body ?? '').trim()
       if (bodyText === '') return { ok: false, error: '这一章还是空的，没什么可审的。' }
+      if (bodyText.length > 20000) {
+        return { ok: false, error: '这一章太长（超过两万字），一次读不完。先分成两章再挑毛病。' }
+      }
+
+      // 盲审：只给正文，不给书名、不给大纲、不给「这一章本来想写什么」。
+      //
+      // 为什么不给：写的人心里有一套意图，看的时候会不自觉地按意图去读，
+      // 于是「我本来想写这个」会替「我实际写出来的是什么」作证。
+      // 换成一个什么都不知道的读者，才是这本书真正的处境。
       const user = [
-        `下面是一本小说《${String(book.data?.title ?? id)}》的第 ${index} 章。`,
-        String(book.idea ?? '').trim() === '' ? '' : `这本书想讲的是：${String(book.idea).trim()}`,
+        '下面是一段小说正文。你之前没看过这本书，也不知道作者想写什么。',
+        '你就是一个第一次读到这里的读者。',
         '',
         '【正文】',
-        bodyText.slice(0, 8000),
+        bodyText,
         '',
-        '【怎么审】',
-        '只指出具体的问题，每条都要说清在哪一句、为什么是问题。按这个顺序：',
-        '1. 哪里读不懂 / 情节跳了（读者会卡住的地方）',
-        '2. 哪里人物不像（说话方式、做的事和前面的人设对不上）',
-        '3. 哪里在替读者总结（「这说明他很孤独」这类，应该把事写出来）',
-        '4. 哪里是空话、套话、可以整段删掉',
+        '【读完告诉我这些】',
+        '1. 你读到哪儿卡住了（那句话说不上来、那段跳了、回头看了两遍才懂）',
+        '2. 你读到哪儿不信（这个人不会这么做、这件事不会这么发生）',
+        '3. 你读到哪儿想跳过（哪几段你在心里划过去了）',
+        '4. 哪句话是空话，删掉不影响（直接引原句）',
         '',
-        '【别做的事】',
-        '- 不要夸。一句夸奖都不要。',
-        '- 不要整段重写、不要给「参考版本」。我要的是问题清单，不是替我写。',
-        '- 不要评论「主题」「深度」这种大词，只说字面上的问题。',
-        '',
-        '每条一行，开头写「问题：」，然后写「怎么改：」。最多 8 条，按严重程度排。',
-        '如果这一章确实没什么大问题，就只说一句「没看出硬伤，只有下面这几处小地方」。',
-      ].filter((x) => x !== '').join('\n')
+        '【怎么答】',
+        '- 每条一行，先写「哪里：」再写「为什么：」。要引原句。',
+        '- 最多 8 条，按你读的时候的不舒服程度排。',
+        '- 不夸。一句夸奖都不要。',
+        '- 不给改写版本——你只是读者，不是代笔。',
+        '- 没看出问题就直接说「没卡住的地方」，不要凑条数。',
+      ].join('\n')
       const called = await callModel(ctx, {
-        system: '你是一个挑毛病的编辑。你的任务不是说好话，是把问题指出来。',
+        // 换了一张纸：这段系统提示只要求它当读者，不要求它当编辑，
+        // 免得它从「怎么写更好」的角度出发，跑回写作者的位置上。
+        system: [
+          '你是一个普通读者，刚读完一段小说。',
+          '你没有写过这段，也不知道作者是谁、想写什么。',
+          '你只会说读的时候哪里不顺、哪里不信、哪里想跳过。',
+          '你不会改稿，也不会替作者想句子。',
+          body?.model === undefined || String(body.model).trim() === '' ? '' : '',
+        ].filter((x) => x !== '').join('\n'),
         user,
         model: body?.model,
       })
       if (called.ok !== true) return { ok: false, error: `这次没审成：${called.error ?? '过一会儿再试一次'}` }
       const review = String(called.text ?? '').trim()
       if (review === '') return { ok: false, error: 'AI 这次没给出意见，再点一次试试。' }
-      return { ok: true, index, review }
+      return { ok: true, index, review, chars: bodyText.length, blind: true, model: String(body?.model ?? '') }
     },
 
     /** 读一章。 */
+    // ── 文字小说游戏：进到情节里，你来选，它来推 ────────────────
+
+    /** 一本书能开哪几局。 */
+    'game.list': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.game !== true) return missingFeature('game')
+      const id = String(body?.book ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      return await game.listPlays(ws, id)
+    },
+
+    /** 读一局（回到上次那个地方）。 */
+    'game.get': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.game !== true) return missingFeature('game')
+      const book = String(body?.book ?? '').trim()
+      const id = String(body?.id ?? '').trim()
+      if (book === '' || id === '') return { ok: false, error: '这一局找不到了' }
+      const got = await game.readPlay(ws, book, id)
+      if (got.ok !== true) return got
+      const last = [...got.turns].reverse().find((t) => t.kind === 'narrate')
+      return {
+        ok: true, id, book, path: got.path,
+        chapter: Number(got.data?.chapter) || 0,
+        preset: String(got.data?.preset ?? ''),
+        scene: got.scene,
+        holding: got.holding,
+        turns: got.turns,
+        choices: game.parseChoices(String(last?.text ?? '')).choices,
+      }
+    },
+
+    /** 开一局：从某一章接着演。 */
+    'game.start': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.game !== true) return missingFeature('game')
+      if (mods.novel !== true) return missingFeature('novel')
+      const bookId = String(body?.book ?? '').trim()
+      if (bookId === '') return { ok: false, error: '没有说是哪本书' }
+      const book = await novel.readBook(ws, bookId)
+      if (book.ok !== true) return book
+      const chapter = Number(body?.chapter) || (book.chapters.length === 0 ? 0 : book.chapters[0].index)
+      // 开局那一段：优先用这一章的正文；没有就让 AI 自己起头。
+      let fromChapter = ''
+      if (chapter > 0) {
+        const got = await novel.readChapter(ws, bookId, chapter)
+        if (got.ok === true) fromChapter = novel.tailOf(got.body, 1600)
+      }
+      const picked = mods.presets === true ? await presets.resolve(ws, body?.preset) : { ok: true, preset: null }
+      const presetNote = picked.ok === true && picked.preset !== null ? String(picked.preset.prompt ?? '') : ''
+      const system = game.buildGmSystem({ bookTitle: String(book.data?.title ?? bookId), scene: '', holding: [], preset: presetNote })
+      const user = game.buildGmUser({ turns: [], move: '', fromChapter })
+      const called = await callModel(ctx, { system, user, model: body?.model })
+      if (called.ok !== true) return { ok: false, error: `这一局开不起来：${called.error ?? '过一会儿再试一次'}` }
+      const parsed = game.parseChoices(called.text)
+      const id = game.newPlayId()
+      const now = new Date()
+      const turns = [{ kind: 'narrate', text: parsed.body }]
+      const data = {
+        id, book: bookId, chapter, preset: String(body?.preset ?? ''),
+        created_at: now.toISOString(), updated_at: now.toISOString(), turn: 0, scene: '', holding: [],
+      }
+      const saved = await game.writePlay(ws, bookId, id, data, turns)
+      if (saved.ok !== true) return saved
+      return { ok: true, id, book: bookId, chapter, path: saved.path, text: parsed.body, choices: parsed.choices, turns }
+    },
+
+    /** 走一步。 */
+    'game.say': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.game !== true) return missingFeature('game')
+      const bookId = String(body?.book ?? '').trim()
+      const id = String(body?.id ?? '').trim()
+      if (bookId === '' || id === '') return { ok: false, error: '这一局找不到了' }
+      const got = await game.readPlay(ws, bookId, id)
+      if (got.ok !== true) return got
+      const turns = Array.isArray(got.turns) ? got.turns : []
+      const moves = turns.filter((t) => t.kind === 'choose' || t.kind === 'say').length
+      if (moves >= game.MAX_TURNS) {
+        return { ok: false, error: `这一局已经走了 ${moves} 步，太长了记不住前面。在这里收个尾，或者另开一局。`, turns }
+      }
+      const move = String(body?.move ?? '').trim()
+      if (move === '') return { ok: false, error: '先选一个方向，或者自己写一句' }
+      const book = mods.novel === true ? await novel.readBook(ws, bookId) : { ok: true, data: { title: bookId } }
+      if (book.ok !== true) return book
+      const picked = mods.presets === true ? await presets.resolve(ws, String(got.data?.preset ?? '')) : { ok: true, preset: null }
+      const presetNote = picked.ok === true && picked.preset !== null ? String(picked.preset.prompt ?? '') : ''
+      const system = game.buildGmSystem({ bookTitle: String(book.data?.title ?? bookId), scene: got.scene, holding: got.holding, preset: presetNote })
+      const user = game.buildGmUser({ turns, move })
+      const called = await callModel(ctx, { system, user, model: body?.model })
+      // 模型没接上也要把你这一步记下来：不然你选过什么，下一轮它完全不知道。
+      const parsed = game.parseChoices(called.ok === true ? called.text : '')
+      const nextTurns = [...turns, { kind: 'choose', text: move, result: called.ok === true ? parsed.body : '' }]
+      const now = new Date()
+      const data = { ...got.data, updated_at: now.toISOString(), turn: moves + 1 }
+      const saved = await game.writePlay(ws, bookId, id, data, nextTurns)
+      if (saved.ok !== true) return saved
+      if (called.ok !== true) {
+        return { ok: false, error: `这一步记下了，但它没接上话：${called.error ?? '过一会儿再试一次'}`, turns: nextTurns, kept: true }
+      }
+      return { ok: true, id, text: parsed.body, choices: parsed.choices, turns: nextTurns }
+    },
+
+    /** 这一局不要了。 */
+    'game.delete': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.game !== true) return missingFeature('game')
+      const book = String(body?.book ?? '').trim()
+      const id = String(body?.id ?? '').trim()
+      if (book === '' || id === '') return { ok: false, error: '这一局找不到了' }
+      return await game.deletePlay(ws, book, id)
+    },
+
+    // ── 预设：三种玩法各自的演法/写法 ─────────────────────────
+
+    /** 哪些功能装了、哪些没装。界面按这个决定显示什么。 */
+    'features.list': async (body) => {
+      const mods = await ensureModules()
+      return {
+        ok: true,
+        features: {
+          real: true,
+          jobs: true,
+          tavern: mods.tavern === true,
+          novel: mods.novel === true,
+          presets: mods.presets === true,
+          game: mods.game === true && mods.novel === true,
+        },
+      }
+    },
+
+    /** 列预设（内置 + 自己的）。 */
+    'preset.list': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.presets !== true) return missingFeature('presets')
+      return await presets.listAll(ws)
+    },
+
+    /** 把一份内置的复制成自己的，之后能随便改。 */
+    'preset.copy': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.presets !== true) return missingFeature('presets')
+      return await presets.copyBuiltin(ws, body?.id, body?.as)
+    },
+
+    /** 存一份自己的预设（新建或改）。 */
+    'preset.save': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.presets !== true) return missingFeature('presets')
+      return await presets.saveCustom(ws, { id: body?.id, mode: body?.mode, name: body?.name, desc: body?.desc, prompt: body?.prompt })
+    },
+
+    /** 删一份自己的预设。 */
+    'preset.delete': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.presets !== true) return missingFeature('presets')
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪一份' }
+      return await presets.deleteCustom(ws, id)
+    },
+
     'novel.chapter.get': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '没有说是哪本书' }
@@ -2617,6 +2834,7 @@ function buildApi(ctx, workspace, config, options) {
 
     /** 自己写（或改）一章，直接在编辑器里手写。 */
     'novel.chapter.save': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '没有说是哪本书' }
@@ -2631,6 +2849,7 @@ function buildApi(ctx, workspace, config, options) {
      * 只给上一章它不知道这本书要往哪走。
      */
     'novel.chapter.draft': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '没有说是哪本书' }
@@ -2672,7 +2891,12 @@ function buildApi(ctx, workspace, config, options) {
       const outline = await novel.readOutline(ws, id)
       const outlineText = outline.ok === true && outline.text !== '' ? outline.text : ''
       const planItem = outline.ok === true ? (outline.chapters ?? []).find((c) => c.index === index) : undefined
-      const system = '你是一个写小说的人。你的任务是把故事写下去，不是解释、不是评论、不是总结。'
+      const writePreset = await presets.resolve(ws, body?.preset)
+      const presetNote = writePreset.ok === true && writePreset.preset !== null ? String(writePreset.preset.prompt ?? '') : ''
+      const system = [
+        '你是一个写小说的人。你的任务是把故事写下去，不是解释、不是评论、不是总结。',
+        presetNote === '' ? '' : `\n【这一段怎么写】\n${presetNote}`,
+      ].filter((x) => x !== '').join('\n')
       const user = novel.buildChapterPrompt({
         title: String(book.data?.title ?? id),
         idea: String(book.idea ?? ''),
@@ -2719,9 +2943,22 @@ async function gatherCast(ws, wants) {
     if (rel === '') continue
     const card = await store.readCard(ws, rel)
     if (card.ok !== true) continue
-    const persona = tavern.personaFromCard(card.data, card.sections)
-    if (persona.text === '') continue
-    out.push(`【${persona.name}】${persona.text.slice(0, 500)}`)
+    // 酒馆模块被删掉时，这里自己拼一份最小的人设——
+    // 「写小说」不该因为「酒馆」没了就用不了。
+    let name = String(card.data?.name ?? '').trim()
+    let text = ''
+    if (tavern !== null) {
+      const persona = tavern.personaFromCard(card.data, card.sections)
+      name = persona.name
+      text = persona.text
+    } else {
+      const parts = ['自述', '性格', '口癖', '外貌']
+        .map((title) => core.sectionBody(card.sections, title).trim())
+        .filter((x) => x !== '')
+      text = parts.join('\n')
+    }
+    if (text === '') continue
+    out.push(`【${name === '' ? '这个人' : name}】${text.slice(0, 500)}`)
   }
   return out
 }

@@ -727,7 +727,7 @@ const SECTIONS_REL = [
 
 // ── 主界面 ────────────────────────────────────────────────────────
 
-const VIEWS = { doors: 'doors', novel: 'novel', book: 'book', tavern: 'tavern', tavernChat: 'tavernChat', home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs' }
+const VIEWS = { doors: 'doors', novel: 'novel', book: 'book', game: 'game', tavern: 'tavern', tavernChat: 'tavernChat', home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs' }
 
 /**
  * tab 组件。接收宿主给的 props（ctx / store / scope / tab / visible）。
@@ -970,8 +970,20 @@ function LifeCardTab(props) {
   const [activeBook, setActiveBook] = useState(null)
   // 书架上的书（写小说那扇门要列出来）
   const [books, setBooks] = useState([])
+  // 哪些功能装了。null = 还没问到（先都按「装了」显示，别闪一下少一扇门）。
+  //
+  // 这个插件的每一块都能整个删掉：删了酒馆的文件，酒馆就没了，别的照常。
+  // 所以界面不能写死「一定有三扇门」，得先问一句「现在有哪些」。
+  const [features, setFeatures] = useState(null)
+  useEffect(() => {
+    let gone = false
+    call('features.list', {})
+      .then((r) => { if (!gone && r?.ok === true && r.features !== undefined) setFeatures(r.features) })
+      .catch(() => { /* 问不到就按「都装了」显示，不影响用 */ })
+    return () => { gone = true }
+  }, [])
   // 门自己的那两屏直接说了算；其余屏（聊着建、卡片、分析…）沿用上次选的门。
-  const mode = (view === VIEWS.novel || view === VIEWS.book) ? 'novel' : (view === VIEWS.tavern || view === VIEWS.tavernChat) ? 'tavern' : door
+  const mode = (view === VIEWS.novel || view === VIEWS.book || view === VIEWS.game) ? 'novel' : (view === VIEWS.tavern || view === VIEWS.tavernChat) ? 'tavern' : door
   // 回到酒馆那两屏就重新拿一遍说过的场次：刚说完、刚删完再回来，
   // 还挂着进这一屏之前的旧列表，用户会以为刚才那一步没生效。
   useEffect(() => {
@@ -1114,6 +1126,7 @@ function LifeCardTab(props) {
       [VIEWS.doors]: '你要用哪个？',
       [VIEWS.home]: '真实人物记录',
       [VIEWS.novel]: '写小说',
+      [VIEWS.game]: '玩一段',
       [VIEWS.book]: activeBook?.title === undefined || String(activeBook.title).trim() === '' ? '这本书' : String(activeBook.title),
       [VIEWS.tavern]: '酒馆',
       [VIEWS.tavernChat]: chat === null ? '聊一场' : (String(chat.card_name ?? '').trim() === '' ? '聊一场' : String(chat.card_name)),
@@ -1186,7 +1199,7 @@ function LifeCardTab(props) {
       })
     }
     // 门还没选：先问「你要用哪个」。选完才进首页，首页再按门决定露出什么。
-    if (view === VIEWS.doors) return h(DoorsView, { state, onPick: pickDoor })
+    if (view === VIEWS.doors) return h(DoorsView, { state, features, onPick: pickDoor })
     if (view === VIEWS.tavernChat) {
       return h(TavernView, {
         chat,
@@ -1313,6 +1326,12 @@ function LifeCardTab(props) {
               listing,
               onOpenCard: openCard,
             })
+      case VIEWS.game:
+        return h(GameView, {
+          bookId: String(activeBook?.id ?? ''),
+          flash,
+          onBack: () => { setActiveBook(null); setView(VIEWS.novel) },
+        })
       case VIEWS.book:
         return h(BookView, {
           bookId: String(activeBook?.id ?? ''),
@@ -1448,8 +1467,12 @@ const DOORS = [
  * 顶上一条门楣色块、中间竖着写门名、底部一道门槛写着「推门进去」。
  * 三扇并排、各占三分之一宽、高度撑满；窄窗口自动换行。
  */
-function DoorsView({ onPick, state }) {
+function DoorsView({ onPick, state, features }) {
   const workspace = String(state?.workspace ?? '')
+  // 没装的门不摆出来。`features === null` 时全摆（还没问到，别闪一下少一扇）。
+  const doors = (features === null || features === undefined)
+    ? DOORS
+    : DOORS.filter((d) => (d.id === 'real' ? true : d.id === 'novel' ? features.novel !== false : features.tavern !== false))
   const tint = {
     real: {
       fg: 'var(--lc-interview)', bg: 'var(--lc-interview-soft)', icon: 'people',
@@ -1482,7 +1505,7 @@ function DoorsView({ onPick, state }) {
         alignItems: 'stretch', flexWrap: 'wrap', minHeight: 280,
       },
     },
-      DOORS.map((door) => {
+      doors.map((door) => {
         const t = tint[door.id] ?? tint.real
         return h('button', {
           key: door.id,
@@ -2104,6 +2127,164 @@ function WorldView({ world, listing, onOpenCard }) {
  *     没人会读，也没人改得动。
  *   - 不问「要不要继续」。按钮在那儿，要不要点是人自己的事。
  */
+/**
+ * 预设选择条：三种玩法共用。
+ *
+ * 为什么做成一行小按钮而不是下拉框：这些名字（慢热 / 直球 / 冷峻白描 /
+ * 查一件事）本身就说明了效果，扫一眼就能选。下拉框要点两下才看见有什么。
+ */
+function PresetBar({ mode, value, onChange, onManage }) {
+  const [groups, setGroups] = useState(null)
+  const [err, setErr] = useState(null)
+  useEffect(() => {
+    let gone = false
+    call('preset.list', {})
+      .then((r) => { if (!gone && r?.ok === true) setGroups(Array.isArray(r.groups) ? r.groups : []) })
+      .catch((e) => { if (!gone) setErr(humanizeError(e)) })
+    return () => { gone = true }
+  }, [])
+  if (groups === null) return null
+  const mine = groups.find((g) => String(g.mode) === mode)
+  const items = mine === undefined ? [] : (mine.items ?? [])
+  if (items.length === 0) return null
+  return h('div', { className: 'lc-stack', style: { gap: 6 } },
+    h('div', { className: 'lc-row' },
+      h('div', { className: 'lc-grow lc-meta' }, '演法 / 写法（选一个，能不选）'),
+      onManage === undefined ? null : h(Btn, { size: 'sm', ghost: true, icon: 'edit', onClick: onManage }, '管理'),
+    ),
+    h('div', { className: 'lc-row', style: { flexWrap: 'wrap', gap: 6 } },
+      items.map((p) => h(Btn, {
+        key: p.id,
+        size: 'sm',
+        tone: value === p.id ? 'primary' : undefined,
+        onClick: () => onChange(value === p.id ? '' : p.id),
+        title: String(p.desc ?? ''),
+      }, String(p.name ?? p.id))),
+    ),
+    err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
+  )
+}
+
+/**
+ * 文字小说游戏：进到一本书的某一段情节里，你来选，它来推。
+ *
+ * 和「写小说」摆在一起但不是一个东西：那边是你在写，这边是你在里面。
+ * 所以这一屏的重点是**局面清楚**——现在在哪、手上有什么、这一步要付什么代价。
+ */
+function GameView({ bookId, onBack, flash }) {
+  const [play, setPlay] = useState(null)
+  const [move, setMove] = useState('')
+  const [busy, setBusy] = useState('')
+  const [err, setErr] = useState(null)
+  const [preset, setPreset] = useState('')
+  const [chapter, setChapter] = useState(0)
+  const [chapterList, setChapterList] = useState([])
+
+  const open = async (row) => {
+    setErr(null)
+    try {
+      const r = await call('game.get', { book: bookId, id: row.id })
+      if (r?.ok !== true) { setErr(r?.error ?? '这一局打不开'); return }
+      setPlay({ id: row.id, turns: r.turns ?? [], choices: r.choices ?? [], scene: r.scene ?? '', holding: r.holding ?? [], chapter: r.chapter })
+    } catch (e) { setErr(humanizeError(e)) }
+  }
+
+  useEffect(() => {
+    let gone = false
+    call('novel.get', { id: bookId })
+      .then((r) => { if (!gone && r?.ok === true) setChapterList(Array.isArray(r.chapters) ? r.chapters : []) })
+      .catch(() => {})
+    return () => { gone = true }
+  }, [bookId])
+
+  const start = async () => {
+    setBusy('start'); setErr(null)
+    try {
+      const r = await call('game.start', { book: bookId, chapter, preset })
+      if (r?.ok !== true) { setErr(r?.error ?? '这一局开不起来'); return }
+      setPlay({ id: r.id, turns: r.turns ?? [], choices: r.choices ?? [], scene: '', holding: [], chapter: r.chapter })
+      flash?.('开局了')
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  const step = async (text) => {
+    const said = String(text ?? '').trim()
+    if (said === '' || play === null) return
+    setBusy('step'); setErr(null)
+    try {
+      const r = await call('game.say', { book: bookId, id: play.id, move: said })
+      if (Array.isArray(r?.turns)) setPlay({ ...play, turns: r.turns, choices: r.choices ?? [] })
+      if (r?.ok !== true) { setErr(r?.error ?? '这一步没成'); return }
+      setMove('')
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  if (play === null) {
+    return h('div', { className: 'lc-pad lc-stack' },
+      h(Btn, { size: 'sm', icon: 'back', onClick: onBack }, '回书架'),
+      h('h3', { style: { margin: '4px 0 0' } }, '挑一个地方进去'),
+      h('div', { className: 'lc-meta' }, '从哪一章接着演都行。没有正文也行，它会自己起头。'),
+      h('div', { className: 'lc-row', style: { flexWrap: 'wrap', gap: 6 } },
+        h(Btn, { size: 'sm', tone: chapter === 0 ? 'primary' : undefined, onClick: () => setChapter(0) }, '从头开始'),
+        chapterList.map((c) => h(Btn, {
+          key: c.index, size: 'sm', tone: chapter === c.index ? 'primary' : undefined,
+          onClick: () => setChapter(c.index),
+        }, `第 ${c.index} 章`)),
+      ),
+      h(PresetBar, { mode: 'game', value: preset, onChange: setPreset }),
+      h(Btn, { tone: 'primary', block: true, icon: 'spark', disabled: busy !== '', onClick: start },
+        busy === 'start' ? '正在开局…' : '进这一段'),
+      err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
+    )
+  }
+
+  const narrations = (play.turns ?? []).filter((t) => t.kind === 'narrate' || t.kind === 'choose')
+  return h('div', { className: 'lc-pad lc-stack', style: { gap: 10 } },
+    h('div', { className: 'lc-row' },
+      h(Btn, { size: 'sm', icon: 'back', onClick: onBack }, '这一局先放着'),
+      h('div', { className: 'lc-grow lc-meta' },
+        [play.chapter > 0 ? `从第 ${play.chapter} 章进来的` : '从头开的',
+         `已经走了 ${(play.turns ?? []).filter((t) => t.kind === 'choose').length} 步`].join(' · ')),
+    ),
+    String(play.scene ?? '').trim() === '' ? null : h(Note, { icon: 'book' }, play.scene),
+    Array.isArray(play.holding) && play.holding.length > 0
+      ? h('div', { className: 'lc-meta' }, `手上的：${play.holding.join('、')}`)
+      : null,
+    h('div', { className: 'lc-stack', style: { gap: 10 } },
+      narrations.map((t, i) => h('div', {
+        key: i,
+        style: {
+          whiteSpace: 'pre-wrap', lineHeight: 1.85, fontSize: 14.5,
+          padding: '10px 12px', borderRadius: 10,
+          background: t.kind === 'choose' ? 'var(--lc-accent-soft)' : 'var(--lc-panel)',
+          border: `1px solid ${t.kind === 'choose' ? 'var(--lc-accent)' : 'var(--lc-line)'}`,
+          color: t.kind === 'choose' ? 'var(--lc-accent)' : undefined,
+        },
+      }, t.kind === 'choose' ? `我：${t.text}${String(t.result ?? '') === '' ? '' : `\n\n${t.result}`}` : String(t.text ?? ''))),
+    ),
+    (play.choices ?? []).length > 0
+      ? h('div', { className: 'lc-stack', style: { gap: 6 } },
+          h('div', { className: 'lc-meta' }, '这一步可以走：'),
+          (play.choices ?? []).map((c, i) => h(Btn, {
+            key: i, block: true, disabled: busy !== '', onClick: () => step(c.text),
+          }, `${c.label}. ${c.text}`)),
+        )
+      : null,
+    h('div', { className: 'lc-row' },
+      h('input', {
+        className: 'lc-input', value: move, spellCheck: false,
+        placeholder: '或者自己写一句这一步怎么做',
+        onChange: (e) => setMove(e.target.value),
+        onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); step(move) } },
+      }),
+      h(Btn, { tone: 'primary', disabled: busy !== '' || move.trim() === '', onClick: () => step(move) },
+        busy === 'step' ? '等一下…' : '走这一步'),
+    ),
+    err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
+    h('div', { className: 'lc-meta' }, '每一步都会存下来，退出再进来还能接着走。'),
+  )
+}
+
 function BookView({ bookId, onBack, flash }) {
   const [book, setBook] = useState(null)
   const [outline, setOutline] = useState(null)
