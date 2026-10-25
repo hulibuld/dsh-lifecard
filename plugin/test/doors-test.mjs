@@ -255,5 +255,49 @@ console.log('\n=== 4. 列表里能直接删卡（不用先进去滚到底）==='
   }
 }
 
+console.log('\n=== 5. 「还等着你看的建议」只在它那扇门里提醒 ===')
+{
+  // 真事故（用户 2026-10-25 报）：在酒馆里写着小说，头顶一直挂着
+  // 「关于『妈妈』的建议」；记录真人的时候又挂着小说角色的建议。
+  const listing = {
+    ok: true, workspace: '/tmp/x', errors: [], materials: [], worlds: [], avatars: {},
+    cards: [
+      { id: 'mama', path: 'people/mama.card.md', name: '妈妈', kind: 'real', relation: '母亲', coverage: 60, tags: [] },
+      { id: 'lin', path: 'people/lin.card.md', name: '林小雨', kind: 'fictional', coverage: 40, tags: [] },
+    ],
+    proposals: [
+      { json: 'proposals/mama.json', about: '妈妈', accepted: 3, adopted: 0, rejected: 0, generated_at: '2026-10-25' },
+      { json: 'proposals/lin.json', about: '林小雨', accepted: 2, adopted: 0, rejected: 0, generated_at: '2026-10-25' },
+      { json: 'proposals/nobody.json', about: '还没有卡的人', accepted: 1, adopted: 0, rejected: 0, generated_at: '2026-10-25' },
+    ],
+  }
+  // 只截「还等着你看的建议」那一段：卡列表里出现虚构角色是正常的
+  // （真人那扇门也让人看见所有卡），要验的是**建议那一栏**有没有串门。
+  const proposalsPart = (text) => {
+    const i = text.indexOf('还等着你看的建议')
+    return i < 0 ? '' : text.slice(i)
+  }
+
+  // 现实那扇门（view=home）：只该看见妈妈 + 还没建卡的那个人
+  const real = textOf(renderRoot({ ...base('home'), 2: listing }))
+  const realP = proposalsPart(real)
+  t('现实门里有「还等着你看的建议」这一栏', realP !== '', real.slice(0, 200))
+  t('现实门里能看见「关于「妈妈」」', realP.includes('妈妈'), realP.slice(0, 200))
+  t('现实门里看不见虚构角色林小雨的建议', !realP.includes('林小雨'), realP.slice(0, 200))
+  t('现实门里能看见还没建卡那个人的建议（它也可能是真人）', realP.includes('还没有卡的人'), '')
+
+  // 写小说那扇门：只该看见林小雨
+  const novelDoor = textOf(renderRoot({ ...base('novel'), 2: listing, 24: 'novel' }))
+  const novelP = proposalsPart(novelDoor)
+  t('写小说门里能看见林小雨的建议', novelP.includes('林小雨'), novelP.slice(0, 200))
+  t('写小说门里看不见妈妈的建议', !novelP.includes('妈妈'), novelP.slice(0, 200))
+
+  // 酒馆那扇门：虚构角色照样算它这扇门的
+  const tavernDoor = textOf(renderRoot({ ...base('tavern'), 2: listing, 24: 'tavern' }))
+  const tavernP = proposalsPart(tavernDoor)
+  t('酒馆门里能看见虚构角色的建议', tavernP.includes('林小雨'), tavernP.slice(0, 200))
+  t('酒馆门里看不见真人的建议', !tavernP.includes('妈妈'), tavernP.slice(0, 200))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
