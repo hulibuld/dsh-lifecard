@@ -727,7 +727,7 @@ const SECTIONS_REL = [
 
 // ── 主界面 ────────────────────────────────────────────────────────
 
-const VIEWS = { doors: 'doors', novel: 'novel', tavern: 'tavern', tavernChat: 'tavernChat', home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs' }
+const VIEWS = { doors: 'doors', novel: 'novel', book: 'book', tavern: 'tavern', tavernChat: 'tavernChat', home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs' }
 
 /**
  * tab 组件。接收宿主给的 props（ctx / store / scope / tab / visible）。
@@ -950,13 +950,28 @@ function LifeCardTab(props) {
   // 按号码摆状态用着，中间插一个会让那一整排全部错位。
   const [chat, setChat] = useState(null)
   const [chats, setChats] = useState([])
+  // 回到「写小说」那扇门就重新拿一遍书架：刚写完一章、刚新建一本再回来，
+  // 还挂着进这一屏之前的旧列表，用户会以为刚才那一步没生效。
+  useEffect(() => {
+    if (view !== VIEWS.novel) return
+    let gone = false
+    call('novel.books', {})
+      .then((r) => { if (!gone && r?.ok === true && Array.isArray(r.books)) setBooks(r.books) })
+      .catch(() => { /* 取不到就空着，不影响新建 */ })
+    return () => { gone = true }
+  }, [view])
+
   // 「我现在在哪扇门里」必须自己记住，不能靠「当前在哪一屏」去猜。
   // 以前 mode 是从 view 推的：一进「聊着建」，当前屏就变成 interview，
   // 于是不管从哪扇门进来，都退回 real——三扇门点进去全都说
   // 「你在记录一个现实里的人」。子页面不是门，门要跟着人走。
   const [door, setDoor] = useState('real')
+  // 写到第几本书（book 视图用）。null = 还没打开任何一本。
+  const [activeBook, setActiveBook] = useState(null)
+  // 书架上的书（写小说那扇门要列出来）
+  const [books, setBooks] = useState([])
   // 门自己的那两屏直接说了算；其余屏（聊着建、卡片、分析…）沿用上次选的门。
-  const mode = view === VIEWS.novel ? 'novel' : (view === VIEWS.tavern || view === VIEWS.tavernChat) ? 'tavern' : door
+  const mode = (view === VIEWS.novel || view === VIEWS.book) ? 'novel' : (view === VIEWS.tavern || view === VIEWS.tavernChat) ? 'tavern' : door
   // 回到酒馆那两屏就重新拿一遍说过的场次：刚说完、刚删完再回来，
   // 还挂着进这一屏之前的旧列表，用户会以为刚才那一步没生效。
   useEffect(() => {
@@ -967,6 +982,25 @@ function LifeCardTab(props) {
       .catch(() => { /* 取不到就空着，不影响开新的一场 */ })
     return () => { gone = true }
   }, [view])
+
+  /** 打开一本书，进到那一屏。 */
+  const openBook = (book) => {
+    setActiveBook({ id: book?.id ?? '', title: book?.title ?? '' })
+    setView(VIEWS.book)
+  }
+
+  /** 新开一本：问一个书名就够，别的都能后面补。 */
+  const createBook = async () => {
+    const ask = typeof window !== 'undefined' && typeof window.prompt === 'function' ? window.prompt : null
+    const title = ask === null ? '新书' : String(ask('这本书叫什么？') ?? '').trim()
+    if (title === '') return
+    try {
+      const r = await call('novel.create', { title })
+      if (r?.ok !== true) { setError(r?.error ?? '这本书没能建起来'); return }
+      setActiveBook({ id: r.id, title: r.title })
+      setView(VIEWS.book)
+    } catch (e) { setError(humanizeError(e)) }
+  }
 
   const pickDoor = (next) => {
     setDoor(next)
@@ -1080,6 +1114,7 @@ function LifeCardTab(props) {
       [VIEWS.doors]: '你要用哪个？',
       [VIEWS.home]: '真实人物记录',
       [VIEWS.novel]: '写小说',
+      [VIEWS.book]: activeBook?.title === undefined || String(activeBook.title).trim() === '' ? '这本书' : String(activeBook.title),
       [VIEWS.tavern]: '酒馆',
       [VIEWS.tavernChat]: chat === null ? '聊一场' : (String(chat.card_name ?? '').trim() === '' ? '聊一场' : String(chat.card_name)),
       [VIEWS.card]: activeCard?.data?.name ?? '这张卡',
@@ -1213,7 +1248,7 @@ function LifeCardTab(props) {
         // 直接退回首页，用户点了没反应，还以为坏了。现在把清单单独摊开。
         return activeCard === null
           ? proposal === null
-            ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard })
+            ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, books, onOpenBook: openBook, onCreateBook: createBook })
             : h('div', { className: 'lc-pad lc-stack' },
                 proposal.about === undefined || String(proposal.about).trim() === ''
                   ? null
@@ -1272,18 +1307,24 @@ function LifeCardTab(props) {
         })
       case VIEWS.world:
         return activeWorld === null
-          ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard })
+          ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, books, onOpenBook: openBook, onCreateBook: createBook })
           : h(WorldView, {
               world: activeWorld,
               listing,
               onOpenCard: openCard,
             })
+      case VIEWS.book:
+        return h(BookView, {
+          bookId: String(activeBook?.id ?? ''),
+          flash,
+          onBack: () => { setActiveBook(null); setView(VIEWS.novel) },
+        })
       case VIEWS.doctor:
         return h(DoctorView, { report: doctor, onOpenCard: openCard, onRun: () => runDoctor(true) })
       case VIEWS.jobs:
         return h(JobsView, { onBack: () => setView(VIEWS.home), flash })
       default:
-        return h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard })
+        return h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, books, onOpenBook: openBook, onCreateBook: createBook })
     }
   }
 
@@ -1396,15 +1437,33 @@ const DOORS = [
   },
 ]
 
+/**
+ * 进门那一屏：三扇**立着的门**。
+ *
+ * 为什么做成门的样子而不是三张卡片：卡片是「选一个设置」，门是「走进去」。
+ * 这一屏是这个插件唯一的分岔口，用户在这儿做的决定（记真人 / 写小说 / 演）
+ * 会决定后面所有屏长什么样，值得给一个够重的画面。
+ *
+ * 门该有的东西：门框、门楣、门牌、把手、门槛。这里都做了——
+ * 顶上一条门楣色块、中间竖着写门名、底部一道门槛写着「推门进去」。
+ * 三扇并排、各占三分之一宽、高度撑满；窄窗口自动换行。
+ */
 function DoorsView({ onPick, state }) {
   const workspace = String(state?.workspace ?? '')
-  // 三扇**立着的门**并排站满整屏：每一块都是一个竖长的门框，
-  // 高度撑到整屏、宽度三等分。不是三个横躺的卡片叠着——那样看着像
-  // 一列设置项，不像「推门进去」。
   const tint = {
-    real: { fg: 'var(--lc-interview)', bg: 'var(--lc-interview-soft)', icon: 'people' },
-    novel: { fg: 'var(--lc-import)', bg: 'var(--lc-import-soft)', icon: 'book' },
-    tavern: { fg: 'var(--lc-analyze)', bg: 'var(--lc-analyze-soft)', icon: 'chat' },
+    real: {
+      fg: 'var(--lc-interview)', bg: 'var(--lc-interview-soft)', icon: 'people',
+      // 门里那点光：不一样的暖冷，一眼能分出来
+      glow: 'rgba(156, 123, 245, .18)',
+    },
+    novel: {
+      fg: 'var(--lc-import)', bg: 'var(--lc-import-soft)', icon: 'book',
+      glow: 'rgba(59, 201, 219, .18)',
+    },
+    tavern: {
+      fg: 'var(--lc-analyze)', bg: 'var(--lc-analyze-soft)', icon: 'chat',
+      glow: 'rgba(232, 185, 59, .18)',
+    },
   }
   return h('div', {
     style: {
@@ -1412,15 +1471,15 @@ function DoorsView({ onPick, state }) {
       minHeight: '100%', boxSizing: 'border-box', padding: 12,
     },
   },
-    h('div', { style: { flex: '0 0 auto', paddingBottom: 10 } },
-      h('h2', { style: { margin: '2px 0 0', fontSize: 22 } }, '你要用哪个？'),
-      h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '推一扇门进去。随时能换——卡和世界书都在同一个文件夹里。'),
+    h('div', { style: { flex: '0 0 auto', paddingBottom: 12 } },
+      h('h2', { style: { margin: '2px 0 0', fontSize: 22, letterSpacing: '-.01em' } }, '你要用哪个？'),
+      h('div', { className: 'lc-meta', style: { marginTop: 5 } }, '推一扇门进去。随时能换——卡和世界书都在同一个文件夹里。'),
     ),
-    // 三扇门横向并排；窄窗口时自动换行（flexWrap），免得挤成三条缝
+    // 三扇门横向并排；窄窗口自动换行（flexWrap），免得挤成三条缝
     h('div', {
       style: {
         flex: '1 1 auto', display: 'flex', gap: 10,
-        alignItems: 'stretch', flexWrap: 'wrap', minHeight: 260,
+        alignItems: 'stretch', flexWrap: 'wrap', minHeight: 280,
       },
     },
       DOORS.map((door) => {
@@ -1432,42 +1491,76 @@ function DoorsView({ onPick, state }) {
           onClick: () => onPick(door.id),
           style: {
             // 每扇门平分宽度、各自撑满整高（门是竖的，高度要顶天立地）
-            flex: '1 1 30%', minWidth: 150, minHeight: 240,
-            display: 'flex', flexDirection: 'column', alignItems: 'center',
-            justifyContent: 'flex-start', gap: 10,
-            padding: '18px 12px', textAlign: 'center', cursor: 'pointer',
+            flex: '1 1 30%', minWidth: 156, minHeight: 260,
+            display: 'flex', flexDirection: 'column', alignItems: 'stretch',
+            gap: 0, padding: 0, textAlign: 'center', cursor: 'pointer',
             border: '1px solid var(--lc-line)', borderRadius: 16,
-            background: 'var(--lc-panel)', boxShadow: 'var(--lc-shadow)',
-            font: 'inherit', color: 'inherit',
+            // 门里透出来的光：上深下浅，像门后头有灯
+            background: `linear-gradient(180deg, ${t.glow} 0%, var(--lc-panel) 55%, var(--lc-panel) 100%)`,
+            boxShadow: 'var(--lc-shadow)', font: 'inherit', color: 'inherit',
+            overflow: 'hidden', position: 'relative',
           },
         },
-          // 门顶上的那块色：像一个门楣
+          // ── 门楣：顶上那条色带 ──
           h('div', {
             style: {
-              flex: '0 0 auto', width: 52, height: 52, borderRadius: 14,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: t.bg, color: t.fg, marginTop: 4,
+              flex: '0 0 auto', height: 6, width: '100%',
+              background: t.fg, opacity: .85,
             },
-          }, h(Icon, { name: t.icon, size: 26 })),
-          h('div', { style: { fontSize: 17.5, fontWeight: 700, lineHeight: 1.35 } }, door.title),
-          h('div', { className: 'lc-meta', style: { lineHeight: 1.6 } }, door.desc),
-          h('div', { style: { flex: '1 1 auto' } }),
-          (door.bullets ?? []).length === 0 ? null : h('div', {
-            style: { display: 'flex', flexDirection: 'column', gap: 3, textAlign: 'left', width: '100%' },
+          }),
+          // ── 门牌：图标 + 门名 ──
+          h('div', {
+            style: {
+              flex: '0 0 auto', display: 'flex', flexDirection: 'column',
+              alignItems: 'center', gap: 8, padding: '16px 12px 10px',
+            },
           },
-            door.bullets.map((line, i) => h('div', {
+            h('div', {
+              style: {
+                width: 50, height: 50, borderRadius: 14,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: t.bg, color: t.fg,
+                border: `1px solid ${t.fg}`, boxSizing: 'border-box',
+              },
+            }, h(Icon, { name: t.icon, size: 25 })),
+            h('div', { style: { fontSize: 16.5, fontWeight: 700, lineHeight: 1.3 } }, door.title),
+            h('div', { className: 'lc-meta', style: { lineHeight: 1.6, padding: '0 2px' } }, door.desc),
+          ),
+          // ── 门里有什么 ──
+          h('div', {
+            style: {
+              flex: '1 1 auto', display: 'flex', flexDirection: 'column',
+              gap: 4, padding: '0 12px 10px', textAlign: 'left', justifyContent: 'center',
+            },
+          },
+            (door.bullets ?? []).map((line, i) => h('div', {
               key: i,
               className: 'lc-meta',
-              style: { display: 'flex', gap: 5, lineHeight: 1.5 },
-            }, h('span', { style: { color: t.fg, flex: '0 0 auto' } }, '·'), h('span', null, line)))),
-          // 门底那道横杠：推门的那一下
+              style: { display: 'flex', gap: 6, lineHeight: 1.55, alignItems: 'flex-start' },
+            },
+              h('span', { style: { color: t.fg, flex: '0 0 auto', fontWeight: 700 } }, '·'),
+              h('span', null, line),
+            )),
+          ),
+          // ── 门槛：底部那条，写着推门 ──
           h('div', {
             style: {
-              flex: '0 0 auto', marginTop: 4, paddingTop: 10, width: '100%',
+              flex: '0 0 auto', marginTop: 'auto',
               borderTop: '1px solid var(--lc-line)',
-              color: t.fg, fontWeight: 700, fontSize: 15,
+              padding: '10px 8px', width: '100%', boxSizing: 'border-box',
+              color: t.fg, fontWeight: 700, fontSize: 13.5,
+              background: t.bg,
             },
           }, '推门进去 →'),
+          // ── 把手：右下角一个小圆点，门的那个意思 ──
+          h('div', {
+            'aria-hidden': 'true',
+            style: {
+              position: 'absolute', right: 10, bottom: 52,
+              width: 7, height: 7, borderRadius: 999,
+              background: t.fg, opacity: .55,
+            },
+          }),
         )
       }),
     ),
@@ -1475,7 +1568,7 @@ function DoorsView({ onPick, state }) {
   )
 }
 
-function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial, chats, onOpenChat, onForkCard, onDeleteCard }) {
+function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial, chats, onOpenChat, onForkCard, onDeleteCard, books, onOpenBook, onCreateBook }) {
   // 这扇门是不是「真实人物记录」。写小说、酒馆那两扇门里不该出现
   // 「贴一份招聘说明」「从记忆里认人」这类动作——那是记录真人才用得上的。
   const isReal = mode !== 'novel' && mode !== 'tavern'
@@ -1493,6 +1586,17 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
   // 用户每次回首页都以为自己还有事没做。
   const allProposals = listing?.proposals ?? []
   const proposals = allProposals.filter((p) => (p.adopted ?? 0) < (p.accepted ?? 0))
+  // 「还等着你看的建议」只在**它属于的那扇门**里出现。
+  //
+  // 以前这是个跨屏提醒：在酒馆里写着小说，头顶一直挂着「关于『妈妈』的建议」；
+  // 记录真人的时候又挂着小说角色的建议。建议本身没错，错在它不属于这一屏。
+  // 判据是这条建议说的是谁——那个人有卡就按卡的 kind，没卡（还没建卡）算现实。
+  const pendingProposals = proposals.filter((p) => {
+    const name = String(p.about ?? '').trim()
+    const hit = name === '' ? undefined : cards.find((c) => String(c.id ?? '') === name || String(c.name ?? '').trim() === name)
+    const isFiction = hit !== undefined && hit.kind === 'fictional'
+    return isFiction === (mode !== 'real')
+  })
   const materials = listing?.materials ?? []
   // 搜索也要筛材料：搜一个人的名字，上面卡筛掉了、下面材料还整整齐齐列着，
   // 看着像「搜到了这一份」，其实根本没筛。
@@ -1620,6 +1724,36 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
         : null,
     ),
 
+    // 写小说那扇门：先列书架。没有它，用户建了一本书再回来就找不到了。
+    mode === 'novel'
+      ? h('div', null,
+          h(GroupTitle, { tone: 'import', icon: 'book' }, `我的书 · ${(books ?? []).length}`),
+          (books ?? []).length === 0
+            ? h('div', { className: 'lc-meta', style: { lineHeight: 1.7 } },
+                '还没有书。新建一本，让 AI 先想大纲，再一章一章写。')
+            : h('div', { className: 'lc-stack' }, (books ?? []).map((b) => h('button', {
+                key: b.id,
+                className: 'lc-card-item',
+                type: 'button',
+                onClick: () => onOpenBook?.(b),
+                style: { textAlign: 'left', font: 'inherit', color: 'inherit', width: '100%' },
+              },
+                h('div', { className: 'lc-avatar', style: { background: 'var(--lc-import-soft)', color: 'var(--lc-import)' } }, h(Icon, { name: 'book', size: 14 })),
+                h('div', { className: 'lc-grow', style: { minWidth: 0 } },
+                  h('div', { className: 'lc-ellipsis', style: { fontWeight: 650 } }, String(b.title ?? b.id)),
+                  h('div', { className: 'lc-meta' },
+                    [`${b.chapters ?? 0} 章`, `${Math.max(1, Math.round((b.words ?? 0) / 1000))} 千字`]
+                      .concat(String(b.genre ?? '').trim() === '' ? [] : [String(b.genre)])
+                      .join(' · ')),
+                  String(b.idea ?? '').trim() === '' ? null : h('div', { className: 'lc-meta lc-ellipsis' }, String(b.idea)),
+                ),
+              ))),
+          h('div', { className: 'lc-row', style: { marginTop: 8 } },
+            h(Btn, { size: 'sm', tone: 'import', icon: 'plus', onClick: () => onCreateBook?.() }, '新建一本书'),
+          ),
+        )
+      : null,
+
     // 酒馆门里先列「说过的场次」：这是回来的路。没有它，用户退出一场
     // 就再也找不回来——只能重新开一场，前面那些话看着像丢了。
     chatRows.length > 0
@@ -1724,10 +1858,16 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
           h('div', { className: 'lc-stack' }, worlds.map((w) => h(WorldRow, { key: w.path, world: w, onOpen: onOpenWorld, photo: avatars[w.id] }))),
         ),
 
-    proposals.length > 0
+    // 「还等着你看的建议」只在**它属于的那扇门**里出现。
+    //
+    // 以前这是个跨屏提醒：在酒馆里写着小说，头顶一直挂着「关于『妈妈』的建议」；
+    // 记录真人的时候又挂着小说角色的建议。建议本身没错，错在它不属于这一屏。
+    // 判据是：这条建议说的是谁——那个人有卡就按卡的 kind（虚构/现实），
+    // 没卡就按「还没建卡」算现实（绝大多数情况是给人建卡时读出来的）。
+    pendingProposals.length > 0
       ? h('div', null,
-          h(GroupTitle, { tone: 'analyze', icon: 'spark' }, `还等着你看的建议 · ${proposals.length}`),
-          h('div', { className: 'lc-stack' }, proposals.slice(0, 6).map((p) => h('button', {
+          h(GroupTitle, { tone: 'analyze', icon: 'spark' }, `还等着你看的建议 · ${pendingProposals.length}`),
+          h('div', { className: 'lc-stack' }, pendingProposals.slice(0, 6).map((p) => h('button', {
             key: p.json, className: 'lc-card-item', type: 'button',
             onClick: () => onProposal(p.json),
           },
@@ -1743,8 +1883,8 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
           ))),
           // 一次只摆 6 份。不说明的话，第 7 份起就永远看不见——
           // 用户会以为那些建议丢了。
-          proposals.length > 6
-            ? h('div', { className: 'lc-meta' }, `还有 ${proposals.length - 6} 份没列出来。处理掉上面任意一份，它就会顶上来。`)
+          pendingProposals.length > 6
+            ? h('div', { className: 'lc-meta' }, `还有 ${pendingProposals.length - 6} 份没列出来。处理掉上面任意一份，它就会顶上来。`)
             : null,
         )
       : null,
@@ -1951,6 +2091,254 @@ function WorldView({ world, listing, onOpenCard }) {
  *      不能因为这个丢掉；
  *   3. 退出就是退出，不弹「确定放弃吗」——每一轮都已经在文件里了。
  */
+/**
+ * 一本书：大纲 → 一章一章写 → 审。
+ *
+ * 这一屏是「写小说」那扇门真正干活的地方。三段对应三件事：
+ *   1. **先想清楚**：让 AI 把整本书的骨架搭出来，落成一份大纲；人能直接改。
+ *   2. **写这一章**：拿大纲里这一章那一句 + 上一章结尾 + 设定，让它写正文。
+ *   3. **挑毛病**：写完让它只挑问题、不夸，人照着改。
+ *
+ * 刻意不做的事：
+ *   - 不自动一章接一章往下写。写完一章就停下来等人看——一次生成十章的书
+ *     没人会读，也没人改得动。
+ *   - 不问「要不要继续」。按钮在那儿，要不要点是人自己的事。
+ */
+function BookView({ bookId, onBack, flash }) {
+  const [book, setBook] = useState(null)
+  const [outline, setOutline] = useState(null)
+  const [chapterIndex, setChapterIndex] = useState(0)
+  const [body, setBody] = useState('')
+  const [draft, setDraft] = useState(null)
+  const [review, setReview] = useState(null)
+  const [busy, setBusy] = useState('')
+  const [err, setErr] = useState(null)
+  const [ask, setAsk] = useState('')
+  const [editingOutline, setEditingOutline] = useState(false)
+  const [outlineText, setOutlineText] = useState('')
+
+  const load = async (want) => {
+    setErr(null)
+    try {
+      const r = await call('novel.get', { id: bookId })
+      if (r?.ok !== true) { setErr(r?.error ?? '这本书打不开'); return }
+      setBook(r)
+      const o = await call('novel.outline.get', { id: bookId })
+      if (o?.ok === true) { setOutline(o); setOutlineText(String(o.text ?? '')) }
+      // 默认打开：有章节就打开最后一章，没有就从第一章开始
+      const target = Number(want) > 0 ? Number(want) : (r.chapters.length === 0 ? 1 : r.chapters[r.chapters.length - 1].index)
+      setChapterIndex(target)
+      await openChapter(target)
+    } catch (e) { setErr(humanizeError(e)) }
+  }
+
+  const openChapter = async (index) => {
+    setErr(null); setReview(null); setDraft(null)
+    try {
+      const r = await call('novel.chapter.get', { id: bookId, index })
+      setBody(r?.ok === true ? String(r.body ?? '') : '')
+    } catch (e) { setErr(humanizeError(e)) }
+  }
+
+  useEffect(() => { load(0) }, [bookId])
+
+  const doPlan = async () => {
+    setBusy('plan'); setErr(null)
+    try {
+      const r = await call('novel.outline.draft', { id: bookId, chapters: 12 })
+      if (r?.ok !== true) { setErr(r?.error ?? '这次没想出大纲'); return }
+      setOutline(r); setOutlineText(String(r.text ?? ''))
+      flash?.('大纲想好了，你可以直接改')
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  const saveOutline = async () => {
+    setBusy('outline'); setErr(null)
+    try {
+      const r = await call('novel.outline.save', { id: bookId, text: outlineText })
+      if (r?.ok !== true) { setErr(r?.error ?? '大纲没存上'); return }
+      setOutline({ ...(outline ?? {}), ...r, text: outlineText })
+      setEditingOutline(false)
+      flash?.('大纲存好了')
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  const doWrite = async () => {
+    setBusy('write'); setErr(null); setReview(null)
+    try {
+      const r = await call('novel.chapter.draft', { id: bookId, index: chapterIndex, ask })
+      if (r?.ok !== true) { setErr(r?.error ?? '这次没写出来'); return }
+      setDraft(String(r.draft ?? ''))
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  const acceptDraft = async () => {
+    if (draft === null) return
+    setBusy('save'); setErr(null)
+    try {
+      const merged = body.trim() === '' ? draft : `${body.trim()}\n\n${draft}`
+      const r = await call('novel.chapter.save', { id: bookId, index: chapterIndex, body: merged })
+      if (r?.ok !== true) { setErr(r?.error ?? '没存上'); return }
+      setBody(merged); setDraft(null)
+      flash?.(`第 ${chapterIndex} 章存好了`)
+      await load(chapterIndex)
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  const saveBody = async () => {
+    setBusy('save'); setErr(null)
+    try {
+      const r = await call('novel.chapter.save', { id: bookId, index: chapterIndex, body })
+      if (r?.ok !== true) { setErr(r?.error ?? '没存上'); return }
+      flash?.(`第 ${chapterIndex} 章存好了`)
+      await load(chapterIndex)
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  const doReview = async () => {
+    setBusy('review'); setErr(null)
+    try {
+      const r = await call('novel.chapter.review', { id: bookId, index: chapterIndex })
+      if (r?.ok !== true) { setErr(r?.error ?? '这次没审成'); return }
+      setReview(String(r.review ?? ''))
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  if (book === null) {
+    return h('div', { className: 'lc-pad lc-stack' },
+      h(Btn, { size: 'sm', icon: 'back', onClick: onBack }, '回书架'),
+      err === null ? h(Spinner) : h(Note, { tone: 'err', icon: 'warning' }, err),
+    )
+  }
+
+  const chapters = Array.isArray(book.chapters) ? book.chapters : []
+  const plan = outline?.ok === true ? (outline.chapters ?? []) : []
+  const planItem = plan.find((c) => c.index === chapterIndex)
+  const title = String(book.data?.title ?? bookId)
+
+  return h('div', { className: 'lc-pad lc-stack', style: { gap: 12 } },
+    h('div', { className: 'lc-row' },
+      h(Btn, { size: 'sm', icon: 'back', onClick: onBack }, '回书架'),
+      h('div', { className: 'lc-grow lc-ellipsis', style: { fontWeight: 700, fontSize: 16.5 } }, `《${title}》`),
+      h('span', { className: 'lc-meta' }, `${chapters.length} 章`),
+    ),
+    String(book.idea ?? '').trim() === '' ? null : h('div', { className: 'lc-meta', style: { lineHeight: 1.7 } }, String(book.idea).trim()),
+
+    // ── 第一段：规划 ──
+    h('div', { className: 'lc-sec' },
+      h('div', { className: 'lc-row' },
+        h('div', { className: 'lc-grow' }, h('span', { style: { fontWeight: 650 } }, '① 先想清楚这本书怎么走')),
+        h(Btn, { size: 'sm', tone: 'import', icon: 'spark', disabled: busy !== '', onClick: doPlan },
+          busy === 'plan' ? '正在想…' : (plan.length === 0 ? '让 AI 想大纲' : '重新想一版')),
+        plan.length === 0 ? null : h(Btn, { size: 'sm', ghost: true, icon: 'edit', onClick: () => setEditingOutline(!editingOutline) },
+          editingOutline ? '收起' : '自己改'),
+      ),
+      plan.length === 0
+        ? h('div', { className: 'lc-meta', style: { marginTop: 6, lineHeight: 1.7 } },
+            '先让它把整本书的骨架搭出来：主线、每章要发生什么、结局。',
+            h('br'),
+            '搭完你能直接改——改一行，后面写出来的东西就跟着变。')
+        : h('div', { className: 'lc-stack', style: { marginTop: 6 } },
+            outline.theme === '' ? null : h('div', { className: 'lc-meta' }, `主线：${outline.theme}`),
+            h('div', { className: 'lc-stack', style: { gap: 2 } }, plan.map((c) => h('div', {
+              key: c.index,
+              className: 'lc-meta',
+              style: {
+                padding: '3px 6px', borderRadius: 6, cursor: 'pointer', lineHeight: 1.6,
+                background: c.index === chapterIndex ? 'var(--lc-accent-soft)' : 'transparent',
+                color: c.index === chapterIndex ? 'var(--lc-accent)' : undefined,
+              },
+              onClick: () => { setChapterIndex(c.index); openChapter(c.index) },
+            }, `第 ${c.index} 章 · ${c.plan}`))),
+            outline.ending === '' ? null : h('div', { className: 'lc-meta' }, `结局：${outline.ending}`),
+          ),
+      editingOutline
+        ? h('div', { className: 'lc-stack', style: { marginTop: 6 } },
+            h('textarea', {
+              className: 'lc-textarea', value: outlineText, style: { minHeight: 180 },
+              onChange: (e) => setOutlineText(e.target.value), spellCheck: false,
+            }),
+            h('div', { className: 'lc-row' },
+              h(Btn, { size: 'sm', tone: 'primary', icon: 'check', disabled: busy !== '', onClick: saveOutline }, busy === 'outline' ? '正在存…' : '存好'),
+              h('div', { className: 'lc-meta' }, '每行一章，写清这一章要发生什么。'),
+            ),
+          )
+        : null,
+    ),
+
+    // ── 第二段：写这一章 ──
+    h('div', { className: 'lc-sec' },
+      h('div', { className: 'lc-row' },
+        h('div', { className: 'lc-grow' }, h('span', { style: { fontWeight: 650 } }, `② 写第 ${chapterIndex} 章`)),
+        h(Btn, { size: 'sm', tone: 'analyze', icon: 'spark', disabled: busy !== '', onClick: doWrite },
+          busy === 'write' ? '正在写…' : '让 AI 写这一章'),
+      ),
+      planItem === undefined
+        ? h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '大纲里还没有这一章。先让 AI 想一版大纲，或者直接写也行。')
+        : h('div', { className: 'lc-meta', style: { marginTop: 4, lineHeight: 1.6 } }, `这一章要写：${planItem.plan}`),
+      h('div', { className: 'lc-row', style: { marginTop: 6 } },
+        h('input', {
+          className: 'lc-input', value: ask, spellCheck: false,
+          placeholder: '（可选）这一章你想强调什么？比如「写他们吵架那场」',
+          onChange: (e) => setAsk(e.target.value),
+        }),
+      ),
+      draft === null
+        ? null
+        : h('div', { className: 'lc-stack', style: { marginTop: 8 } },
+            h(Note, { tone: 'ok', icon: 'spark' }, '写好了。看一眼，满意就收下，不满意可以不收。'),
+            h('div', {
+              style: {
+                whiteSpace: 'pre-wrap', lineHeight: 1.85, fontSize: 14.5,
+                padding: '10px 12px', borderRadius: 10,
+                background: 'var(--lc-analyze-soft)', border: '1px solid var(--lc-analyze)',
+              },
+            }, draft),
+            h('div', { className: 'lc-row' },
+              h(Btn, { size: 'sm', tone: 'primary', icon: 'check', disabled: busy !== '', onClick: acceptDraft },
+                busy === 'save' ? '正在存…' : '收下，写进这一章'),
+              h(Btn, { size: 'sm', ghost: true, icon: 'trash', disabled: busy !== '', onClick: () => setDraft(null) }, '不要这段'),
+            ),
+          ),
+    ),
+
+    // ── 正文 ──
+    h('div', { className: 'lc-sec' },
+      h('div', { className: 'lc-row' },
+        h('div', { className: 'lc-grow' }, h('span', { style: { fontWeight: 650 } }, '正文')),
+        h('span', { className: 'lc-meta' }, `${body.length} 字`),
+      ),
+      h('textarea', {
+        className: 'lc-textarea',
+        value: body,
+        spellCheck: false,
+        placeholder: '这一章还空着。让 AI 写一段，或者自己动手。',
+        style: { minHeight: 260, marginTop: 6, lineHeight: 1.85 },
+        onChange: (e) => setBody(e.target.value),
+      }),
+      h('div', { className: 'lc-row' },
+        h(Btn, { size: 'sm', tone: 'primary', icon: 'check', disabled: busy !== '', onClick: saveBody }, busy === 'save' ? '正在存…' : '存好这一章'),
+        h(Btn, { size: 'sm', icon: 'doctor', disabled: busy !== '' || body.trim() === '', onClick: doReview },
+          busy === 'review' ? '正在挑毛病…' : '挑挑毛病'),
+        h('div', { className: 'lc-grow' }),
+        h(Btn, { size: 'sm', ghost: true, icon: 'plus', onClick: async () => {
+          const next = chapterIndex + 1
+          setChapterIndex(next)
+          await openChapter(next)
+        } }, `写第 ${chapterIndex + 1} 章`),
+      ),
+      review === null
+        ? null
+        : h('div', { className: 'lc-stack', style: { marginTop: 8 } },
+            h(Note, { tone: 'warn', icon: 'warning' }, '它挑出来的问题（不是夸奖，也不用全听）'),
+            h('div', { style: { whiteSpace: 'pre-wrap', lineHeight: 1.8, fontSize: 14 } }, review),
+          ),
+    ),
+
+    err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
+  )
+}
+
 function TavernView({ chat, onChat, onBack }) {
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)

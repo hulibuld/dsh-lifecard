@@ -1706,7 +1706,10 @@ for (const [label, tree] of [
   // 门本身是 3 块；里面的元素（图标/标题/说明/推门）也带 flex，所以只数 ≥3
   const doorWidths = (doorJson.match(/"flex":"1 1 30%"/g) ?? []).length
   t('每扇门各自平分宽度（至少三扇）', doorWidths >= 3, doorWidths)
-  t('每扇门是竖长的（有最低高度，不是一条横栏）', (doorJson.match(/"minHeight":24[0-9]/g) ?? []).length >= 3 && doorJson.includes('"minHeight":260'), doorJson.slice(0, 200))
+  t('每扇门是竖长的（有最低高度，不是一条横栏）', (doorJson.match(/"minHeight":2[0-9][0-9]/g) ?? []).length >= 3, (doorJson.match(/"minHeight":\d+/g) ?? []).slice(0, 6))
+  t('门有门楣（顶上一道色带）', doorJson.includes('"height":6'), '')
+  t('门有门槛（底下写着推门进去）', doorText.includes('推门进去'), '')
+  t('门有把手', doorJson.includes('"borderRadius":999') && doorJson.includes('"width":7'), '')
   t('门里竖着排（图标在上、说明在中、推门在底）', doorJson.includes('"flexDirection":"column"') && doorJson.includes('"alignItems":"center"'), doorJson.slice(0, 160))
   t('整屏高度被占满', doorJson.includes('"minHeight":"100%"'), doorJson.slice(0, 160))
 }

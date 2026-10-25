@@ -145,7 +145,7 @@ function renderRoot(presets = {}) {
 // 根组件的槽：0 view / 1 state / 2 listing / 3 busy / 4 error / 5 toast /
 // 6 activeCard / 7 proposal / 8 doctor / 9 interviewFor / 10 showMore /
 // 11 activeWorld / 12 pendingAbout / 13 introSeen / 14 materialFor / 15 ref /
-// 16 chat / 17 chats / 23 door（实测见文件顶注释）
+// 16 chat / 17 chats / 24 door / 25 activeBook / 26 books（实测，每次加 state 都要重探）
 const base = (view, extra = {}) => ({ 0: view, 1: STATE, 2: LISTING, 3: '', 4: null, 5: null, 6: null, 7: null, 8: null, 9: null, 10: false, 11: null, 12: '', 13: true, 14: null, ...extra })
 
 console.log('\n=== 1. 点哪扇门，「聊着建」就说哪扇门的话 ===')
@@ -162,7 +162,7 @@ for (const [doorLabel, doorId, expectWord, forbidWord] of [
   t(`点「${doorLabel}」进到那一屏`, viewAfterDoor === (doorId === 'real' ? 'home' : doorId), String(viewAfterDoor))
 
   // ② 在那一扇门的首页点「聊着建」（酒馆那扇门是「立一个人」，写小说也是）
-  const home = renderRoot({ ...base(viewAfterDoor), 23: doorId })
+  const home = renderRoot({ ...base(viewAfterDoor), 24: doorId })
   const wanted = doorId === 'real' ? '陪我聊聊' : (doorId === 'tavern' ? '聊着立一个能演的角色' : '聊着立一个小说角色')
   const clicked = clickButtonWith(home, wanted)
   const viewAfterClick = hookStore[0]
@@ -170,7 +170,7 @@ for (const [doorLabel, doorId, expectWord, forbidWord] of [
   t(`点完进到聊着建那一屏（${doorLabel}）`, viewAfterClick === 'interview', String(viewAfterClick))
 
   // ③ 关键：这一屏说的话，是不是这一扇门的
-  const interview = renderRoot({ ...base('interview'), 23: doorId })
+  const interview = renderRoot({ ...base('interview'), 24: doorId })
   const words = textOf(interview)
   t(`「${doorLabel}」的聊着建说的是「${expectWord}」`, words.includes(expectWord), words.slice(0, 300))
   if (forbidWord !== null) {
@@ -182,7 +182,7 @@ console.log('\n=== 2. 门记住之后，进别的子页面也不丢 ===')
 {
   // 从酒馆门进「聊着建」，再进卡片页、分析页——门还是酒馆
   for (const view of ['interview', 'card', 'analyze', 'import', 'newCard']) {
-    const tree = renderRoot({ ...base(view), 23: 'tavern' })
+    const tree = renderRoot({ ...base(view), 24: 'tavern' })
     const json = JSON.stringify(seenProps.get('HomeView') ?? {})
     // 只有首页类视图才会渲染 HomeView；别的时候检查标题栏那句话
     if (view === 'interview') {
@@ -253,6 +253,50 @@ console.log('\n=== 4. 列表里能直接删卡（不用先进去滚到底）==='
   } finally {
     globalThis.fetch = realFetch
   }
+}
+
+console.log('\n=== 5. 「还等着你看的建议」只在它那扇门里提醒 ===')
+{
+  // 真事故（用户 2026-10-25 报）：在酒馆里写着小说，头顶一直挂着
+  // 「关于『妈妈』的建议」；记录真人的时候又挂着小说角色的建议。
+  const listing = {
+    ok: true, workspace: '/tmp/x', errors: [], materials: [], worlds: [], avatars: {},
+    cards: [
+      { id: 'mama', path: 'people/mama.card.md', name: '妈妈', kind: 'real', relation: '母亲', coverage: 60, tags: [] },
+      { id: 'lin', path: 'people/lin.card.md', name: '林小雨', kind: 'fictional', coverage: 40, tags: [] },
+    ],
+    proposals: [
+      { json: 'proposals/mama.json', about: '妈妈', accepted: 3, adopted: 0, rejected: 0, generated_at: '2026-10-25' },
+      { json: 'proposals/lin.json', about: '林小雨', accepted: 2, adopted: 0, rejected: 0, generated_at: '2026-10-25' },
+      { json: 'proposals/nobody.json', about: '还没有卡的人', accepted: 1, adopted: 0, rejected: 0, generated_at: '2026-10-25' },
+    ],
+  }
+  // 只截「还等着你看的建议」那一段：卡列表里出现虚构角色是正常的
+  // （真人那扇门也让人看见所有卡），要验的是**建议那一栏**有没有串门。
+  const proposalsPart = (text) => {
+    const i = text.indexOf('还等着你看的建议')
+    return i < 0 ? '' : text.slice(i)
+  }
+
+  // 现实那扇门（view=home）：只该看见妈妈 + 还没建卡的那个人
+  const real = textOf(renderRoot({ ...base('home'), 2: listing }))
+  const realP = proposalsPart(real)
+  t('现实门里有「还等着你看的建议」这一栏', realP !== '', real.slice(0, 200))
+  t('现实门里能看见「关于「妈妈」」', realP.includes('妈妈'), realP.slice(0, 200))
+  t('现实门里看不见虚构角色林小雨的建议', !realP.includes('林小雨'), realP.slice(0, 200))
+  t('现实门里能看见还没建卡那个人的建议（它也可能是真人）', realP.includes('还没有卡的人'), '')
+
+  // 写小说那扇门：只该看见林小雨
+  const novelDoor = textOf(renderRoot({ ...base('novel'), 2: listing, 24: 'novel' }))
+  const novelP = proposalsPart(novelDoor)
+  t('写小说门里能看见林小雨的建议', novelP.includes('林小雨'), novelP.slice(0, 200))
+  t('写小说门里看不见妈妈的建议', !novelP.includes('妈妈'), novelP.slice(0, 200))
+
+  // 酒馆那扇门：虚构角色照样算它这扇门的
+  const tavernDoor = textOf(renderRoot({ ...base('tavern'), 2: listing, 24: 'tavern' }))
+  const tavernP = proposalsPart(tavernDoor)
+  t('酒馆门里能看见虚构角色的建议', tavernP.includes('林小雨'), tavernP.slice(0, 200))
+  t('酒馆门里看不见真人的建议', !tavernP.includes('妈妈'), tavernP.slice(0, 200))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

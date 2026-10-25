@@ -26,6 +26,7 @@ import * as jobs from './jobs.js'
 import * as jobsStore from './jobs-store.js'
 import * as interview from './jobs-interview.js'
 import * as tavern from './tavern.js'
+import * as novel from './novel.js'
 export const name = 'dsh-lifecard'
 
 /** 需要宿主提供的服务。缺 webServer 就什么都不做（明确失败胜过静默半死）。 */
@@ -2437,7 +2438,292 @@ function buildApi(ctx, workspace, config, options) {
       if (id === '') return { ok: false, error: '这一场找不到了' }
       return await tavern.deleteChat(ws, id)
     },
+
+    // ── 写小说：一本书、一章一章 ─────────────────────────────────
+
+    /** 书架：所有书。 */
+    'novel.books': async (body) => {
+      const ws = await root(body)
+      return await novel.listBooks(ws)
+    },
+
+    /** 新开一本。 */
+    'novel.create': async (body) => {
+      const ws = await root(body)
+      return await novel.createBook(ws, {
+        title: body?.title,
+        genre: body?.genre,
+        idea: body?.idea,
+      })
+    },
+
+    /** 打开一本书（含章节清单）。 */
+    'novel.get': async (body) => {
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      return await novel.readBook(ws, id)
+    },
+
+    /** 改书的元信息（书名 / 题材 / 一句话）。 */
+    'novel.update': async (body) => {
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      return await novel.updateBook(ws, id, {
+        title: body?.title,
+        genre: body?.genre,
+        idea: body?.idea,
+      })
+    },
+
+    /** 这一章不要了。 */
+    'novel.chapter.delete': async (body) => {
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      return await novel.deleteChapter(ws, id, body?.index)
+    },
+
+    /** 整本书不要了。 */
+    'novel.delete': async (body) => {
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      return await novel.deleteBook(ws, id)
+    },
+
+    // ── 写小说的三段：规划 → 写章 → 审稿 ──────────────────────
+
+    /** 读大纲。 */
+    'novel.outline.get': async (body) => {
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      return await novel.readOutline(ws, id)
+    },
+
+    /** 自己写 / 改大纲（人也在这里改）。 */
+    'novel.outline.save': async (body) => {
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      return await novel.writeOutline(ws, id, String(body?.text ?? ''))
+    },
+
+    /**
+     * 让 AI 先把整本书的骨架搭出来（第一段：规划）。
+     *
+     * 只写进 outline.md，不动正文：这一步是「先想清楚」，用户看完能改，
+     * 改完再一章一章让它写。不落盘的话刷新一下就没了，白等一次模型。
+     */
+    'novel.outline.draft': async (body) => {
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      const book = await novel.readBook(ws, id)
+      if (book.ok !== true) return book
+      const worldNotes = []
+      const worldRel = typeof body?.world === 'string' ? body.world.trim() : ''
+      if (worldRel !== '') {
+        const world = await store.readCard(ws, worldRel)
+        if (world.ok === true) {
+          for (const entry of core.parseWorldEntries(world.sections)) {
+            const content = String(entry?.content ?? '').trim()
+            if (content !== '') worldNotes.push(content)
+          }
+        }
+      }
+      const cast = await gatherCast(ws, body?.cast)
+      const users = novel.buildOutlinePrompt({
+        title: String(book.data?.title ?? id),
+        genre: String(book.data?.genre ?? ''),
+        idea: String(book.idea ?? ''),
+        cast,
+        worldEntries: worldNotes,
+        chapters: Number(body?.chapters) || 12,
+        ask: body?.ask,
+      })
+      const called = await callModel(ctx, {
+        system: '你是一个会写长篇小说的人。你先想清楚整本书怎么走，再动手写。',
+        user: users,
+        model: body?.model,
+      })
+      if (called.ok !== true) return { ok: false, error: `这次没想出来：${called.error ?? '过一会儿再试一次'}` }
+      const text = String(called.text ?? '').trim()
+      if (text === '') return { ok: false, error: 'AI 这次没给出东西，再点一次试试。' }
+      const saved = await novel.writeOutline(ws, id, text)
+      if (saved.ok !== true) return saved
+      return { ok: true, text, ...novel.parseOutline(text), path: saved.path }
+    },
+
+    /**
+     * 审一章（第三段：审稿）。
+     *
+     * 只挑**具体能指出的问题**：哪里跳了、哪里人物不像、哪里在替读者总结。
+     * 不要它夸——「写得很好」这种话对写东西的人毫无用处。
+     */
+    'novel.chapter.review': async (body) => {
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      const book = await novel.readBook(ws, id)
+      if (book.ok !== true) return book
+      const index = Number(body?.index) || 0
+      const got = await novel.readChapter(ws, id, index)
+      if (got.ok !== true) return got
+      const bodyText = String(got.body ?? '').trim()
+      if (bodyText === '') return { ok: false, error: '这一章还是空的，没什么可审的。' }
+      const user = [
+        `下面是一本小说《${String(book.data?.title ?? id)}》的第 ${index} 章。`,
+        String(book.idea ?? '').trim() === '' ? '' : `这本书想讲的是：${String(book.idea).trim()}`,
+        '',
+        '【正文】',
+        bodyText.slice(0, 8000),
+        '',
+        '【怎么审】',
+        '只指出具体的问题，每条都要说清在哪一句、为什么是问题。按这个顺序：',
+        '1. 哪里读不懂 / 情节跳了（读者会卡住的地方）',
+        '2. 哪里人物不像（说话方式、做的事和前面的人设对不上）',
+        '3. 哪里在替读者总结（「这说明他很孤独」这类，应该把事写出来）',
+        '4. 哪里是空话、套话、可以整段删掉',
+        '',
+        '【别做的事】',
+        '- 不要夸。一句夸奖都不要。',
+        '- 不要整段重写、不要给「参考版本」。我要的是问题清单，不是替我写。',
+        '- 不要评论「主题」「深度」这种大词，只说字面上的问题。',
+        '',
+        '每条一行，开头写「问题：」，然后写「怎么改：」。最多 8 条，按严重程度排。',
+        '如果这一章确实没什么大问题，就只说一句「没看出硬伤，只有下面这几处小地方」。',
+      ].filter((x) => x !== '').join('\n')
+      const called = await callModel(ctx, {
+        system: '你是一个挑毛病的编辑。你的任务不是说好话，是把问题指出来。',
+        user,
+        model: body?.model,
+      })
+      if (called.ok !== true) return { ok: false, error: `这次没审成：${called.error ?? '过一会儿再试一次'}` }
+      const review = String(called.text ?? '').trim()
+      if (review === '') return { ok: false, error: 'AI 这次没给出意见，再点一次试试。' }
+      return { ok: true, index, review }
+    },
+
+    /** 读一章。 */
+    'novel.chapter.get': async (body) => {
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      return await novel.readChapter(ws, id, body?.index)
+    },
+
+    /** 自己写（或改）一章，直接在编辑器里手写。 */
+    'novel.chapter.save': async (body) => {
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      return await novel.writeChapter(ws, id, body?.index, String(body?.body ?? ''))
+    },
+
+    /**
+     * 让 AI 接着写。
+     *
+     * 三样东西一起给它：这本书的设定、上一章的结尾、这一章已经写到哪。
+     * 少给一样它就会开始自己编——只给设定它不知道刚才发生了什么，
+     * 只给上一章它不知道这本书要往哪走。
+     */
+    'novel.chapter.draft': async (body) => {
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      const book = await novel.readBook(ws, id)
+      if (book.ok !== true) return book
+      const index = Number(body?.index) || (book.chapters.length === 0 ? 1 : book.chapters[book.chapters.length - 1].index)
+
+      // 这一章已经写成什么样（没有就是空的）
+      let currentBody = ''
+      const got = await novel.readChapter(ws, id, index)
+      if (got.ok === true) currentBody = String(got.body ?? '')
+
+      // 上一章的结尾
+      let previousTail = ''
+      const chapters = book.chapters.filter((c) => c.index < index)
+      if (chapters.length > 0) {
+        const prev = await novel.readChapter(ws, id, chapters[chapters.length - 1].index)
+        if (prev.ok === true) previousTail = novel.tailOf(prev.body)
+      }
+
+      // 世界设定（写小说时全量给，不像酒馆那样按关键词挑——写作需要知道全貌）
+      const worldNotes = []
+      const worldRel = typeof body?.world === 'string' && body.world.trim() !== '' ? body.world.trim() : ''
+      if (worldRel !== '') {
+        const world = await store.readCard(ws, worldRel)
+        if (world.ok === true) {
+          const entries = core.parseWorldEntries(world.sections)
+          for (const entry of entries) {
+            const content = String(entry?.content ?? '').trim()
+            if (content !== '') worldNotes.push(content)
+          }
+        }
+      }
+
+      // 出场的人（这本书挂的角色卡）
+      const cast = await gatherCast(ws, body?.cast)
+
+      // 大纲：写第几章要对着计划写，不然一章一章会拖成流水账
+      const outline = await novel.readOutline(ws, id)
+      const outlineText = outline.ok === true && outline.text !== '' ? outline.text : ''
+      const planItem = outline.ok === true ? (outline.chapters ?? []).find((c) => c.index === index) : undefined
+      const system = '你是一个写小说的人。你的任务是把故事写下去，不是解释、不是评论、不是总结。'
+      const user = novel.buildChapterPrompt({
+        title: String(book.data?.title ?? id),
+        idea: String(book.idea ?? ''),
+        genre: String(book.data?.genre ?? ''),
+        previousTail,
+        currentBody: String(currentBody ?? '').slice(-2000),
+        ask: body?.ask,
+        worldEntries: worldNotes,
+        cast,
+        outline: outlineText,
+        chapterPlan: planItem === undefined ? '' : planItem.plan,
+      })
+      const called = await callModel(ctx, { system, user, model: body?.model })
+      if (called.ok !== true) {
+        return { ok: false, error: `这次没写出来：${called.error ?? '过一会儿再试一次'}`, index }
+      }
+      const draft = String(called.text ?? '').trim()
+      if (draft === '') return { ok: false, error: 'AI 这次没写出东西来，再点一次试试。', index }
+      return {
+        ok: true,
+        index,
+        draft,
+        // 不直接落盘：写字的人要能先看、能改、能只取一半。落盘由 chapter.save 做。
+        hasCurrent: String(currentBody).trim() !== '',
+        usedWorld: worldNotes.length,
+        usedCast: cast.length,
+      }
+    },
   }
+}
+
+/**
+ * 把「这本书挂的几张角色卡」收成几段人设。
+ *
+ * 一本书可以挂好几张卡（主角、对手、配角）。写某一章的时候把它们一起给模型，
+ * 它才不会把「说话很冲的那个人」写成温和的——那是长篇最容易崩的地方。
+ * 每张卡只取前 500 字：卡可能写得很长，全贴会把大纲和上一章挤掉。
+ */
+async function gatherCast(ws, wants) {
+  const out = []
+  const list = Array.isArray(wants) ? wants.slice(0, 8) : []
+  for (const want of list) {
+    const rel = String(want ?? '').trim()
+    if (rel === '') continue
+    const card = await store.readCard(ws, rel)
+    if (card.ok !== true) continue
+    const persona = tavern.personaFromCard(card.data, card.sections)
+    if (persona.text === '') continue
+    out.push(`【${persona.name}】${persona.text.slice(0, 500)}`)
+  }
+  return out
 }
 
 /** 酒馆的时间戳：`2026-10-24 16:11`。本地时间，字典序就是时间序。 */
