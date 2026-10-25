@@ -11,8 +11,8 @@
 - 项目：`/Users/joyfon620/Documents/deepseek-harness/default-workspace/LifeCard/`
 - 是什么：DSH（DeepSeek Harness）的侧边栏插件，本地优先的人物档案库——把身边的人写成 Markdown+YAML 的「卡」，带关系网、题料、AI 抽取（**每条断言必须有原文引文**）、求职与模拟面试。
 - 代码在哪：全部在 `plugin/`。`plugin/lib/` 12 个模块（新增 `tavern.js` 387 行），`plugin/test/` 20 个文件。
-- 当前状态：`main` 分支，工作区干净，HEAD = `a12f9b7`，共 99 次提交。
-- 测试：全量 **1891 项**通过（19 个测试文件）；对一个真实运行的实例做端到端验收 **22 项全过**（`test/live.mjs`，含两次真模型调用：分析 + 酒馆里让 TA 回一句）。
+- 当前状态：`main` 分支，工作区干净，HEAD = `2e6bb25`，共 103 次提交。
+- 测试：全量 **1923 项**通过（20 个测试文件）；对一个真实运行的实例做端到端验收 **22 项全过**（`test/live.mjs`，含两次真模型调用：分析 + 酒馆里让 TA 回一句）。
 - 发布：**没有发到 GitHub，也不许由你发**（用户明确「不发，我自己发」）。`research/` 已被 `.gitignore` 排除（用户说「调研报告不要发」）。
 - 给朋友用的试用包：`dist/LifeCard-试用版.zip`（已拷到 `~/Desktop/`），里面有 `先看这里.md` 和 `install.command`。
 
@@ -23,7 +23,7 @@
 ```bash
 cd /Users/joyfon620/Documents/deepseek-harness/default-workspace/LifeCard/plugin
 
-# ① 全量单元/渲染测试。期望「合计 1891 项，全部通过。」
+# ① 全量单元/渲染测试。期望「合计 1923 项，全部通过。」
 node test/all.mjs
 
 # ② 端到端验收（打一个真实运行的 DSH 实例）。期望 15 passed, 0 failed。
@@ -238,6 +238,20 @@ const mode = view === VIEWS.novel ? 'novel' : (view === VIEWS.tavern || view ===
 变异验证过：把 `mode` 改回旧的 `: 'real'`，这个文件立刻红 5 条，失败文案正是用户看到的那句。
 
 注意根组件的 hook 槽位（实测 25 个）：0 view / 1 state / 2 listing / 3 busy / 4 error / 5 toast / 6 activeCard / 7 proposal / 8 doctor / 9 interviewFor / 10 showMore / 11 activeWorld / 12 pendingAbout / 13 introSeen / 14 materialFor / 15 ref / 16 chat / 17 chats / **23 door** / 18-22 是后续 effect 占的。`render-all.mjs` 的 `base()` 只预设到 10，其余靠默认。
+
+### 2026-10-25 上午这一段（`31eeac5` / `2e6bb25`，1891 → 1923 项）
+
+用户报了四件事：
+
+1. **「再加一条 / 再加一件」点了没反应** ✅ 修好。真因：空行是靠「值里带一个空串」占位的，而保存那层（`emit`）每次都会把空串过滤掉 → 下一次渲染又只剩一行。改成由组件自己用 `useState(extras)` 记「留几个空行」。
+   - 新测试 `plugin/test/editor-add-test.mjs`（12 项）。**为什么必须单独一个文件**：`render-all.mjs` 每次展开子组件都会清空 hook 状态（刻意设计，为了逐个视图独立渲染），跑不出「点一下 → 状态变 → 再渲染」这条链。这个文件用按组件名保留状态的迷你运行时。变异验证过：改回旧写法，它红 2 条（`{"before":1,"after":1}`）。
+2. **小说/酒馆角色也要能「导入文章让 AI 读」** ✅ 那条路本来就有（`import.text` → `analyze.run` → 提案 → 采纳），但入口被 `isReal &&` 挡住，只在真实人物那扇门里出现。现在三扇门都给，并且 `TextImport` 多了一个「这是要建成什么人：现实里的人 / 小说·角色」的选择，跟着 `analyze.run` 的 `kind` 一路传到采纳。
+3. **「我说一大段话，AI 帮我整理成人物卡」** ✅ 打通。以前 `store.applyProposal` 里有一句 `找不到 ${aboutId} 这张卡` 就直接失败，所以必须先手动建一张空卡。现在：卡不存在时按提案里的 `about` **现建一张**（`kind` 跟着提案走，虚构的不会建成真人）。为此 `saveProposal` 的 record 里补存了 `about.name/kind/world`（以前只有 `id`）。
+4. **界面太空、字太小、按钮太小** ✅ 全站字号放大一档（11.5→13.5、12.5→14.5、13.5→15.5、20→22 等，共 39 处），按钮 `padding` 6/10→9/14 且加 `min-height`，输入框加高到 40px、行高 1.6，行距 1.55→1.7，`.lc-pad` 12→14，`.lc-stack` gap 8→11。
+
+**还没做的两件（用户提过、这轮没排）**：
+- 酒馆/小说那两扇门里，让 AI 读完直接「按读出来的内容建一张角色卡」的一键流程（现在要经过提案面板勾选）。
+- 界面「显得满一点」只做了字号与间距，没动版式（比如首页仍是单列）。
 
 ## 6. 还没修的问题（本节已清空：上一轮的 5 条全修完，见第 5 节）
 
