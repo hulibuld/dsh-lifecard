@@ -8,7 +8,7 @@
 
 ## 0. 三十秒定位
 
-- 项目：`/Users/joyfon620/Documents/deepseek-harness/default-workspace/LifeCard/`
+- 项目：`<项目根>`（本机工作副本所在的位置；换机器时换成你的实际路径）
 - 是什么：DSH（DeepSeek Harness）的侧边栏插件，本地优先的人物档案库——把身边的人写成 Markdown+YAML 的「卡」，带关系网、题料、AI 抽取（**每条断言必须有原文引文**）、求职与模拟面试。
 - 代码在哪：全部在 `plugin/`。`plugin/lib/` 12 个模块（新增 `tavern.js` 387 行），`plugin/test/` 20 个文件。
 - 当前状态：`main` 分支，工作区干净，HEAD = `2e6bb25`，共 103 次提交。
@@ -21,7 +21,7 @@
 ## 1. 开工前必须跑的三条验证（全绿再动手）
 
 ```bash
-cd /Users/joyfon620/Documents/deepseek-harness/default-workspace/LifeCard/plugin
+cd <项目根>/plugin
 
 # ① 全量单元/渲染测试。期望「合计 1923 项，全部通过。」
 node test/all.mjs
