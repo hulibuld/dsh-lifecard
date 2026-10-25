@@ -1,6 +1,6 @@
 {
   "name": "dsh-lifecard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Life Cards — 把你认识的人和虚构角色写成档案。在对话里问出来，或导入酒馆角色卡；数据是你自己文件夹里的一组 Markdown 文件。",
   "type": "module",
   "icon": "icon.svg",
@@ -61,6 +61,14 @@
     "@deepseek-ai/schemastery": "^3.18.4"
   },
   "author": "Yuzhou (https://github.com/hulibuld)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hulibuld/dsh-lifecard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hulibuld/dsh-lifecard/issues"
+  },
+  "homepage": "https://github.com/hulibuld/dsh-lifecard#readme",
   "license": "MIT",
   "keywords": [
     "dsh-plugin",
