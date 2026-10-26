@@ -53,3 +53,19 @@ HANDOFF.md
 交接-给下一个AI.md
 策划书.md
 策划书-第二部分.md
+
+# 由 DSH 上传流程补充
+__pycache__/
+*.pyc
+.venv/
+.env
+.env.local
+.env.*.local
+# 交接文档：只留本地，不上传
+交接文档.md
+交接文档.txt
+交接文档-*.md
+交接文档_*.md
+交接文档 *.md
+交接文档*.bak
+HANDOFF.local.md
