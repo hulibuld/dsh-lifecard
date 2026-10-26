@@ -507,6 +507,28 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   const promiseTable = api.buildApi({ ...ctx, get: (n) => (n === 'llm' ? promiseLlm : undefined) }, async () => ws, { workspace: ws })
   const promised = await promiseTable['analyze.run']({ about: 'jia', name: '甲' })
   t('stream 给 Promise 时也跑得通', promised.ok === true, promised.error)
+
+  // 形状三：同一路流里先来一串 reasoning-delta（模型在「想」），再来正文。
+  // 真宿主就是这么发的。以前 collectStream 只看「有没有 .text」，
+  // 把「想」的那几千字一起拼进了回答 → JSON 前面挂满
+  // 「Thinking Process: …」→ 解析失败 → 用户点「开始读」等到五十秒后
+  // 收到一句「AI 这次没给出能用的结果」。
+  const thinkingLlm = {
+    listProviders: async () => [{ provider: 'raccoon', models: [{ id: 'sn-deepseek-v4-1-flash-1017' }] }],
+    listModels: async () => [],
+    stream: async () => (async function* () {
+      yield { type: 'reasoning-start' }
+      yield { type: 'reasoning-delta', text: 'Thinking Process:\n\n1. Analyze the request.\n' }
+      yield { type: 'reasoning-delta', text: '2. The material says he worked 37 years.\n' }
+      yield { type: 'reasoning-end' }
+      yield { type: 'text-delta', text: answer }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })(),
+  }
+  const thinkingTable = api.buildApi({ ...ctx, get: (n) => (n === 'llm' ? thinkingLlm : undefined) }, async () => ws, { workspace: ws })
+  const thought = await thinkingTable['analyze.run']({ about: 'jia', name: '甲' })
+  t('想的那一段不会被当成回答（分析照样能成）', thought.ok === true, thought.error)
+  t('回答里不夹着 Thinking Process', thought.ok === true && !String(thought.raw ?? '').includes('Thinking Process'), String(thought.raw ?? '').slice(0, 80))
 }
 
 // ── 酒馆里演的一场能变成小说的一章 ────────────────────────────

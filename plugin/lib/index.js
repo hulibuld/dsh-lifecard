@@ -511,6 +511,13 @@ async function collectStream(handle) {
   const eat = (chunk) => {
     if (chunk === null || chunk === undefined) return
     if (typeof chunk === 'string') { text += chunk; return }
+    // 模型「想」的那一段走的是另一条事件（实测：{ type: 'reasoning-delta', text }）。
+    // 它不是回答，也**不能**当成回答拼进来：拼进去之后 JSON 前面多出几千字
+    // 「Thinking Process: …」，解析必失败——「整理进卡里」于是等五十秒、
+    // 试两次、报「AI 这次没给出能用的结果」，用户看到的是一直转圈。
+    // 下面那些「只要是 .text 就收」的兜底分支会让它漏进来，所以必须先在
+    // 这里按类型挡掉。
+    if (typeof chunk.type === 'string' && /reasoning|thinking|analysis/i.test(chunk.type)) return
     // 真实的流事件形状（实测）：{ type: 'text-delta', index, text }
     // block-start / block-end / text-start / text-end / finish 都不带正文
     if (chunk.type === 'text-delta' && typeof chunk.text === 'string') { text += chunk.text; return }

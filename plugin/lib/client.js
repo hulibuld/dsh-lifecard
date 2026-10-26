@@ -5125,6 +5125,16 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
     call('concept.set', { concept: pending }).catch(() => {})
   }, [])
 
+  // 这一趟到底等了多久，明明白白数给人看。
+  // 只说「正在读…」的话，超过半分钟人就开始怀疑卡死，去点第二次；
+  // 两个请求叠在一起，后台更慢，看起来就更像卡死。
+  const [waited, setWaited] = useState(0)
+  useEffect(() => {
+    if (busy !== true) { setWaited(0); return undefined }
+    const timer = setInterval(() => setWaited((n) => n + 1), 1000)
+    return () => clearInterval(timer)
+  }, [busy])
+
   const flushConcept = async (value) => {
     const next = value ?? conceptDraft ?? concept
     setConceptDraft(null)
@@ -5163,6 +5173,11 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
       return next.length === materials.length ? [] : next
     })
   }
+
+  // 选了哪几份就按哪几份算字数：「一条都不勾 = 全读」。
+  const readChars = (chosen.length > 0 ? materials.filter((m) => chosen.includes(m.path)) : materials)
+    .reduce((sum, m) => sum + (Number(m.chars) || Number(m.size) || 0), 0)
+  const longRead = readChars > 20000
 
   const run = async () => {
     // 「这一趟等了多久」从这里算。以前写成 startedAt 却没有声明，后台一连不上
@@ -5305,6 +5320,14 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
       h(Btn, { tone: 'analyze', big: true, onClick: run, disabled: busy || about === '' || materials.length === 0, icon: 'spark' }, busy ? '正在读…' : '开始读'),
       busy ? h(Spinner) : null,
     ),
+    // 这一趟是真等：模型先在心里想一遍再写（实测小材料也要四十秒上下，
+    // 长材料一分多钟）。不给时间预期的话，转圈超过半分钟人就会以为卡死了、
+    // 去点第二次，两个请求叠在一起更慢。
+    busy
+      ? h('div', { className: 'lc-meta' }, longRead
+          ? `材料有点长（约 ${Math.round(readChars / 1000)} 千字），这一趟可能一两分钟。已经等了 ${waited} 秒，别关这一页，等它说完。`
+          : `它在先想一遍再写，一般要半分钟到一分钟。已经等了 ${waited} 秒，别关这一页，等它说完。`)
+      : null,
 
     result === null ? null : h('div', null,
       h(Note, { tone: 'ok', icon: 'check' },

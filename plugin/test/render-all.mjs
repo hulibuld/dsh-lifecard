@@ -2013,5 +2013,29 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
 
 }
 
+// 2026-10-26：「开始读」一直转圈，用户以为卡死了。
+// 这一趟是真的慢（模型先想一遍再写），所以必须把时间预期说出来，
+// 长材料还要再说清楚会更慢——否则转圈半分钟人就点第二次了。
+{
+  const view = seen.get('AnalyzeView')
+  const LIST = { ok: true, workspace: '/tmp/x', cards: [{ id: 'mama', path: 'cards/mama.card.md', name: '妈妈', kind: 'real', coverage: 62 }], materials: [{ path: 'materials/a.md', name: 'a.md', chars: 800 }], errors: [], proposals: [] }
+  const props = { listing: LIST, state: { ok: true, workspace: '/tmp/x', exists: true }, presetAbout: { id: 'mama', name: '妈妈' }, presetMaterials: null, flash: () => {}, onProposal: () => {}, onBack: () => {}, onNeedMaterial: () => {} }
+
+  // 忙：按钮字变了，并且有一句时间预期
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) })
+  let tree = renderOne('分析（正在读）', view, props, { 0: 'mama', 2: true, 3: null, 4: null, 10: null })
+  let text = textOf(expand(tree))
+  t('忙着的时候按钮上写着「正在读」', text.includes('正在读'))
+  t('忙着的时候说清要等多久，别让人以为卡死了', text.includes('半分钟到一分钟'))
+  t('还没开始读时不说这句', !textOf(expand(renderOne('分析（没在读）', view, props, { 0: 'mama', 2: false, 3: null, 4: null, 10: null }))).includes('半分钟到一分钟'))
+
+  // 长材料：说清会更慢，并给出大概多少千字
+  const BIG = { ...LIST, materials: [{ path: 'materials/big.md', name: 'big.md', chars: 45263 }] }
+  tree = renderOne('分析（长材料）', view, { ...props, listing: BIG }, { 0: 'mama', 2: true, 3: null, 4: null, 10: null })
+  text = textOf(expand(tree))
+  t('材料长的时候说清会更慢', text.includes('一两分钟'))
+  t('长材料时把字数说出来', text.includes('45 千字') || text.includes('45千字'))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
