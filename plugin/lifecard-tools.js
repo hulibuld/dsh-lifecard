@@ -16,10 +16,34 @@ import os from 'node:os'
 
 import * as core from './lib/core.js'
 import * as store from './lib/store.js'
-import { workspacePointerFile, recallWorkspace, defaultWorkspace } from './lib/index.js'
 
-export const name = 'dsh-lifecard-tools'
-export const inject = ['tools']
+// 这几个和 lib/index.js 里是同一套约定。故意在这里重写一遍、不从 index.js
+// import：工具是被主插件在 apply 里调起来的，反过来 import index.js 会绕成
+// 循环依赖，宿主加载时可能拿到半截模块。
+function dshHome() {
+  const fromEnv = process.env.DSH_HOME
+  if (typeof fromEnv === 'string' && fromEnv.trim() !== '') return path.resolve(fromEnv)
+  return path.join(os.homedir(), '.dsh')
+}
+
+function pointerFile() {
+  return path.join(dshHome(), 'plugin-data', 'dsh-lifecard.json')
+}
+
+async function recalledWorkspace() {
+  try {
+    const { readFile } = await import('node:fs/promises')
+    const raw = await readFile(pointerFile(), 'utf8')
+    const parsed = JSON.parse(raw)
+    return typeof parsed?.workspace === 'string' && parsed.workspace.trim() !== '' ? path.resolve(parsed.workspace) : ''
+  } catch {
+    return ''
+  }
+}
+
+function defaultRoot() {
+  return path.join(os.homedir(), 'LifeCard')
+}
 
 const textOutput = {
   schema: {
@@ -48,10 +72,10 @@ async function resolveRoot(config) {
   const configured = configuredWorkspace(config)
   if (configured !== '') return configured
   try {
-    const recalled = await recallWorkspace(workspacePointerFile())
+    const recalled = await recalledWorkspace()
     if (typeof recalled === 'string' && recalled !== '') return recalled
   } catch { /* 读不到指针就退回默认位置 */ }
-  return defaultWorkspace()
+  return defaultRoot()
 }
 
 const KIND_LABEL = { real: '现实里的人', fictional: '虚构角色', self: '自己', hybrid: '半真半虚构' }
@@ -105,7 +129,14 @@ function entriesToText(entries) {
   }).join('\n')
 }
 
-export function apply(ctx, config) {
+/**
+ * 把 5 个只读工具挂到 ctx.tools 上。
+ *
+ * 由 lib/index.js 的 apply 在 tools 服务就绪后调用（宿主那一层注册一次），
+ * 所以不只是 LC 三个预设，任何预设里都能调。
+ */
+export function registerTools(ctx, config) {
+  if (ctx?.tools?.register === undefined) return false
   /** 统一注册：把「字符串或抛错」变成模型看得懂的文本。 */
   function register(toolName, description, properties, required, run) {
     ctx.tools.register({
@@ -270,4 +301,5 @@ export function apply(ctx, config) {
       return `《${String(args.world)}》里的条目：\n${entriesToText(entries)}`
     },
   )
+  return true
 }

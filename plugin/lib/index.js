@@ -29,6 +29,8 @@ import * as interview from './jobs-interview.js'
 // 用「用到才加载」而不是文件顶上的静态 import —— 静态 import 一个不存在的
 // 文件会让整个插件起不来，那就不是「能删」而是「删了就全废」。
 // 删掉对应文件之后，只有那个功能报「这个功能没装」，别的照常。
+import * as lifecardTools from '../lifecard-tools.js'
+
 let tavern = null
 let novel = null
 let presets = null
@@ -3604,6 +3606,20 @@ export function apply(ctx, config) {
   })
 
   registerInterviewSkill(ctx)
+
+  // 把人物卡、世界书交给模型的那几个只读工具。挂在宿主这一层，所以不只是
+  // 「LC 酒馆 / LC 小说 / LC 现实」三个预设，任何预览里都能调。
+  // 用 ctx.inject 等 tools 服务就绪：apply 跑的时候它可能还没起来，
+  // 直接 ctx.get('tools') 会拿到 undefined，工具就静默少了。
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['tools'], (toolCtx) => {
+      try {
+        lifecardTools.registerTools(toolCtx, settings)
+      } catch (error) {
+        console.error('[lifecard] 只读工具没挂上：', error)
+      }
+    })
+  }
 
   ctx.effect(
     () => ctx.webServer.register({

@@ -12,9 +12,6 @@
     - id: lifecard
       name: 'dsh-lifecard'
 
-    - id: lifecard-tools
-      name: 'dsh-lifecard/lifecard-tools.js'
-
     # ── LC 酒馆：拿一张卡和它的世界书演一段 ──────────────────────────
     - id: preset-lc-tavern
       name: '@deepseek-ai/dsh-agent-preset'
@@ -46,9 +43,6 @@
                 - 用户要跳出角色谈事情时，先应一声，再以你自己的身份说，说完可以问要不要接着演。
               complete: true
               includeRuntimeContext: false
-
-          - id: lifecard-tools
-            name: 'dsh-lifecard/lifecard-tools.js'
 
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
@@ -89,9 +83,6 @@
               complete: true
               includeRuntimeContext: false
 
-          - id: lifecard-tools
-            name: 'dsh-lifecard/lifecard-tools.js'
-
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
 
@@ -128,9 +119,6 @@
                 - 给完一段就停，问一句要不要接着做下一段，不要一次把整份东西都铺开。
               complete: true
               includeRuntimeContext: false
-
-          - id: lifecard-tools
-            name: 'dsh-lifecard/lifecard-tools.js'
 
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'

@@ -7,7 +7,7 @@ import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-import * as tools from '../lifecard-tools.js'
+import { registerTools } from '../lifecard-tools.js'
 import * as store from '../lib/store.js'
 
 let pass = 0, fail = 0
@@ -53,7 +53,7 @@ await seed()
 
 /** 假装是宿主：把 ctx.tools.register 收下来，稍后直接调。 */
 const registered = new Map()
-tools.apply({ tools: { register: (def) => { registered.set(def.name, def) } } }, { workspace: root })
+registerTools({ tools: { register: (def) => { registered.set(def.name, def) } } }, { workspace: root })
 
 console.log('\n=== 1. 五个工具都注册上了 ===')
 for (const name of ['lifecard_cards', 'lifecard_card', 'lifecard_default', 'lifecard_roleplay', 'lifecard_world']) {
@@ -129,7 +129,7 @@ console.log('\n=== 6. lifecard_world：条目和触发词 ===')
 console.log('\n=== 7. 环境不对时也不炸 ===')
 {
   const empty = new Map()
-  tools.apply({ tools: { register: (def) => { empty.set(def.name, def) } } }, { workspace: path.join(root, 'nope') })
+  registerTools({ tools: { register: (def) => { empty.set(def.name, def) } } }, { workspace: path.join(root, 'nope') })
   const out = await empty.get('lifecard_cards').execute({})
   t('工作区不存在时给一句话，不是异常', typeof out?.text === 'string' && out.text.length > 0, out)
 }
