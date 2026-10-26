@@ -979,6 +979,35 @@ function buildApi(ctx, workspace, config, options) {
     },
 
     /** 看某张卡以前的样子（快照在每次保存时自动留，只是以前没露出来）。 */
+    // 三扇门各自「现在用哪张卡」。存成 id，读的时候再按 id 找卡：
+    // 卡改名、换文件夹都不会让这条记录失效。
+    'card.defaults.get': async (body) => {
+      const ws = await root(body)
+      const cfg = await store.readConfigState(ws)
+      const pins = cfg.config?.default_cards ?? {}
+      return {
+        ok: true,
+        cards: {
+          real: String(pins.real ?? ''),
+          tavern: String(pins.tavern ?? ''),
+          novel: String(pins.novel ?? ''),
+        },
+      }
+    },
+    'card.defaults.set': async (body) => {
+      const ws = await root(body)
+      const mode = String(body?.mode ?? '')
+      if (mode !== 'real' && mode !== 'tavern' && mode !== 'novel') {
+        return { ok: false, error: '不知道你说的是哪扇门。' }
+      }
+      const id = String(body?.id ?? '').trim()
+      const cfg = await store.readConfigState(ws)
+      if (cfg.ok !== true) return { ok: false, error: cfg.error ?? '这个文件夹里的设置读不出来。' }
+      const pins = { real: '', tavern: '', novel: '', ...(cfg.config?.default_cards ?? {}) }
+      pins[mode] = id
+      await store.writeConfig(ws, { default_cards: pins })
+      return { ok: true, cards: pins }
+    },
     'card.history': async (body) => {
       const ws = await root(body)
       const safe = await insideWorkspace(ws, body?.path)

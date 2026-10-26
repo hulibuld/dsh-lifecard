@@ -73,6 +73,9 @@ export function defaultConfig() {
     name: '我的档案',
     default_system: 'reality-interview',
     locale: 'zh',
+    // 三扇门各自「当前用哪张卡」。写小说、酒馆那两扇门里演谁 / 写谁，
+    // 不用每次都现挑；「真实人物记录」那扇门用它来决定首页先给谁。
+    default_cards: { real: '', tavern: '', novel: '' },
     created_at: new Date().toISOString(),
   }
 }

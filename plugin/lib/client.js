@@ -981,6 +981,30 @@ function LifeCardTab(props) {
   // 从列表点铅笔进来的：卡页一打开就是修改状态。放在最后一个 hook，
   // 免得把前面那些按槽位摆状态的测试全挤错位。
   const [cardEdit, setCardEdit] = useState(false)
+  // 三扇门各自「现在用哪张卡」：写进这个文件夹的 config.json，重启还在。
+  const [pins, setPins] = useState({ real: '', tavern: '', novel: '' })
+  const loadPins = useCallback(async () => {
+    try {
+      const r = await call('card.defaults.get', {})
+      if (r?.ok === true && r.cards !== undefined) setPins(r.cards)
+    } catch { /* 读不到就按「还没选」显示，不挡人用 */ }
+  }, [])
+
+  const pinCard = useCallback(async (mode, id) => {
+    const before = pins
+    setPins({ ...pins, [mode]: id })
+    try {
+      const r = await call('card.defaults.set', { mode, id })
+      if (r?.ok !== true) {
+        setPins(before)
+        setError(r?.error ?? '这个没存上，再点一次。')
+      }
+    } catch (e) {
+      setPins(before)
+      setError(humanizeError(e))
+    }
+  }, [pins])
+
 
   useEffect(() => {
     let gone = false
@@ -989,6 +1013,12 @@ function LifeCardTab(props) {
       .catch(() => { /* 问不到就按「都装了」显示，不影响用 */ })
     return () => { gone = true }
   }, [])
+  // 三扇门各自「现在用哪张卡」：进哪扇门就读一次，免得改完别处又盖回去。
+  useEffect(() => {
+    if (view !== VIEWS.doors && view !== VIEWS.home && view !== VIEWS.tavern && view !== VIEWS.novel) return
+    loadPins()
+  }, [view, loadPins])
+
   // 门自己的那两屏直接说了算；其余屏（聊着建、卡片、分析…）沿用上次选的门。
   const mode = (view === VIEWS.novel || view === VIEWS.book || view === VIEWS.game) ? 'novel' : (view === VIEWS.tavern || view === VIEWS.tavernChat) ? 'tavern' : door
   // 回到酒馆那两屏就重新拿一遍说过的场次：刚说完、刚删完再回来，
@@ -1284,7 +1314,7 @@ function LifeCardTab(props) {
         // 直接退回首页，用户点了没反应，还以为坏了。现在把清单单独摊开。
         return activeCard === null
           ? proposal === null
-            ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onEditCard: (c) => openCard(c, true), books, onOpenBook: openBook, onCreateBook: createBook })
+            ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook })
             : h('div', { className: 'lc-pad lc-stack' },
                 proposal.about === undefined || String(proposal.about).trim() === ''
                   ? null
@@ -1345,7 +1375,7 @@ function LifeCardTab(props) {
         })
       case VIEWS.world:
         return activeWorld === null
-          ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onEditCard: (c) => openCard(c, true), books, onOpenBook: openBook, onCreateBook: createBook })
+          ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook })
           : h(WorldView, {
               world: activeWorld,
               listing,
@@ -1370,7 +1400,7 @@ function LifeCardTab(props) {
       case VIEWS.jobs:
         return h(JobsView, { onBack: () => setView(VIEWS.home), flash })
       default:
-        return h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onEditCard: (c) => openCard(c, true), books, onOpenBook: openBook, onCreateBook: createBook })
+        return h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook })
     }
   }
 
@@ -1618,7 +1648,7 @@ function DoorsView({ onPick, state, features }) {
   )
 }
 
-function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial, chats, onOpenChat, onForkCard, onDeleteCard, onEditCard, books, onOpenBook, onCreateBook }) {
+function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial, chats, onOpenChat, onForkCard, onDeleteCard, onEditCard, books, onOpenBook, onCreateBook, pinId, onPickPin }) {
   // 这扇门是不是「真实人物记录」。写小说、酒馆那两扇门里不该出现
   // 「贴一份招聘说明」「从记忆里认人」这类动作——那是记录真人才用得上的。
   const isReal = mode !== 'novel' && mode !== 'tavern'
@@ -1896,6 +1926,28 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
                 : null,
             ))
       : null,
+
+    // 「现在用哪张」：写小说、酒馆那两扇门里演谁 / 写谁不用每次现挑；
+    // 真实人物那扇门用它决定首页先给谁。存在这个文件夹的 config.json 里。
+    (() => {
+      const pool = isReal ? byKind.real : byKind.fic
+      if (pool.length === 0) return null
+      const label = isReal ? '这扇门先看谁' : (mode === 'tavern' ? '现在演谁' : '现在写谁')
+      const chosen = String(pinId ?? '')
+      const hit = chosen === '' ? undefined : pool.find((c) => String(c.id ?? '') === chosen)
+      return h('div', { className: 'lc-row', style: { marginTop: 10, marginBottom: 2, gap: 8 } },
+        h('span', { className: 'lc-meta', style: { flexShrink: 0 } }, label),
+        h('select', {
+          className: 'lc-select',
+          value: chosen,
+          onChange: (e) => onPickPin?.(String(e?.target?.value ?? '')),
+        },
+          h('option', { value: '' }, '还没选（点这里挑一张）'),
+          pool.map((c) => h('option', { key: c.path, value: String(c.id ?? '') }, String(c.name ?? '(还没起名字)'))),
+        ),
+        hit === undefined ? null : h('span', { className: 'lc-meta' }, '说「演他」「写他」就默认用这张'),
+      )
+    })(),
 
     byKind.fic.length > 0
       ? h('div', null,

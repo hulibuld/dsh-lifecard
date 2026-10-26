@@ -355,6 +355,31 @@ console.log('\n=== 6b. 列表里能直接进修改（不用先点开再去卡页
   if (editBtn !== undefined) t('「改」按钮带名字，不会点错人', editBtn.props.title.includes('林小雨'), editBtn.props.title)
 }
 
+console.log('\n=== 6c. 每扇门都能先挑「现在用哪张卡」 ===')
+{
+  const LIST = {
+    ok: true, workspace: '/tmp/x', errors: [], materials: [], worlds: [], proposals: [], avatars: {},
+    cards: [
+      { id: 'lin', path: 'people/lin.card.md', name: '林小雨', kind: 'fictional', coverage: 40, tags: [] },
+      { id: 'mama', path: 'people/mama.card.md', name: '妈妈', kind: 'real', relation: '母亲', coverage: 62, tags: [] },
+    ],
+  }
+  const picks = []
+  for (const [view, doorId, want] of [['tavern', 'tavern', '现在演谁'], ['novel', 'novel', '现在写谁'], ['home', 'real', '这扇门先看谁']]) {
+    const tree = renderRoot({ ...base(view), 2: LIST, 24: doorId, 29: { real: '', tavern: 'lin', novel: '' } })
+    const words = textOf(tree)
+    t(`${doorId} 那扇门能挑「${want}」`, words.includes(want), words.slice(0, 260))
+    const sels = findNodes(tree, (n) => n.type === 'select')
+    const sel = sels.find((n) => n.props?.value === (doorId === 'tavern' ? 'lin' : ''))
+    t(`${doorId} 的下拉里选中了存下来的那张`, sel !== undefined, sels.map((n) => n.props?.value))
+    if (sel !== undefined && doorId === 'tavern') {
+      sel.props.onChange({ target: { value: '' } })
+      picks.push('cleared')
+      t('改一下会真的发出去', picks.length === 1)
+    }
+  }
+}
+
 console.log('\n=== 7. 卡列表里的百分比要说明白是什么 ===')
 {
   const LIST = {
