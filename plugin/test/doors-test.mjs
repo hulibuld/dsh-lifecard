@@ -299,5 +299,61 @@ console.log('\n=== 5. 「还等着你看的建议」只在它那扇门里提醒 
   t('酒馆门里看不见真人的建议', !tavernP.includes('妈妈'), tavernP.slice(0, 200))
 }
 
+console.log('\n=== 6. 酒馆门里点卡是「打开这张卡」，不是直接开演 ===')
+await (async () => {
+  // 用户报的：在「可以拿来演的角色」里点一张卡，直接就开了一场新对话，
+  // 想先看看这张卡上写了什么都做不到。
+  const LIN = { id: 'lin', path: 'people/lin.card.md', name: '林小雨', kind: 'fictional', coverage: 40, tags: [] }
+  const LIST = {
+    ok: true, workspace: '/tmp/x', errors: [], materials: [], worlds: [], proposals: [], avatars: {},
+    cards: [LIN, { id: 'mama', path: 'people/mama.card.md', name: '妈妈', kind: 'real', relation: '母亲', coverage: 62, tags: [] }],
+  }
+  const CARD = {
+    ok: true, path: 'people/lin.card.md',
+    data: { lifecard: '0.1', id: 'lin', kind: 'fictional', world: 'reality', name: '林小雨' },
+    sections: [{ title: '自述', body: '她在便利店上夜班。' }],
+    validation: { ok: true, issues: [] },
+    coverage: { percent: 40, filled: 3, empty: [{ label: '口癖' }], rows: [], sourceLevels: [], unmarkedRatio: 0 },
+  }
+  const calls = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), body: String(init?.body ?? '') })
+    return { ok: true, json: async () => ({ ok: true, exists: true, workspace: '/tmp/x', relations: [], cards: [], materials: [], worlds: [], proposals: [], errors: [], items: [] }) }
+  }
+  try {
+    const tavernHome = renderRoot({ ...base('tavern'), 2: LIST, 24: 'tavern', 17: [] })
+    const cardBtn = findNodes(tavernHome, (n) => n.type === 'button' && textOf(n).includes('林小雨'))[0]
+    t('酒馆门里看得到那张卡', cardBtn !== undefined, textOf(tavernHome).slice(0, 300))
+    if (cardBtn !== undefined) {
+      cardBtn.props.onClick()
+      // openCard 会先等 card.get 回来再切屏，所以要让出一轮
+      await new Promise((r) => setTimeout(r, 10))
+      t('点卡是打开这张卡', hookStore[0] === 'card', String(hookStore[0]))
+    }
+    t('点卡不会直接开一场新会话', calls.filter((c) => c.url.includes('tavern.start')).length === 0, calls.map((c) => c.url.split('/').pop()))
+
+    // 要演，由卡页上那个明确的按钮决定
+    const tavernCard = renderRoot({ ...base('card'), 2: LIST, 6: CARD, 24: 'tavern' })
+    t('酒馆门的卡页给「和 TA 演一段」', textOf(tavernCard).includes('和 TA 演一段'), textOf(tavernCard).slice(0, 300))
+    const realCardTree = renderRoot({ ...base('card'), 2: LIST, 6: CARD, 24: 'real' })
+    t('真实人物门的卡页不安这个按钮', !textOf(realCardTree).includes('和 TA 演一段'), textOf(realCardTree).slice(0, 300))
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})()
+
+console.log('\n=== 7. 卡列表里的百分比要说明白是什么 ===')
+{
+  const LIST = {
+    ok: true, workspace: '/tmp/x', errors: [], materials: [], worlds: [], proposals: [], avatars: {},
+    cards: [{ id: 'lin', path: 'people/lin.card.md', name: '林小雨', kind: 'fictional', coverage: 10, tags: [] }],
+  }
+  const words = textOf(renderRoot({ ...base('home'), 2: LIST }))
+  t('百分比旁边写着「写全」', words.includes('写全 10%'), words.slice(0, 200))
+  t('不再只甩一个裸数字', !/(^|[^全 ])10%/.test(words.replace('写全 10%', '')), words.slice(0, 200))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
+
 process.exit(fail === 0 ? 0 : 1)

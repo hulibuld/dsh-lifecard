@@ -1108,7 +1108,9 @@ function LifeCardTab(props) {
 
   // 首页那张卡片点下去之后去哪儿，由门决定：酒馆里是「聊一场」，
   // 别的两扇门里还是「打开这张卡」。
-  const openFromList = (card) => (mode === 'tavern' ? startTavern(card) : openCard(card))
+  // 以前在酒馆门里点一张卡就直接开演了，想先看看卡上写了什么都做不到。
+  // 现在点卡统一是「打开这张卡」，要不要演由卡页上的「和 TA 演一段」决定。
+  const openFromList = (card) => openCard(card)
   // 现实里的卡拿去演：先复制成一份独立的角色卡，再开聊。
   // 不复制直接用原来那张的话，演上十分钟，现实记录里的性格就被改写了。
   const forkForTavern = async (card) => {
@@ -1317,6 +1319,7 @@ function LifeCardTab(props) {
               onDeleted: async () => { setActiveCard(null); setView(VIEWS.home); await refresh() },
               onInterview: (preset) => { setInterviewFor(preset); setView(VIEWS.interview) },
               onAnalyze: () => { setInterviewFor({ id: activeCard.data?.id, name: activeCard.data?.name }); setView(VIEWS.analyze) },
+              onTavern: mode === 'tavern' ? (preset) => startTavern(preset) : undefined,
             })
       case VIEWS.newCard:
         return h(NewCardView, {
@@ -2022,7 +2025,9 @@ function CardRow({ card, onOpen, photo, onDelete }) {
       ),
       h('div', { className: 'lc-row', style: { marginTop: 3 } },
         h(Bar, { value: card.coverage }),
-        h('span', { className: 'lc-meta', style: { flexShrink: 0 } }, `${card.coverage}%`),
+        // 「10%」以前只有一个数字，没人知道是什么。它是这张卡写全了多少：
+        // 关系、性格、说话习惯、做过的事……这些栏里填了几样。
+        h('span', { className: 'lc-meta', style: { flexShrink: 0 }, title: '这张卡写全了多少：性格、说话习惯、做过的事这些填了几样' }, `写全 ${card.coverage}%`),
       ),
       (card.tags ?? []).length > 0
         ? h('div', { className: 'lc-wrap', style: { marginTop: 5 } }, card.tags.slice(0, 4).map((t) => h(Tag, { key: t }, t)))
@@ -3076,7 +3081,7 @@ function TavernView({ chat, onChat, onBack, flash }) {
   )
 }
 
-function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, onInterview, onAnalyze, worlds, onOpenWorld }) {
+function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, onInterview, onAnalyze, worlds, onOpenWorld, onTavern }) {
   const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState('')
   const [err, setErr] = useState(null)
@@ -3213,6 +3218,7 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
     h('div', { className: 'lc-row', style: { marginTop: 2 } },
       h(Btn, { tone: 'primary', icon: 'pencil', onClick: () => setEditing(true) }, '改这张卡'),
       h(Btn, { tone: 'interview', icon: 'chat', onClick: () => onInterview(buildPreset(data)) }, '接着聊'),
+      onTavern === undefined ? null : h(Btn, { tone: 'analyze', icon: 'mic', onClick: () => onTavern(buildPreset(data)) }, '和 TA 演一段'),
       h(Btn, { tone: 'analyze', size: 'sm', icon: 'spark', onClick: onAnalyze }, '读材料'),
     ),
 
