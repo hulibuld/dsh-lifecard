@@ -347,7 +347,7 @@ export function pickWorldEntries(entries, recentText) {
  * 刻意写死几句约束：不替对方说话、不跳出角色解释、不加括号注释。
  * 这三样是角色扮演最容易崩的地方，不写清楚模型每次都会犯。
  */
-export function buildRoleplaySystem({ cardName, persona, worldNotes, memory }) {
+export function buildRoleplaySystem({ cardName, persona, worldNotes, memory, preset }) {
   const name = cardName === '' ? '这个人' : cardName
   const lines = [
     `你正在演一个角色扮演对话。你只演「${name}」这一个人，对方是「我」。`,
@@ -376,6 +376,10 @@ export function buildRoleplaySystem({ cardName, persona, worldNotes, memory }) {
     '',
     '直接写你要说的话，不要写「' + name + '：」这样的前缀。',
   )
+  // 演法预设排在最后：它是「这一次想怎么演」，比上面那些通用约束更具体，
+  // 放前面会被一长串规则冲淡。
+  const flavour = String(preset ?? '').trim()
+  if (flavour !== '') lines.push('', '【这一次的演法】', flavour)
   return lines.join('\n')
 }
 
@@ -425,6 +429,56 @@ export function buildSummaryPrompt({ cardName, turns }) {
   return { system, user }
 }
 
+/**
+ * 「把这一场里最能代表 TA 的几句挑出来」要发给模型的话。
+ *
+ * 挑出来之后会写进这张卡的「对话示例」小节。这一小节是下次演 TA 时
+ * 最有效的材料之一：比「性格：沉默寡言」有用得多，因为它是真的话。
+ */
+export function buildExamplePrompt({ cardName, turns }) {
+  const name = cardName === '' ? '这个人' : cardName
+  const lines = []
+  for (const turn of Array.isArray(turns) ? turns : []) {
+    const who = String(turn?.who ?? '').trim()
+    const text = String(turn?.text ?? '').trim()
+    if (who === '' || text === '') continue
+    lines.push(`${who}：${text}`)
+  }
+  const system = [
+    `你要从一段对话里挑出最能代表「${name}」怎么说话的几句。`,
+    '挑的是**TA 说的话**，不是「我」说的。',
+    '挑四到八句。短句优先。要能看出这个人说话的节奏、用词习惯、回避什么、什么时候会突然多说两句。',
+    '每句原样抄下来，一个字都不要改，不要加解释，不要加编号。',
+    '一行一句，前面写「TA：」。挑不出来就只输出一个「无」。',
+  ].join('\n')
+  const user = `扮演的是「${name}」，对面是「我」。下面是这一段对话：\n\n${lines.join('\n')}\n\n请挑出最能代表 TA 说话方式的几句。`
+  return { system, user }
+}
+
+/**
+ * 把模型挑出来的那几行收干净。
+ *
+ * 它会不老实：加编号、加「TA：」以外的前缀、加解释、或者干脆用引号包起来。
+ * 这里只认「TA：」后面的内容，别的都丢掉；同一句重复的只留一次。
+ */
+export function cleanExamples(text, limit = 8) {
+  const out = []
+  const seen = new Set()
+  for (const raw of String(text ?? '').split(/\r?\n/)) {
+    let line = raw.trim()
+    if (line === '' || line === '无' || line === '沒有' || line === '没有') continue
+    line = line.replace(/^[-*•\d.、．)\s]+/, '')
+    line = line.replace(/^(TA|ta|Ta|她|他)\s*[：:]\s*/, '')
+    line = line.replace(/^[「“"']|[」”"']$/g, '').trim()
+    if (line === '' || line.length < 2) continue
+    if (seen.has(line)) continue
+    seen.add(line)
+    out.push(line)
+    if (out.length >= limit) break
+  }
+  return out
+}
+
 export function recentContextText(turns) {
   return (Array.isArray(turns) ? turns : [])
     .slice(-6)
@@ -442,6 +496,7 @@ export default {
   MEMORY_TITLE,
   MIN_TURNS_TO_SUMMARIZE,
   buildSummaryPrompt,
+  buildExamplePrompt, cleanExamples,
   chatRelPath,
   newChatId,
   renderChatMarkdown,

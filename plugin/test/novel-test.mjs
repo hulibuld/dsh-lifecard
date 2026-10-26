@@ -151,5 +151,32 @@ console.log('\n=== 6. 取结尾：短的原样，长的裁掉前面 ===')
 }
 
 await fs.rm(ws, { recursive: true, force: true }).catch(() => {})
+console.log('\n=== 7. 书名里带「..」不能把工作区删掉 ===')
+// 书 id 是从书名来的，而书名是用户能随便打的。以前 `bookRelPath('..')` 是 `'.'`，
+// `deleteBook` 于是 `fs.rm(root + '.', {recursive:true})` —— 整个工作区（卡、材料、
+// 提案、快照）一次删光。这一组就是拴住那个口的。
+{
+  t('「..」收成安全的目录名', novel.bookRelPath('..') === 'books/未命名', novel.bookRelPath('..'))
+  t('「.」收成安全的目录名', novel.bookRelPath('.') === 'books/未命名', novel.bookRelPath('.') === 'books/未命名' ? 'books/未命名' : novel.bookRelPath('.'))
+  t('「books」不会指回 books 自己', novel.bookRelPath('books') !== 'books', novel.bookRelPath('books'))
+  t('中间的点压成一个', novel.bookRelPath('a..b') === 'books/a.b', novel.bookRelPath('a..b'))
+  t('正常书名照旧', novel.bookRelPath('雨里的门') === 'books/雨里的门', novel.bookRelPath('雨里的门'))
+
+  const them = path.join(ws, 'books', '活着')
+  await fs.mkdir(path.join(them, 'chapters'), { recursive: true })
+  await fs.writeFile(path.join(them, 'book.md'), 'lifecard: "0.1"\nkind: book\ntitle: 活着\n', 'utf8')
+  await fs.writeFile(path.join(them, 'chapters', '001.md'), '正文', 'utf8')
+  const before = await fs.readdir(ws)
+  await novel.deleteBook(ws, '..')
+  await novel.deleteBook(ws, '.')
+  await novel.deleteBook(ws, '')
+  const after = await fs.readdir(ws)
+  // 判据不是「返回 ok:false」——sanitize 之后它们变成 books/未命名，删的是那个空目录，
+  // 返回 ok:true 也没关系。真正的判据是：工作区里别的东西一个都没少。
+  t('工作区一个文件都没少', JSON.stringify(before.sort()) === JSON.stringify(after.sort()), after)
+  const alive = await fs.stat(path.join(them, 'chapters', '001.md')).then(() => true).catch(() => false)
+  t('那本书的正文还在', alive)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

@@ -38,7 +38,39 @@ export function bookIdOf(title) {
 
 /** 书的目录（工作区相对路径）。 */
 export function bookRelPath(id) {
-  return path.posix.join(BOOK_DIR, core.safeId(id))
+  return path.posix.join(BOOK_DIR, bookFolderName(id))
+}
+
+/**
+ * 把书名/目录名收成一段安全的文件夹名。
+ *
+ * `core.safeId` 只替换 `\ / : * ? " < > | # %` 和空白，**`.` 和 `..` 会原样过去**。
+ * 而 `path.posix.join('books', '..')` 是 `'.'`、`join('books', '.')` 是 `'books'`，
+ * 于是 `deleteBook('..')` 里的 `fs.rm(root + '.', {recursive:true})` 会把**整个工作区**
+ * ——卡、材料、提案、`.lifecard/snapshots` ——一次删光。这不是理论问题：
+ * id 从书名来，而书名是用户能打出来的。
+ *
+ * 所以这里单独收一道：去掉首尾的点、把连续的 `.` 压成一个，只剩点的时候退回「未命名」。
+ */
+export function bookFolderName(id) {
+  const raw = String(id ?? '').trim()
+  let name = core.safeId(raw)
+  name = name.replace(/^\.+/, '').replace(/\.+$/, '').replace(/\.{2,}/g, '.')
+  if (name === '' || name === '.' || /^\.+$/.test(name)) name = '未命名'
+  if (name === BOOK_DIR) name = `${BOOK_DIR}-book`
+  return name
+}
+
+/**
+ * 书目录的绝对路径。所有读写都从这里出去，并且**再确认一次**落在 `books/` 里面
+ * （`bookFolderName` 已经把危险形状挡住，这里是第二道，防以后有人绕过它拼路径）。
+ */
+export function bookAbs(root, id) {
+  const rel = bookRelPath(id)
+  const abs = path.join(root, rel)
+  const base = path.join(root, BOOK_DIR)
+  if (abs !== base && !abs.startsWith(base + path.sep)) return null
+  return abs
 }
 
 /** 章文件名：`001.md` —— 补零到三位，字典序就是章序。 */
@@ -179,10 +211,11 @@ export async function writeChapter(root, id, index, body, when = new Date()) {
   } catch {
     return { ok: false, error: '这一章没能存下来。检查一下磁盘是不是满了。' }
   }
-  // 书的 last_updated 跟着动
+  // 书的 last_updated 跟着动。这一步失败了也要如实说：章节确实存下来了，
+  // 只是书的「最后改过」没更新——不能报成功，也不能报「整章没存」。
   const nextData = { ...book.data, updated_at: when.toISOString() }
-  await writeBookMeta(root, id, nextData, book.idea)
-  return { ok: true, index: n, path: rel, chars: text.length }
+  const touched = await writeBookMeta(root, id, nextData, book.idea)
+  return { ok: true, index: n, path: rel, chars: text.length, warning: touched.ok === true ? undefined : touched.error }
 }
 
 /** 删一章。删完不重排章号——用户手里的「第三章」不会突然变成第二章。 */
@@ -206,8 +239,16 @@ async function writeBookMeta(root, id, data, idea) {
   await fs.mkdir(path.dirname(abs), { recursive: true })
   const text = renderBookMarkdown({ ...data, idea: String(idea ?? '').trim() })
   const tmp = `${abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
-  await fs.writeFile(tmp, text, 'utf8')
-  await fs.rename(tmp, abs)
+  // 这里必须自己兜住：`writeChapter` 是先写章、再更新这本书的
+  // 「最后改过的时间」。更新这一步抛出去，调用方只会看到一句通用的失败，
+  // 而那一章其实已经在盘上了——用户以为没存，再写一次就多出一章。
+  try {
+    await fs.writeFile(tmp, text, 'utf8')
+    await fs.rename(tmp, abs)
+  } catch {
+    await fs.rm(tmp, { force: true }).catch(() => {})
+    return { ok: false, path: rel, error: '这本书的记录没能更新（章节本身可能已经存下来了）。检查一下磁盘空间。' }
+  }
   return { ok: true, path: rel }
 }
 
@@ -216,11 +257,16 @@ export async function createBook(root, input = {}) {
   const title = String(input.title ?? '').trim() === '' ? '未命名' : String(input.title).trim()
   const stem = bookIdOf(title)
   let id = stem
-  for (let n = 2; n <= 200; n += 1) {
+  let free = false
+  for (let n = 1; n <= 200; n += 1) {
+    id = n === 1 ? stem : `${stem}-${n}`
     const exists = await fs.stat(path.join(root, bookRelPath(id), 'book.md')).then((s) => s.isFile()).catch(() => false)
-    if (!exists) break
-    id = `${stem}-${n}`
+    if (!exists) { free = true; break }
   }
+  // 循环跑完还占不到位置时必须报错。以前这里出了循环就直接往下写，
+  // 于是同名第 201 本会**覆盖**看上去是第 200 本的那本 —— 而函数注释
+  // 明明写着「同名不覆盖」。
+  if (!free) return { ok: false, error: `同名「${title}」的书已经太多了，换个书名再建。` }
   const now = new Date()
   const data = {
     id,
@@ -249,8 +295,15 @@ export async function updateBook(root, id, patch = {}) {
 /** 删一整本书（连章节）。 */
 export async function deleteBook(root, id) {
   const rel = bookRelPath(id)
+  // 第二道闸：删之前亲自确认这一条真的在 books/ 里面，且不是 books 本身。
+  // 递归删掉的地方错一次就没有第二次机会，所以这里宁可多判一次。
+  if (!rel.startsWith(`${BOOK_DIR}/`) || rel === BOOK_DIR || rel.includes('..')) {
+    return { ok: false, error: '这个书名不对，没删。' }
+  }
+  const abs = bookAbs(root, id)
+  if (abs === null || abs === path.join(root, BOOK_DIR)) return { ok: false, error: '这个书名不对，没删。' }
   try {
-    await fs.rm(path.join(root, rel), { recursive: true, force: true })
+    await fs.rm(abs, { recursive: true, force: true })
   } catch {
     return { ok: false, error: '这本书没能删掉。检查一下文件权限。' }
   }
@@ -434,6 +487,52 @@ export async function writeOutline(root, id, text) {
 }
 
 /** 取一章结尾的若干字（给下一章当「上一章结尾」）。 */
+/**
+ * 把一场酒馆对话改写成小说的正文。
+ *
+ * 为什么不让它「原样搬」：屏幕上是两个人的对白，直接贴进小说里是剧本，
+ * 不是小说。要的是把「谁在什么时候说了什么、说的时候是什么样子」
+ * 变成叙述。所以要求它保留对话原意，但不许加新的情节。
+ */
+export function buildChatToChapterPrompt({ cardName, bookTitle, turns, note }) {
+  const lines = []
+  lines.push('你在把一段已经发生过的对话，改写成小说的正文。')
+  lines.push('')
+  lines.push('## 对话里的人')
+  lines.push(`- ${String(cardName ?? '').trim() === '' ? '对方' : cardName}（对话里的「TA」）`)
+  lines.push('- 「我」（对话里的「我」，在小说里也用「我」）')
+  lines.push('')
+
+  lines.push('## 这一场谈了什么')
+  for (const turn of turns) {
+    const who = String(turn?.who ?? '').trim() === '我' ? '我' : (String(cardName ?? '').trim() === '' ? 'TA' : cardName)
+    lines.push(`${who}：${String(turn?.text ?? '').trim()}`)
+  }
+  lines.push('')
+
+  if (String(note ?? '').trim() !== '') {
+    lines.push('## 这一章要往哪走')
+    lines.push(String(note).trim())
+    lines.push('')
+  }
+
+  const system = [
+    '你是在改稿，不是在下判断。只说要做的事，不要评价这段对话好不好。',
+    '',
+    '硬要求：',
+    '1. 写成小说正文，不是剧本。不要「A：xxx」这种一行一句的形式，谁说了什么要揉进叙述里。',
+    '2. 对话的意思要保住。别删掉关键的那几句，也别替他们加没说过的内容。',
+    '3. 可以把动作、停顿、屋里的样子补出来——只补「当时本来就在那儿」的东西。',
+    '4. 不许加新的情节，不许替角色做决定，不许在结尾下判断或总结道理。',
+    '5. 写 800 到 1500 字。不要小标题，不要分段编号，不要写「本章完」。',
+    '6. 不要用「命运的齿轮」「不禁」「仿佛」这类词。',
+    '',
+    `这本书叫《${String(bookTitle ?? '').trim() === '' ? '没起名' : bookTitle}》。`,
+  ].join('\n')
+
+  return { system, user: lines.join('\n') }
+}
+
 export function tailOf(body, chars = 600) {
   const text = String(body ?? '').trim()
   if (text.length <= chars) return text

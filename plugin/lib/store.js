@@ -109,14 +109,38 @@ export async function openWorkspace(root, options = {}) {
   return { ok: true, root: abs, exists: true }
 }
 
+/** 本地时间戳，给「覆盖前备份」这种文件名用。 */
+function freeLocalStamp(now = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+}
+
 /** 读工作区配置；没有就给默认值（不写盘）。 */
 export async function readConfig(root) {
+  return (await readConfigState(root)).config
+}
+
+/**
+ * 读配置，并且**告诉调用方「是没有，还是读不出来」**。
+ *
+ * 以前只有 `readConfig` 一个口子：任何异常都 `return defaultConfig()`。
+ * 于是 config.json 一旦读不出来（权限、损坏、同步盘没挂上），
+ * 紧跟着的一次 `writeConfig` 会把整份配置按默认值重写回去 —— 用户的
+ * 「想要什么样的人」「看过介绍了没有」全部归零，而且没人知道。
+ */
+export async function readConfigState(root) {
+  let text
   try {
-    const text = await fs.readFile(path.join(root, CONFIG_NAME), 'utf8')
+    text = await fs.readFile(path.join(root, CONFIG_NAME), 'utf8')
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { ok: true, exists: false, config: defaultConfig() }
+    return { ok: false, exists: false, config: defaultConfig(), error: '这个文件夹里的设置读不出来。检查一下文件权限，再试一次。' }
+  }
+  try {
     const json = JSON.parse(text)
-    return { ...defaultConfig(), ...json }
+    return { ok: true, exists: true, config: { ...defaultConfig(), ...json } }
   } catch {
-    return defaultConfig()
+    return { ok: false, exists: true, config: defaultConfig(), error: '这个文件夹里的设置文件坏了。这一版没敢动它，先跳过。' }
   }
 }
 
@@ -127,10 +151,19 @@ export async function readConfig(root) {
  * 界面拿到的是一句英文报错，人看不出「你还没选文件夹」。
  */
 export async function writeConfig(root, patch) {
-  const current = await readConfig(root)
-  const next = { ...current, ...patch }
-  await fs.mkdir(root, { recursive: true })
-  await fs.writeFile(path.join(root, CONFIG_NAME), JSON.stringify(next, null, 2) + '\n', 'utf8')
+  const state = await readConfigState(root)
+  // 「读不出来」不等于「还没有」：这时候照写会把整份设置按默认值重刷一遍。
+  if (state.ok !== true) return state.config
+  const next = { ...state.config, ...patch }
+  const abs = path.join(root, CONFIG_NAME)
+  const tmp = `${abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+  try {
+    await fs.mkdir(root, { recursive: true })
+    await fs.writeFile(tmp, JSON.stringify(next, null, 2) + '\n', 'utf8')
+    await fs.rename(tmp, abs)
+  } catch {
+    await fs.rm(tmp, { force: true }).catch(() => {})
+  }
   return next
 }
 
@@ -275,7 +308,10 @@ export async function writeDraft(root, cardId, draft) {
     avatar_touched: draft?.avatarTouched === true,
     ...(draft?.avatarTouched === true ? { avatar: draft?.avatar ?? null } : {}),
   }
-  await fs.writeFile(abs, JSON.stringify(payload, null, 2) + '\n', 'utf8')
+  // 草稿也是「写一半掉电就废」的那种文件，跟卡片一样走 tmp+rename。
+  const tmp = `${abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+  await fs.writeFile(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf8')
+  await fs.rename(tmp, abs)
   return { ok: true, draft: payload }
 }
 
@@ -473,8 +509,17 @@ export async function readCard(root, relPath) {
   let text
   try {
     text = await fs.readFile(abs, 'utf8')
-  } catch {
-    return { ok: false, path: relPath, error: '文件不存在' }
+  } catch (error) {
+    // 「没有这个文件」和「有，但读不出来」是两件事。以前一律翻成「文件不存在」，
+    // 上层于是把权限问题、同步盘没挂上当「还没有这张卡」——`card.save` 的兜底
+    // 会退化成空小节，`applyProposal` 会另建一张同名的卡。
+    if (error?.code === 'ENOENT') return { ok: false, path: relPath, error: '文件不存在' }
+    return {
+      ok: false,
+      path: relPath,
+      code: String(error?.code ?? ''),
+      error: '这个文件读不出来（可能被占用，或者没有读取权限）。关掉占着它的程序，或者检查一下权限。',
+    }
   }
   const redactions = await readRedactions(root)
   const hit = hitsRedaction(redactions, relPath, text)
@@ -549,7 +594,17 @@ export async function writeCard(root, relPath, data, sections, options = {}) {
     }
   }
   const text = core.stringifyCard(data, sections)
-  await fs.writeFile(abs, text, 'utf8')
+  // 落盘要走「临时文件 + 改名」。以前这里是 fs.writeFile 直接截断写：
+  // 写一半掉电（或宿主把进程杀掉），留下的就是半张卡 —— parseCard 读不出来，
+  // 下次打开是「这个文件读不出来」。卡是全库最要紧的那份数据，
+  // 别的存档层（tavern/novel/game/presets/career）早就都改了，只有它漏着。
+  try {
+    const tmp = `${abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+    await fs.writeFile(tmp, text, 'utf8')
+    await fs.rename(tmp, abs)
+  } catch {
+    return { ok: false, path: relPath, error: '这一版没能存进文件里。检查一下磁盘是不是满了，再试一次。' }
+  }
   return { ok: true, path: relPath, text, validation }
 }
 
@@ -761,8 +816,20 @@ export async function appendMaterial(root, name, content, options = {}) {
   // 但有些材料是「重新摘一遍」而不是「再补一条」——比如从记忆里重新提取
   // 某个人。那种情况必须覆盖，否则同一个人每点一次就多一份重复的旧摘录，
   // 而 AI 读的时候会把两份都当真，同一个事实被引用两次。
-  if (options?.replace === true) await fs.writeFile(abs, body, 'utf8')
-  else await fs.appendFile(abs, body, 'utf8')
+  if (options?.replace === true) {
+    // 材料是全库唯一**没有快照**的存档层（删了就真没了）。覆盖之前先留一份
+    // `.bak-<时间>`，至少用户自己手改过的那一版还能找回来。
+    const had = await fs.stat(abs).then((s) => s.isFile()).catch(() => false)
+    if (had) {
+      const bak = `${abs}.bak-${freeLocalStamp()}`
+      await fs.copyFile(abs, bak).catch(() => {})
+    }
+    const tmp = `${abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+    await fs.writeFile(tmp, body, 'utf8')
+    await fs.rename(tmp, abs)
+  } else {
+    await fs.appendFile(abs, body, 'utf8')
+  }
   const full = await fs.readFile(abs, 'utf8')
   return { ok: true, path: rel, sha256: sha256(full) }
 }
@@ -1278,6 +1345,11 @@ export async function applyProposal(root, jsonRel, options = {}) {
   if (!read.ok) return read
   const aboutId = read.record?.about?.id
   if (typeof aboutId !== 'string' || aboutId === '') return { ok: false, error: '提案里没有 about.id' }
+  // 「一条都没勾」要在建卡之前判掉。以前是先建卡再判，于是点了采纳却又
+  // 什么都没勾时，工作区里会多出一张空卡，界面上只看到一句「还没有勾选任何一条」——
+  // 用户根本不知道刚才那次点击留下了一张空壳。
+  const chosenFirst = read.items.filter((i) => i.checked)
+  if (chosenFirst.length === 0) return { ok: false, error: '还没有勾选任何一条。先点一下要留下的条目。' }
   let target = await findCardByRelOrId(root, aboutId)
   if (target === null) {
     // 卡还不存在——这正是「说一大段话，让它整理成一张卡」的正常情况。
@@ -1298,8 +1370,7 @@ export async function applyProposal(root, jsonRel, options = {}) {
   }
   const card = await readCard(root, target)
   if (!card.ok) return card
-  const chosen = read.items.filter((i) => i.checked)
-  if (chosen.length === 0) return { ok: false, error: '还没有勾选任何一条。先点一下要留下的条目。' }
+  const chosen = chosenFirst
 
   // 写进卡之前，引文要对着**现在**的材料再验一遍。
   //

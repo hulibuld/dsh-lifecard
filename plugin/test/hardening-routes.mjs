@@ -507,6 +507,143 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   const promiseTable = api.buildApi({ ...ctx, get: (n) => (n === 'llm' ? promiseLlm : undefined) }, async () => ws, { workspace: ws })
   const promised = await promiseTable['analyze.run']({ about: 'jia', name: '甲' })
   t('stream 给 Promise 时也跑得通', promised.ok === true, promised.error)
+
+  // 形状三：同一路流里先来一串 reasoning-delta（模型在「想」），再来正文。
+  // 真宿主就是这么发的。以前 collectStream 只看「有没有 .text」，
+  // 把「想」的那几千字一起拼进了回答 → JSON 前面挂满
+  // 「Thinking Process: …」→ 解析失败 → 用户点「开始读」等到五十秒后
+  // 收到一句「AI 这次没给出能用的结果」。
+  const thinkingLlm = {
+    listProviders: async () => [{ provider: 'raccoon', models: [{ id: 'sn-deepseek-v4-1-flash-1017' }] }],
+    listModels: async () => [],
+    stream: async () => (async function* () {
+      yield { type: 'reasoning-start' }
+      yield { type: 'reasoning-delta', text: 'Thinking Process:\n\n1. Analyze the request.\n' }
+      yield { type: 'reasoning-delta', text: '2. The material says he worked 37 years.\n' }
+      yield { type: 'reasoning-end' }
+      yield { type: 'text-delta', text: answer }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })(),
+  }
+  const thinkingTable = api.buildApi({ ...ctx, get: (n) => (n === 'llm' ? thinkingLlm : undefined) }, async () => ws, { workspace: ws })
+  const thought = await thinkingTable['analyze.run']({ about: 'jia', name: '甲' })
+  t('想的那一段不会被当成回答（分析照样能成）', thought.ok === true, thought.error)
+  t('回答里不夹着 Thinking Process', thought.ok === true && !String(thought.raw ?? '').includes('Thinking Process'), String(thought.raw ?? '').slice(0, 80))
+}
+
+// ── 酒馆里演的一场能变成小说的一章 ────────────────────────────
+// 「三扇门其实是一件事」的那一步：先在酒馆里把人立起来、把话演一遍，
+// 演得满意的那一场直接变成小说的正文。这条路上有两处最容易坏：
+// 一本正经地写进了错的书，或者模型什么都没写却报了成功。
+{
+  const prose = '他把伞往门里递了递，雨顺着伞骨往下淌。她没接，只是看着他的手。'
+  const proseLlm = {
+    listProviders: async () => [{ provider: 'raccoon', models: [{ id: 'sn-deepseek-v4-1-flash-1017' }] }],
+    listModels: async () => [],
+    stream: async () => (async function* () {
+      yield { type: 'text-delta', text: prose }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })(),
+  }
+  const table3 = api.buildApi({ ...ctx, get: (n) => (n === 'llm' ? proseLlm : undefined) }, async () => ws, { workspace: ws })
+
+  const made = await table3['novel.create']({ title: '雨里的门', idea: '一个人等着另一个人开口。' })
+  t('先建一本小说', made.ok === true && String(made.id ?? '') !== '', JSON.stringify(made))
+  const bookId = made.id
+
+  // 酒馆得先有一张卡。这里现建一张虚构角色，不去依赖别的测试留下的东西。
+  const card = await table3['card.save']({
+    path: 'people/lin.card.md',
+    data: { id: 'lin', kind: 'fictional', name: '林小雨', world: 'reality' },
+    sections: [{ title: '自述', body: '在旧书店做事。' }, { title: '开场白', body: '雨还没停。' }],
+  })
+  t('先建一张能演的角色卡', card.ok === true, JSON.stringify(card).slice(0, 160))
+
+  const started = await table3['tavern.start']({ card: 'lin' })
+  t('酒馆开得起来', started.ok === true, JSON.stringify(started).slice(0, 160))
+
+  const said = await table3['tavern.say']({ id: started.id, text: '伞给你。' })
+  t('先说一句（拿到回复）', said.ok === true, JSON.stringify(said).slice(0, 160))
+
+  const noBook = await table3['tavern.toChapter']({ id: started.id, book: '' })
+  t('没挑书就说人话', noBook.ok === false && String(noBook.error).includes('一本书'), noBook.error)
+
+  const badBook = await table3['tavern.toChapter']({ id: started.id, book: 'no-such-book' })
+  t('书不存在时说人话', badBook.ok === false && String(badBook.error).includes('这本书不在了'), badBook.error)
+
+  const conv = await table3['tavern.toChapter']({ id: started.id, book: bookId, note: '停在她没接伞那一刻' })
+  t('变成一章成功', conv.ok === true, JSON.stringify(conv).slice(0, 200))
+  t('章号是 1', Number(conv.chapter) === 1, String(conv.chapter))
+  t('正文就是模型写的那段', conv.ok === true && conv.text === prose)
+
+  const ch = await table3['novel.chapter.get']({ id: bookId, index: 1 })
+  t('章真的落盘了', ch.ok === true && String(ch.body ?? '').includes('伞骨'), JSON.stringify(ch).slice(0, 120))
+
+  // 第二场再变一次：不能覆盖第一章
+  const conv2 = await table3['tavern.toChapter']({ id: started.id, book: bookId })
+  t('第二次变成第 2 章', Number(conv2.chapter) === 2, String(conv2.chapter))
+  const ch1 = await table3['novel.chapter.get']({ id: bookId, index: 1 })
+  t('第一章没被覆盖', String(ch1.body ?? '').includes('伞骨'))
+
+  // 空会话不许变出一张空章
+  // 没有开场白的卡才会开出「一句话都还没说」的会话
+  await table3['card.save']({
+    path: 'people/kong.card.md',
+    data: { id: 'kong', kind: 'fictional', name: '空白', world: 'reality' },
+    sections: [{ title: '自述', body: '还没写。' }],
+  })
+  const empty = await table3['tavern.start']({ card: 'kong' })
+  const emptyConv = await table3['tavern.toChapter']({ id: empty.id, book: bookId })
+  t('还没说话就变，要说人话', emptyConv.ok === false && String(emptyConv.error).includes('还什么都没说'), emptyConv.error)
+}
+
+// ── 把这一场里 TA 说过的话挑几句写回卡里 ─────────────────────────
+// 「性格：沉默寡言」模型只能猜；「他说话只答半句」是能照做的。
+// 这一条要真的落在卡的「对话示例」小节上，不是只回一句 ok。
+{
+  const picks = '- 「雨还没停，站着吧。」\n- 「伞我不要。」'
+  const exLlm = {
+    listProviders: async () => [{ provider: 'raccoon', models: [{ id: 'sn-deepseek-v4-1-flash-1017' }] }],
+    listModels: async () => [],
+    stream: async () => (async function* () {
+      yield { type: 'text-delta', text: picks }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })(),
+  }
+  const table4 = api.buildApi({ ...ctx, get: (n) => (n === 'llm' ? exLlm : undefined) }, async () => ws, { workspace: ws })
+
+  await table4['card.save']({
+    path: 'people/yu.card.md',
+    data: { id: 'yu', kind: 'fictional', name: '余', world: 'reality' },
+    sections: [{ title: '自述', body: '修伞的。' }],
+  })
+  const opened = await table4['tavern.start']({ card: 'yu' })
+  t('开一场来演', opened.ok === true, JSON.stringify(opened).slice(0, 120))
+
+  const noTalk = await table4['tavern.toExample']({ id: opened.id })
+  t('TA 还没说话时挑不出来', noTalk.ok === false && String(noTalk.error).includes('还没说过话'), noTalk.error)
+
+  await table4['tavern.say']({ id: opened.id, text: '你在修什么？' })
+  const picked = await table4['tavern.toExample']({ id: opened.id })
+  t('能挑出例句', picked.ok === true && Array.isArray(picked.picked) && picked.picked.length === 2, JSON.stringify(picked).slice(0, 200))
+  t('挑出来的是 TA 说过的那两句', picked.ok === true && String(picked.picked[0]).includes('雨还没停'), JSON.stringify(picked.picked))
+
+  const card = await table4['card.get']({ path: 'people/yu.card.md' })
+  const examples = (card.sections ?? []).find((x) => String(x.title ?? '') === '对话示例')
+  t('写进了「对话示例」', examples !== undefined && String(examples.body).includes('伞我不要'), JSON.stringify(examples))
+  t('原来别的小节一个字没动', (card.sections ?? []).some((x) => String(x.title ?? '') === '自述' && String(x.body).includes('修伞的')))
+
+  // 再挑一次：新增的接在后面，旧的不删
+  await table4['tavern.say']({ id: opened.id, text: '那把伞谁的？' })
+  const again = await table4['tavern.toExample']({ id: opened.id })
+  t('再挑一次也成', again.ok === true, JSON.stringify(again).slice(0, 120))
+  const card2 = await table4['card.get']({ path: 'people/yu.card.md' })
+  const examples2 = (card2.sections ?? []).find((x) => String(x.title ?? '') === '对话示例')
+  t('旧的例句还在（不是覆盖）', String(examples2.body).split(/\r?\n/).filter((x) => x.trim() !== '').length >= 2, String(examples2.body).slice(0, 200))
+
+  // 名字没存的会话：存不回去，要说清楚
+  const ghost = await table4['tavern.toExample']({ id: 'chat-nope' })
+  t('会话不在时说人话', ghost.ok === false && String(ghost.error).includes('不在了'), ghost.error)
 }
 
 // ── 「上次选的文件夹」要记得住 ──────────────────────────────────
