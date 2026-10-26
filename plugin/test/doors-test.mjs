@@ -343,6 +343,18 @@ await (async () => {
   }
 })()
 
+console.log('\n=== 6b. 列表里能直接进修改（不用先点开再去卡页上找） ===')
+{
+  const LIST = {
+    ok: true, workspace: '/tmp/x', errors: [], materials: [], worlds: [], proposals: [], avatars: {},
+    cards: [{ id: 'lin', path: 'people/lin.card.md', name: '林小雨', kind: 'fictional', coverage: 10, tags: [] }],
+  }
+  const tree = renderRoot({ ...base('tavern'), 2: LIST, 24: 'tavern' })
+  const editBtn = findNodes(tree, (n) => n.type === 'button' && typeof n.props?.title === 'string' && n.props.title.startsWith('改'))[0]
+  t('每张卡都有「改」按钮', editBtn !== undefined, textOf(tree).slice(0, 200))
+  if (editBtn !== undefined) t('「改」按钮带名字，不会点错人', editBtn.props.title.includes('林小雨'), editBtn.props.title)
+}
+
 console.log('\n=== 7. 卡列表里的百分比要说明白是什么 ===')
 {
   const LIST = {
