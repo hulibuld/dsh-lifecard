@@ -12,6 +12,7 @@
  */
 import { promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
+import * as os from 'node:os'
 import path from 'node:path'
 import * as api from '../lib/index.js'
 import * as store from '../lib/store.js'
@@ -954,6 +955,27 @@ console.log('\n=== 21. 虚构角色的完成度不把「关系/出生年/同意�
   t('虚构角色的表里没有关系/出生年/同意状态', ['relation', 'birth_year', 'consent'].every((k) => !ficCov.rows.some((r) => r.key === k)), ficCov.rows.map((r) => r.key))
   t('虚构角色的「还空着」里也不会出现关系', (ficCov.empty ?? []).every((r) => !['关系', '出生年', '同意状态'].includes(r.label)), (ficCov.empty ?? []).map((r) => r.label))
   t('虚构角色的完成度因此能顶到 100%', ficCov.percent >= realCov.percent, [ficCov.percent, realCov.percent])
+}
+
+console.log('\n=== 22. 三扇门各自「现在用哪张卡」存得住 ===')
+{
+  const ws = await fs.mkdtemp(path.join(os.tmpdir(), 'lc-pins-'))
+  await store.openWorkspace(ws)
+  const table = api.buildApi({ get: () => undefined }, async () => ws, {})
+  const first = await table['card.defaults.get']({})
+  t('没设过时三扇门都是空的', first.ok === true && first.cards.real === '' && first.cards.tavern === '' && first.cards.novel === '', JSON.stringify(first))
+  const set = await table['card.defaults.set']({ mode: 'tavern', id: 'lin' })
+  t('能记住酒馆这扇门用谁', set.ok === true && set.cards.tavern === 'lin', JSON.stringify(set))
+  const back = await table['card.defaults.get']({})
+  t('再读出来还是那一张', back.cards.tavern === 'lin', JSON.stringify(back))
+  t('别的门没被顺手改掉', back.cards.real === '' && back.cards.novel === '', JSON.stringify(back))
+  const cfg = await store.readConfig(ws)
+  t('写进的是这个文件夹的 config.json', cfg?.default_cards?.tavern === 'lin', JSON.stringify(cfg?.default_cards))
+  const bad = await table['card.defaults.set']({ mode: 'nope', id: 'lin' })
+  t('不认识的门直接拒绝', bad.ok === false && String(bad.error).includes('哪扇门'), JSON.stringify(bad))
+  const other = await api.buildApi({ get: () => undefined }, async () => ws, {})['card.defaults.set']({ mode: 'novel', id: 'a' })
+  t('再换一本「写小说」的那张', other.ok === true && other.cards.novel === 'a' && other.cards.tavern === 'lin', JSON.stringify(other))
+  await fs.rm(ws, { recursive: true, force: true })
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

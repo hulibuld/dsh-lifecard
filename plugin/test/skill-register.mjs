@@ -45,6 +45,12 @@ console.log('=== 1. SKILL.md 随包存在 ===')
   // node: 开头的内置模块不算。
   const indexSrc = readFileSync(path.join(here, '..', 'lib', 'index.js'), 'utf8')
   t('index.js 的 schemastery import 和声明对得上', indexSrc.includes("from '@deepseek-ai/schemastery'"))
+
+  const wp = path.join(here, '..', 'skills', 'lifecard-novel-writing', 'SKILL.md')
+  const wtext = await fs.readFile(wp, 'utf8')
+  t('写作 SKILL.md 存在且够用', wtext.length > 1800, wtext.length)
+  t('写作 SKILL.md 有 name', /^name:\s*lifecard-novel-writing$/m.test(wtext))
+  t('写作 SKILL.md 写清了盲评四问', wtext.includes('哪里读不下去') && wtext.includes('哪里不信'))
 }
 
 console.log('\n=== 2. apply 时注册进 skills 服务 ===')
@@ -58,16 +64,42 @@ console.log('\n=== 2. apply 时注册进 skills 服务 ===')
     llm: undefined,
   }
   api.apply(ctx, {})
-  t('注册了一条 skill', registered.length === 1, registered.length)
-  const s = registered[0]
-  t('名字正确', s.name === 'lifecard-interview', s.name)
-  t('有描述', typeof s.description === 'string' && s.description.length > 10)
-  t('内容不含 frontmatter', !s.content.startsWith('---'))
-  t('内容含正文标志段', s.content.includes('这个 skill 是什么'))
-  t('内容长度合理', s.content.length > 800, s.content.length)
-  t('模型可调用', s.invocation?.modelInvocable === true)
-  t('用户可调用', s.invocation?.userInvocable === true)
-  t('source 标记为 lifecard', s.source === 'lifecard', s.source)
+  t('五条 skill 都注册上了（访谈、写作、写作手艺、盲评、视觉小说）',
+    registered.length === 5, registered.map((s) => s.name))
+  const interview = registered.find((s) => s.name === 'lifecard-interview')
+  const writing = registered.find((s) => s.name === 'lifecard-novel-writing')
+  t('访谈 skill 在', interview !== undefined)
+  t('写作 skill 在', writing !== undefined)
+
+  t('访谈：有描述', typeof interview.description === 'string' && interview.description.length > 10)
+  t('访谈：内容不含 frontmatter', !interview.content.startsWith('---'))
+  t('访谈：内容含正文标志段', interview.content.includes('这个 skill 是什么'))
+  t('访谈：内容长度合理', interview.content.length > 800, interview.content.length)
+
+  t('写作：有描述', typeof writing.description === 'string' && writing.description.length > 10)
+  t('写作：内容不含 frontmatter', !writing.content.startsWith('---'))
+  t('写作：内容讲了两套标准', writing.content.includes('传统文学的标准') && writing.content.includes('连载'))
+  t('写作：内容是自足的（没让别人去装别的 skill）',
+    !/调用\s*style-fiction-cn|调用\s*human-writing/.test(writing.content))
+
+  // 随包附带的三份通用手艺：正文来自插件 skills/ 目录，references/ 与
+  // scripts/ 靠 resourceBase 指过去。缺了 resourceBase，模型看到
+  // 「读取 references/forum-prose.md」只能瞎猜路径。
+  for (const name of ['human-writing', 'blind-review-loop', 'visual-novel']) {
+    const sk = registered.find((x) => x.name === name)
+    t(`${name} 注册上了`, sk !== undefined)
+    t(`${name} 正文够用`, typeof sk?.content === 'string' && sk.content.length > 500, sk?.content?.length)
+    t(`${name} 不带 frontmatter 头`, sk !== undefined && !sk.content.startsWith('---'))
+    t(`${name} 指了 resourceBase 目录`, sk?.resourceBase?.kind === 'directory' && String(sk.resourceBase.path).endsWith(name), sk?.resourceBase)
+  }
+  const hw = registered.find((x) => x.name === 'human-writing')
+  t('写作手艺保留了材料检查那一段', hw !== undefined && hw.content.includes('材料'))
+
+  for (const s of [interview, writing]) {
+    t(`${s.name}：模型可调用`, s.invocation?.modelInvocable === true)
+    t(`${s.name}：用户可调用`, s.invocation?.userInvocable === true)
+    t(`${s.name}：source 标记为 lifecard`, s.source === 'lifecard', s.source)
+  }
 }
 
 console.log('\n=== 3. 没有 skills 服务时不影响插件 ===')
@@ -82,7 +114,7 @@ console.log('\n=== 3. 没有 skills 服务时不影响插件 ===')
   let threw = null
   try { api.apply(ctx, {}) } catch (e) { threw = e }
   t('不抛错', threw === null, threw?.message)
-  t('给出可见警告', warned.includes('访谈 skill 未注册'), warned)
+  t('给出可见警告', warned.includes('skills 服务') && warned.includes('未注册'), warned)
 }
 
 console.log('\n=== 4. 拆 frontmatter 的边界 ===')

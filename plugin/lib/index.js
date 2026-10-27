@@ -29,6 +29,8 @@ import * as interview from './jobs-interview.js'
 // 用「用到才加载」而不是文件顶上的静态 import —— 静态 import 一个不存在的
 // 文件会让整个插件起不来，那就不是「能删」而是「删了就全废」。
 // 删掉对应文件之后，只有那个功能报「这个功能没装」，别的照常。
+import * as lifecardTools from '../lifecard-tools.js'
+
 let tavern = null
 let novel = null
 let presets = null
@@ -979,6 +981,35 @@ function buildApi(ctx, workspace, config, options) {
     },
 
     /** 看某张卡以前的样子（快照在每次保存时自动留，只是以前没露出来）。 */
+    // 三扇门各自「现在用哪张卡」。存成 id，读的时候再按 id 找卡：
+    // 卡改名、换文件夹都不会让这条记录失效。
+    'card.defaults.get': async (body) => {
+      const ws = await root(body)
+      const cfg = await store.readConfigState(ws)
+      const pins = cfg.config?.default_cards ?? {}
+      return {
+        ok: true,
+        cards: {
+          real: String(pins.real ?? ''),
+          tavern: String(pins.tavern ?? ''),
+          novel: String(pins.novel ?? ''),
+        },
+      }
+    },
+    'card.defaults.set': async (body) => {
+      const ws = await root(body)
+      const mode = String(body?.mode ?? '')
+      if (mode !== 'real' && mode !== 'tavern' && mode !== 'novel') {
+        return { ok: false, error: '不知道你说的是哪扇门。' }
+      }
+      const id = String(body?.id ?? '').trim()
+      const cfg = await store.readConfigState(ws)
+      if (cfg.ok !== true) return { ok: false, error: cfg.error ?? '这个文件夹里的设置读不出来。' }
+      const pins = { real: '', tavern: '', novel: '', ...(cfg.config?.default_cards ?? {}) }
+      pins[mode] = id
+      await store.writeConfig(ws, { default_cards: pins })
+      return { ok: true, cards: pins }
+    },
     'card.history': async (body) => {
       const ws = await root(body)
       const safe = await insideWorkspace(ws, body?.path)
@@ -3485,45 +3516,118 @@ function blankPng() {
  * skill，而不是整个插件起不来。
  */
 function registerInterviewSkill(ctx) {
+  registerBundledSkill(ctx, {
+    dir: 'lifecard-interview',
+    name: 'lifecard-interview',
+    fallback: '引导式对话访谈，把一张人物卡问出来。',
+    label: '访谈',
+  })
+  registerBundledSkill(ctx, {
+    dir: 'lifecard-novel-writing',
+    name: 'lifecard-novel-writing',
+    fallback: '中文小说与长文的写法：先分清用不用人物卡，按传统文学的标准写正文，要连载节奏就切。',
+    label: '写作',
+  })
+  // 这三份是写作用得上的通用手艺，随包一起发：装插件即等于有，
+  // 换台机器不必再单独装一遍。名字与内容都保持原样，方便用户照旧用
+  // `/human-writing`、`/blind-review-loop`、`/visual-novel` 唤起。
+  //
+  // 同名冲突时让位：用户自己那份通常更新，硬盖上去等于拿旧版本把新版本
+  // 顶掉，而且他看不出来。
+  registerBundledSkill(ctx, {
+    dir: 'human-writing',
+    name: 'human-writing',
+    fallback: '通用中文创作与改稿：先看材料够不够，再写成有人在说话的样子。',
+    label: '写作手艺',
+    yieldToExisting: true,
+  })
+  registerBundledSkill(ctx, {
+    dir: 'blind-review-loop',
+    name: 'blind-review-loop',
+    fallback: '盲评迭代改稿：冻结副本、开无上下文评审员、把意见分诊后定向改，再评一轮。',
+    label: '盲评改稿',
+    yieldToExisting: true,
+  })
+  registerBundledSkill(ctx, {
+    dir: 'visual-novel',
+    name: 'visual-novel',
+    fallback: '视觉小说：分支剧本、对话框、存档、回放这些读者以为本来就在的东西。',
+    label: '视觉小说',
+    yieldToExisting: true,
+  })
+}
+
+/**
+ * 注册一个随包 skill。两处共同点都在这里：skills/SKILL.md 与 lib/ 同包，
+ * 用 import.meta.url 定位（不依赖 cwd）；没有 skills 服务时只少一个 skill，
+ * 不能让整个插件起不来。
+ */
+function registerBundledSkill(ctx, spec) {
   const skills = ctx.reflect?.get?.('skills', false)
   if (skills === undefined || skills === null || typeof skills.register !== 'function') {
-    ctx.logger?.warn?.('[lifecard] 没有 skills 服务，访谈 skill 未注册（不影响卡库功能）')
+    ctx.logger?.warn?.(`[lifecard] 没有 skills 服务，${spec.label} skill 未注册（不影响卡库功能）`)
     return
   }
-  const body = interviewSkillBody()
+  if (spec.yieldToExisting === true && hasSkillNamed(skills, spec.name)) {
+    // 用户已经有一份同名的：他的更新，别盖。
+    ctx.logger?.info?.(`[lifecard] 已经有 ${spec.name} 这个 skill，插件这份不再注册`)
+    return
+  }
+  const body = bundledSkillBody(spec.dir)
   if (body === '') {
-    ctx.logger?.warn?.('[lifecard] 找不到 skills/lifecard-interview/SKILL.md，访谈 skill 未注册')
+    ctx.logger?.warn?.(`[lifecard] 找不到 skills/${spec.dir}/SKILL.md，${spec.label} skill 未注册`)
     return
   }
   const { frontmatter, content } = splitSkillFile(body)
   ctx.effect(
     () => skills.register({
-      name: 'lifecard-interview',
-      description: frontmatter.description ?? '引导式对话访谈，把一张人物卡问出来。',
+      name: spec.name,
+      description: frontmatter.description ?? spec.fallback,
       whenToUse: frontmatter.whenToUse,
       content,
       source: 'lifecard',
+      // 带上目录：SKILL.md 里说的 references/xxx.md、scripts/xxx.py
+      // 才有地方可查。不带 resourceBase，模型看到「读取 references/…」
+      // 只能瞎猜路径。
+      resourceBase: { kind: 'directory', path: bundledSkillDir(spec.dir) },
       invocation: { modelInvocable: true, userInvocable: true },
     }),
-    'dsh-lifecard: lifecard-interview skill',
+    `dsh-lifecard: ${spec.name} skill`,
   )
 }
 
-/** SKILL.md 与 lib/ 同包，用 import.meta.url 定位，不依赖 cwd。 */
-function interviewSkillPath() {
-  return path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'lifecard-interview', 'SKILL.md')
+/** 目录里有没有同名 skill（用户自己装的那份）。问不到就当没有。 */
+function hasSkillNamed(skills, name) {
+  if (typeof skills.list !== 'function') return false
+  try {
+    const list = skills.list()
+    if (!Array.isArray(list)) return false
+    return list.some((s) => String(s?.name ?? '') === name)
+  } catch {
+    return false
+  }
 }
 
-let interviewSkillCache
-function interviewSkillBody() {
-  if (interviewSkillCache === undefined) {
+/** SKILL.md 与 lib/ 同包，用 import.meta.url 定位，不依赖 cwd。 */
+function bundledSkillPath(dir) {
+  return path.join(bundledSkillDir(dir), 'SKILL.md')
+}
+
+/** 这份 skill 的目录（references/、scripts/ 都在它下面）。 */
+function bundledSkillDir(dir) {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'skills', dir)
+}
+
+const bundledSkillCache = new Map()
+function bundledSkillBody(dir) {
+  if (!bundledSkillCache.has(dir)) {
     try {
-      interviewSkillCache = readFileSync(interviewSkillPath(), 'utf8')
+      bundledSkillCache.set(dir, readFileSync(bundledSkillPath(dir), 'utf8'))
     } catch {
-      interviewSkillCache = ''
+      bundledSkillCache.set(dir, '')
     }
   }
-  return interviewSkillCache
+  return bundledSkillCache.get(dir)
 }
 
 /** 拆 YAML frontmatter（只认 `key: value` 单行，够用且不引依赖）。 */
@@ -3575,6 +3679,20 @@ export function apply(ctx, config) {
   })
 
   registerInterviewSkill(ctx)
+
+  // 把人物卡、世界书交给模型的那几个只读工具。挂在宿主这一层，所以不只是
+  // 「LC 酒馆 / LC 小说 / LC 现实」三个预设，任何预览里都能调。
+  // 用 ctx.inject 等 tools 服务就绪：apply 跑的时候它可能还没起来，
+  // 直接 ctx.get('tools') 会拿到 undefined，工具就静默少了。
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['tools'], (toolCtx) => {
+      try {
+        lifecardTools.registerTools(toolCtx, settings)
+      } catch (error) {
+        console.error('[lifecard] 只读工具没挂上：', error)
+      }
+    })
+  }
 
   ctx.effect(
     () => ctx.webServer.register({

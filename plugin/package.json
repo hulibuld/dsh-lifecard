@@ -1,6 +1,6 @@
 {
   "name": "dsh-lifecard",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Life Cards — 把你认识的人和虚构角色写成档案。在对话里问出来，或导入酒馆角色卡；数据是你自己文件夹里的一组 Markdown 文件。",
   "type": "module",
   "icon": "icon.svg",
@@ -14,7 +14,10 @@
     },
     "./package.json": "./package.json",
     "./icon.svg": "./icon.svg",
-    "./locale/*.json": "./locale/*.json"
+    "./locale/*.json": "./locale/*.json",
+    "./lifecard-tools.js": {
+      "default": "./lifecard-tools.js"
+    }
   },
   "files": [
     "lib/index.js",
@@ -36,7 +39,9 @@
     "lib/novel.js",
     "lib/career.js",
     "lib/presets.js",
-    "lib/game.js"
+    "lib/game.js",
+    "lifecard-tools.js",
+    "skills/**/*"
   ],
   "dsh": {
     "bundle": {

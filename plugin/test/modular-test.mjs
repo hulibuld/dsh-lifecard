@@ -36,6 +36,9 @@ async function probe(drop) {
   const tmp = await fs.mkdtemp(path.join(pluginDir, '.tmp-modular-'))
   try {
     await fs.cp(path.join(pluginDir, 'lib'), path.join(tmp, 'lib'), { recursive: true })
+    // lib/index.js 会 import 上一层的 lifecard-tools.js（给模型用的只读工具），
+    // 所以这一份也得跟着搬，否则「插件还起得来吗」这条测的是假的失败。
+    await fs.cp(path.join(pluginDir, 'lifecard-tools.js'), path.join(tmp, 'lifecard-tools.js'))
     for (const name of drop) await fs.rm(path.join(tmp, 'lib', name), { force: true })
     const script = `
       const m = await import(${JSON.stringify(path.join(tmp, 'lib', 'index.js'))})
