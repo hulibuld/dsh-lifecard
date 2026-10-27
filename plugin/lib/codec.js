@@ -520,6 +520,7 @@ function textFieldOf(rawKey) {
  *   1) 整份就是 JSON（可能在 ``` 里包着，常见于把 .json 改名成 .txt）
  *   2) 「名字：张三 / 性格：沉默」一行一个字段（也认 `【名字】` 单独占一行的写法）
  *   3) Markdown 小标题（`## 性格`）
+ *   4) `<名字>…</名字>` 这种带尖括号标签的写法
  * 认不出的键不丢，按「标签：内容」拼进自述；一行都没有的散文返回 null，
  * 由调用方给出「先当材料导进来」的提示。
  * @param {string} raw
@@ -597,14 +598,52 @@ export function parseTextCard(raw) {
       entries.push(current)
     }
   }
+  // 2) <标签>…</标签> 的写法（不少 txt 卡其实是当 XML 写的，中英标签都认）
+  const tagEntries = []
+  // `<名字>…</名字>`，以及带属性的 `<char name="张三">…</char>`
+  const tagRe = /<([A-Za-z\u4e00-\u9fff][\w\u4e00-\u9fff-]{0,15})([^>]*)>([\s\S]*?)<\/\1>/g
+  let tagHit = tagRe.exec(text)
+  while (tagHit !== null) {
+    const tagName = tagHit[1]
+    const attrText = tagHit[2]
+    // 标签里紧跟着写了个冒号（`<名字>：阿澜`）也认——那只是在抄「字段：值」的习惯
+    const body = tagHit[3].replace(/^\s*[:：]?\s*/, '').trimEnd()
+    let field = textFieldOf(tagName)
+    if (field === null) {
+      const attrName = /name\s*=\s*["']?([^"'>]+)["']?/i.exec(attrText)
+      if (attrName !== null && /^(char|character|character_card|bot|persona|card)$/i.test(tagName)) {
+        tagEntries.push({ field: 'name', key: tagName, lines: [attrName[1].trim()] })
+        field = 'description'
+      }
+    }
+    if (field !== null) {
+      tagEntries.push({ field, key: tagName, lines: body === '' ? [] : body.split('\n') })
+    } else if (tagEntries.length > 0 && body !== '') {
+      tagEntries.push({ field: 'extra', key: tagName, lines: body.split('\n') })
+    }
+    tagHit = tagRe.exec(text)
+  }
+  const tagHasKnown = tagEntries.some((e) => e.field !== 'extra')
+  if (tagHasKnown) {
+    const made = assemble(tagEntries, nameFallback)
+    if (made !== null) return made
+  }
+
   if (!sawKnown || entries.length === 0) return null
 
+  return assemble(entries, nameFallback)
+}
+
+/**
+ * 把读到的字段整理成 CC v2 的 JSON 形状。
+ * 两种入口（`<标签>` 与「一行一个字段」）都走这里，省得两套拼装逻辑慢慢走岔。
+ */
+function assemble(entries, nameFallback) {
   const take = (field) => {
     const found = entries.filter((e) => e.field === field)
     if (found.length === 0) return ''
     return found.map((e) => e.lines.join('\n').trim()).filter((v) => v !== '').join('\n\n').trim()
   }
-
   const extraBlocks = []
   for (const entry of entries) {
     if (!TEXT_EXTRA_FIELDS.has(entry.field)) continue
@@ -614,7 +653,6 @@ export function parseTextCard(raw) {
     else if (value.includes('\n')) extraBlocks.push(`【${entry.key}】\n${value}`)
     else extraBlocks.push(`${entry.key}：${value}`)
   }
-
   const rawName = take('name').split('\n')[0].trim() === '' ? nameFallback : take('name').split('\n')[0].trim()
   const descriptionParts = [take('description'), ...extraBlocks].map((v) => String(v ?? '').trim()).filter((v) => v !== '')
   const description = descriptionParts.join('\n\n').trim()
@@ -682,7 +720,8 @@ export async function extractCard(bytes, fileName = '') {
       const kind = detectJsonKind(textCard.json)
       if (kind !== 'unknown') return { json: textCard.json, kind, source: textCard.source }
     }
-    throw new Error('这个文件读不出角色卡。它不像卡（没有名字/性格这些字段）。如果是散文式的人物介绍，先当材料导进来，用「让 AI 读一读」或提炼功能建卡。')
+    const head = text.replace(/\s+/g, ' ').slice(0, 60)
+    throw new Error(`这个文件读不出角色卡（开头是「${head}」）。如果是散文式的人物介绍，先当材料导进来，用「让 AI 读一读」或提炼功能建卡。`)
   }
   return { json, kind: detectJsonKind(json), source: 'json' }
 }

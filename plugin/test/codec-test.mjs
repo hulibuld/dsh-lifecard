@@ -226,6 +226,27 @@ console.log('=== 15. 文本角色卡（.txt） ===')
   }
   t('散文不硬当成卡，并指路', proseRejected)
 
+  const xml = await K.extractCard(bytes('<name>张三</name>\n<description>三十岁的修表匠。</description>\n<personality>话少</personality>\n<first_mes>灯是黄的。</first_mes>'), 'x.txt')
+  t('尖括号标签能读', xml.json.data.name === '张三' && xml.json.data.personality === '话少', xml.json.data)
+  t('标签里的正文进对了字段', xml.json.data.description === '三十岁的修表匠。' && xml.json.data.first_mes === '灯是黄的。', xml.json.data)
+
+  const cnTag = await K.extractCard(bytes('<名字>老刀</名字>\n<设定>火车站附近拉活的司机。</设定>'), 'y.txt')
+  t('中文标签也能读', cnTag.json.data.name === '老刀' && cnTag.json.data.description.includes('拉活'), cnTag.json.data)
+
+  const colonTag = await K.extractCard(bytes('<角色名>：阿澜</角色名>\n<描述>：海边长大。</描述>'), 'z.txt')
+  t('标签后面跟着冒号也不带进名字里', colonTag.json.data.name === '阿澜' && colonTag.json.data.description === '海边长大。', colonTag.json.data)
+
+  const attrTag = await K.extractCard(bytes('<char name="沈九">\n她开一间旧书店。\n</char>'), 'a.txt')
+  t('带 name 属性的标签认得出名字', attrTag.json.data.name === '沈九', attrTag.json.data.name)
+
+  let headShown = false
+  try {
+    await K.extractCard(bytes('<START>\n{{user}}: 你好'), 'chat.txt')
+  } catch (error) {
+    headShown = String(error.message).includes('开头是')
+  }
+  t('读不出来时把开头带进报错', headShown)
+
   const parsed = K.parseTextCard('名字：阿澜\n性格：沉默')
   t('parseTextCard 单独可用', parsed !== null && parsed.json.data.name === '阿澜')
   t('空文本返回 null', K.parseTextCard('   ') === null)
