@@ -756,6 +756,32 @@ export async function extractCard(bytes, fileName = '') {
       if (kind !== 'unknown') return { json: textCard.json, kind, source: textCard.source }
     }
     const head = text.replace(/\s+/g, ' ').slice(0, 60)
+    // 扩展名就是 .txt / .md 的时候，宁可先收进来让人自己改，也不要留一句「读不进去」。
+    // 名字取文件名，整份原文进自述，备注里写明是怎么收的——删掉重来也比卡住强。
+    const stem = String(fileName).replace(/\.[^.]+$/, '').trim()
+    if (/\.(txt|md|markdown)$/i.test(fileName)) {
+      return {
+        json: {
+          spec: 'chara_card_v2',
+          spec_version: '2.0',
+          data: {
+            name: stem === '' ? '未命名' : stem,
+            description: text,
+            personality: '',
+            scenario: '',
+            first_mes: '',
+            mes_example: '',
+            creator_notes: '这份是按纯文本整份收进来的：里面没有「名字：」「性格：」这种字段，原文完整放在自述里，你可以照着改。',
+            tags: [],
+            system_prompt: '',
+            post_history_instructions: '',
+            alternate_greetings: [],
+          },
+        },
+        kind: 'v2',
+        source: 'text-raw',
+      }
+    }
     throw new Error(`这个文件读不出角色卡（开头是「${head}」）。如果是散文式的人物介绍，先当材料导进来，用「让 AI 读一读」或提炼功能建卡。`)
   }
   return { json, kind: detectJsonKind(json), source: 'json' }

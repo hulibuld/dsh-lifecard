@@ -218,13 +218,20 @@ console.log('=== 15. 文本角色卡（.txt） ===')
   const renamed = await K.extractCard(bytes('```json\n{"spec":"chara_card_v2","spec_version":"2.0","data":{"name":"阿澜","description":"海边长大"}}\n```'), 'alan.txt')
   t('改名成 txt 的 JSON 也能读', renamed.json.data.name === '阿澜' && renamed.source === 'text-json', renamed.source)
 
+  // .txt 一律收进来（整份放自述），但文件名不是 txt/md 的时候仍然要指路
+  const proseTxt = await K.extractCard(bytes('他坐在院子里修一把旧椅子，手很稳。\n天快黑了，风从北边过来。'), '散文.txt')
+  t('.txt 就算没有字段也整份收进来', proseTxt.kind === 'v2' && proseTxt.source === 'text-raw', proseTxt.source)
+  t('整份收进来时名字取文件名', proseTxt.json.data.name === '散文', proseTxt.json.data.name)
+  t('整份收进来时原文都在', String(proseTxt.json.data.description).includes('风从北边过来'), proseTxt.json.data.description)
+  t('整份收进来时备注里写明怎么收的', String(proseTxt.json.data.creator_notes).includes('整份收进来'), proseTxt.json.data.creator_notes)
+
   let proseRejected = false
   try {
-    await K.extractCard(bytes('他坐在院子里修一把旧椅子，手很稳。\n天快黑了，风从北边过来。'), 'prose.txt')
+    await K.extractCard(bytes('他坐在院子里修一把旧椅子，手很稳。'), 'prose.bin')
   } catch (error) {
     proseRejected = String(error.message).includes('先当材料导进来')
   }
-  t('散文不硬当成卡，并指路', proseRejected)
+  t('不是 txt 又读不出字段的，仍然指路', proseRejected)
 
   const xml = await K.extractCard(bytes('<name>张三</name>\n<description>三十岁的修表匠。</description>\n<personality>话少</personality>\n<first_mes>灯是黄的。</first_mes>'), 'x.txt')
   t('尖括号标签能读', xml.json.data.name === '张三' && xml.json.data.personality === '话少', xml.json.data)
@@ -245,7 +252,7 @@ console.log('=== 15. 文本角色卡（.txt） ===')
 
   let headShown = false
   try {
-    await K.extractCard(bytes('<START>\n{{user}}: 你好'), 'chat.txt')
+    await K.extractCard(bytes('<START>\n{{user}}: 你好'), 'chat.bin')
   } catch (error) {
     headShown = String(error.message).includes('开头是')
   }

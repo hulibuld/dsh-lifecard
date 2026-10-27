@@ -997,7 +997,7 @@ console.log('\n=== 23. 文本角色卡（.txt）也能导进来 ===')
   t('读回来有性格和开场白', read.ok === true && String(read.sections.find((x) => x.title === '性格')?.body ?? '').includes('话少'), read.ok)
 
   const prose = await table['import.cards']({ files: [{ name: '散文.txt', base64: Buffer.from('他坐在院子里修一把旧椅子。\n天快黑了。', 'utf8').toString('base64') }] })
-  t('散文不当卡，且说清怎么走', prose.failed === 1 && String(prose.results[0]?.error).includes('先当材料导进来'), JSON.stringify(prose.results[0]).slice(0, 160))
+  t('没有字段的 txt 也整份收进来，不会卡在「读不进去」', prose.imported === 1 && (prose.results[0]?.path ?? '').endsWith('.card.md'), JSON.stringify(prose.results[0]).slice(0, 160))
   await fs.rm(ws, { recursive: true, force: true })
 }
 
