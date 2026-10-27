@@ -69,6 +69,13 @@ try {
     t(`没挑卡给的「${key}」`, patch.includes(key))
   }
   t('说清了用户说清要做什么就别再问', patch.includes('不要再问一遍'))
+  // 导入的小说/日记要能变成卡或世界书——但必须等用户明确同意才写。
+  for (const preset of ['LC 小说', 'LC 酒馆', 'LC 现实']) {
+    const i = patch.indexOf(`name: '${preset}'`)
+    const seg = i === -1 ? '' : patch.slice(i, i + 3000)
+    t(`${preset} 里写了「从材料提炼成卡或世界书」的路`, seg.includes('lifecard_import_character') && seg.includes('lifecard_import_world'))
+    t(`${preset} 里强调要等用户明确同意才写`, seg.includes('明确同意') || seg.includes('明确说要'))
+  }
   // 挂上卡之后要先报一句挂的是哪张，否则用户不知道这一场在写谁。
   t('挑了卡要先报出挂的是哪张卡', patch.includes('现在挂的是'))
   t('卡名从 lifecard_default 查，不靠猜', patch.includes('lifecard_default'))

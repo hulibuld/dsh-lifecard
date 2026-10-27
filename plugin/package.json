@@ -40,7 +40,8 @@
     "lib/career.js",
     "lib/presets.js",
     "lib/game.js",
-    "lifecard-tools.js"
+    "lifecard-tools.js",
+    "skills/**/*"
   ],
   "dsh": {
     "bundle": {

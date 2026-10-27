@@ -64,7 +64,8 @@ console.log('\n=== 2. apply 时注册进 skills 服务 ===')
     llm: undefined,
   }
   api.apply(ctx, {})
-  t('注册了访谈和写作两条 skill', registered.length === 2, registered.map((s) => s.name))
+  t('五条 skill 都注册上了（访谈、写作、写作手艺、盲评、视觉小说）',
+    registered.length === 5, registered.map((s) => s.name))
   const interview = registered.find((s) => s.name === 'lifecard-interview')
   const writing = registered.find((s) => s.name === 'lifecard-novel-writing')
   t('访谈 skill 在', interview !== undefined)
@@ -80,6 +81,19 @@ console.log('\n=== 2. apply 时注册进 skills 服务 ===')
   t('写作：内容讲了两套标准', writing.content.includes('传统文学的标准') && writing.content.includes('连载'))
   t('写作：内容是自足的（没让别人去装别的 skill）',
     !/调用\s*style-fiction-cn|调用\s*human-writing/.test(writing.content))
+
+  // 随包附带的三份通用手艺：正文来自插件 skills/ 目录，references/ 与
+  // scripts/ 靠 resourceBase 指过去。缺了 resourceBase，模型看到
+  // 「读取 references/forum-prose.md」只能瞎猜路径。
+  for (const name of ['human-writing', 'blind-review-loop', 'visual-novel']) {
+    const sk = registered.find((x) => x.name === name)
+    t(`${name} 注册上了`, sk !== undefined)
+    t(`${name} 正文够用`, typeof sk?.content === 'string' && sk.content.length > 500, sk?.content?.length)
+    t(`${name} 不带 frontmatter 头`, sk !== undefined && !sk.content.startsWith('---'))
+    t(`${name} 指了 resourceBase 目录`, sk?.resourceBase?.kind === 'directory' && String(sk.resourceBase.path).endsWith(name), sk?.resourceBase)
+  }
+  const hw = registered.find((x) => x.name === 'human-writing')
+  t('写作手艺保留了材料检查那一段', hw !== undefined && hw.content.includes('材料'))
 
   for (const s of [interview, writing]) {
     t(`${s.name}：模型可调用`, s.invocation?.modelInvocable === true)

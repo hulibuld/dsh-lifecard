@@ -3528,6 +3528,33 @@ function registerInterviewSkill(ctx) {
     fallback: '中文小说与长文的写法：先分清用不用人物卡，按传统文学的标准写正文，要连载节奏就切。',
     label: '写作',
   })
+  // 这三份是写作用得上的通用手艺，随包一起发：装插件即等于有，
+  // 换台机器不必再单独装一遍。名字与内容都保持原样，方便用户照旧用
+  // `/human-writing`、`/blind-review-loop`、`/visual-novel` 唤起。
+  //
+  // 同名冲突时让位：用户自己那份通常更新，硬盖上去等于拿旧版本把新版本
+  // 顶掉，而且他看不出来。
+  registerBundledSkill(ctx, {
+    dir: 'human-writing',
+    name: 'human-writing',
+    fallback: '通用中文创作与改稿：先看材料够不够，再写成有人在说话的样子。',
+    label: '写作手艺',
+    yieldToExisting: true,
+  })
+  registerBundledSkill(ctx, {
+    dir: 'blind-review-loop',
+    name: 'blind-review-loop',
+    fallback: '盲评迭代改稿：冻结副本、开无上下文评审员、把意见分诊后定向改，再评一轮。',
+    label: '盲评改稿',
+    yieldToExisting: true,
+  })
+  registerBundledSkill(ctx, {
+    dir: 'visual-novel',
+    name: 'visual-novel',
+    fallback: '视觉小说：分支剧本、对话框、存档、回放这些读者以为本来就在的东西。',
+    label: '视觉小说',
+    yieldToExisting: true,
+  })
 }
 
 /**
@@ -3539,6 +3566,11 @@ function registerBundledSkill(ctx, spec) {
   const skills = ctx.reflect?.get?.('skills', false)
   if (skills === undefined || skills === null || typeof skills.register !== 'function') {
     ctx.logger?.warn?.(`[lifecard] 没有 skills 服务，${spec.label} skill 未注册（不影响卡库功能）`)
+    return
+  }
+  if (spec.yieldToExisting === true && hasSkillNamed(skills, spec.name)) {
+    // 用户已经有一份同名的：他的更新，别盖。
+    ctx.logger?.info?.(`[lifecard] 已经有 ${spec.name} 这个 skill，插件这份不再注册`)
     return
   }
   const body = bundledSkillBody(spec.dir)
@@ -3554,15 +3586,36 @@ function registerBundledSkill(ctx, spec) {
       whenToUse: frontmatter.whenToUse,
       content,
       source: 'lifecard',
+      // 带上目录：SKILL.md 里说的 references/xxx.md、scripts/xxx.py
+      // 才有地方可查。不带 resourceBase，模型看到「读取 references/…」
+      // 只能瞎猜路径。
+      resourceBase: { kind: 'directory', path: bundledSkillDir(spec.dir) },
       invocation: { modelInvocable: true, userInvocable: true },
     }),
     `dsh-lifecard: ${spec.name} skill`,
   )
 }
 
+/** 目录里有没有同名 skill（用户自己装的那份）。问不到就当没有。 */
+function hasSkillNamed(skills, name) {
+  if (typeof skills.list !== 'function') return false
+  try {
+    const list = skills.list()
+    if (!Array.isArray(list)) return false
+    return list.some((s) => String(s?.name ?? '') === name)
+  } catch {
+    return false
+  }
+}
+
 /** SKILL.md 与 lib/ 同包，用 import.meta.url 定位，不依赖 cwd。 */
 function bundledSkillPath(dir) {
-  return path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'skills', dir, 'SKILL.md')
+  return path.join(bundledSkillDir(dir), 'SKILL.md')
+}
+
+/** 这份 skill 的目录（references/、scripts/ 都在它下面）。 */
+function bundledSkillDir(dir) {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'skills', dir)
 }
 
 const bundledSkillCache = new Map()

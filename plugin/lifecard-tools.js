@@ -301,5 +301,249 @@ export function registerTools(ctx, config) {
       return `《${String(args.world)}》里的条目：\n${entriesToText(entries)}`
     },
   )
+
+  // ── 从导入的材料里提炼：先读，再（经用户同意）写 ───────────────────
+  //
+  // 这一组是唯一会写盘的。规矩是死的：
+  //   1. 没带 approved=true 一律不写，只回「先把候选列给用户看」；
+  //   2. 每一段/每一条都必须附一句材料里的原句，写之前逐字比对；
+  //   3. 对不上就整次拒绝，并说清是哪一条对不上 —— 不猜、不模糊匹配。
+  // 理由：小说和日记一旦被「大概提炼」，卡上就会多出用户没写过的话，
+  // 而这种错不会报错，只会慢慢变成「我什么时候写过这个」。
+
+  register(
+    'lifecard_materials',
+    [
+      '列出这个文件夹里所有材料（导入的小说、日记、访谈原文）。',
+      '想把材料里的人或世界提炼成卡/世界书时，先用它看有哪些材料可用。',
+    ].join('\n'),
+    {},
+    [],
+    async () => {
+      const root = await resolveRoot(config)
+      const materials = await store.readMaterials(root)
+      const rels = Object.keys(materials).sort()
+      if (rels.length === 0) return '这个文件夹里还没有材料。先把文字导进来，再说提炼。'
+      const lines = rels.map((rel) => `- ${rel}（${String(materials[rel] ?? '').length} 字）`)
+      return `现有材料 ${rels.length} 份：\n${lines.join('\n')}`
+    },
+  )
+
+  register(
+    'lifecard_material',
+    [
+      '读一份材料的正文。想提炼人物或世界观，先把它读进来。',
+      '材料很长时会截断，并告出总字数。',
+    ].join('\n'),
+    {
+      material: { type: 'string', description: '材料的路径或文件名，比如 materials/2026-10-26-某篇小说.md。' },
+    },
+    ['material'],
+    async (args) => {
+      const root = await resolveRoot(config)
+      const materials = await store.readMaterials(root)
+      const picked = pickMaterial(materials, args.material)
+      if (picked === null) {
+        const rels = Object.keys(materials).sort()
+        return rels.length === 0
+          ? '这个文件夹里还没有材料。'
+          : `没找到「${String(args.material ?? '')}」这份材料。现有的：\n${rels.map((r) => `- ${r}`).join('\n')}`
+      }
+      const text = String(materials[picked] ?? '')
+      const cap = 12000
+      const head = text.slice(0, cap)
+      const tail = text.length > cap ? `\n\n（后面还有 ${text.length - cap} 字没显示，需要的话按段落分几次读。）` : ''
+      return `# ${picked}（共 ${text.length} 字）\n\n${head}${tail}`
+    },
+  )
+
+  register(
+    'lifecard_import_character',
+    [
+      '把材料里的一个人写成角色卡。**只有用户明确同意之后才调用。**',
+      '流程：先用 lifecard_materials / lifecard_material 读材料，把打算写成什么列给用户看（名字、几段、每段大意），',
+      '等用户说「可以 / 就这么写」，再带 approved: true 调这一次。',
+      '每一段都必须附一句材料里的原句（quote），写之前会逐字比对；对不上整次不写。',
+      '不给 approved: true 时不会写任何东西，只会告诉你还差哪一步。',
+    ].join('\n'),
+    {
+      approved: { type: 'boolean', description: '用户是否已经明确同意写入。必须为 true 才会真的建卡。' },
+      material: { type: 'string', description: '素材从哪来：材料的路径或文件名。' },
+      name: { type: 'string', description: '这个人叫什么。' },
+      world: { type: 'string', description: '归到哪本世界书下；不填就是 reality。' },
+      relation: { type: 'string', description: '和「我」的关系（可选）。' },
+      sections: {
+        type: 'array',
+        description: '要写进卡的段落。每项 { title, body, quote }：title 用小节名（自述/性格/场景/口癖/外貌/不会说的话…），body 是要写进卡的话，quote 是材料里支撑它的原句。',
+      },
+    },
+    ['approved', 'material', 'name', 'sections'],
+    async (args) => {
+      const root = await resolveRoot(config)
+      const name = String(args.name ?? '').trim()
+      if (name === '') return '这个人的名字是空的，先问清他叫什么。'
+
+      const materials = await store.readMaterials(root)
+      const picked = pickMaterial(materials, args.material)
+      if (picked === null) return `没找到「${String(args.material ?? '')}」这份材料，先确认材料名。`
+      const source = String(materials[picked] ?? '')
+
+      const rows = Array.isArray(args.sections) ? args.sections : []
+      if (rows.length === 0) return '一段都没有，那就没东西可写。先定下要写哪几段。'
+      const bad = []
+      const sections = []
+      for (const row of rows) {
+        const title = String(row?.title ?? '').trim()
+        const body = String(row?.body ?? '').trim()
+        const quote = String(row?.quote ?? '').trim()
+        if (title === '' || body === '') { bad.push(`（有一段没写小节名或内容是空的）`); continue }
+        if (quote === '') { bad.push(`「${title}」这一段没给原句`); continue }
+        if (!hasQuote(source, quote)) { bad.push(`「${title}」引的原句在材料里找不到：${quote.slice(0, 40)}…`); continue }
+        sections.push({ title, body })
+      }
+      if (bad.length > 0) {
+        return `这一版没写。下面这些对不上材料：\n${bad.map((b) => `- ${b}`).join('\n')}\n\n改好之后再来一次。`
+      }
+
+      if (args.approved !== true) {
+        const preview = sections.map((x) => `- ${x.title}：${x.body.slice(0, 60)}${x.body.length > 60 ? '…' : ''}`).join('\n')
+        return [
+          `还没写。先把这一版列给用户看，等他明确说要，再带 approved: true 重调一次。`,
+          '',
+          `人物：${name}`,
+          `材料：${picked}`,
+          `段落：`,
+          preview,
+        ].join('\n')
+      }
+
+      const data = {
+        lifecard: core.DATA_VERSION,
+        id: core.safeId(name),
+        kind: 'fictional',
+        name,
+        world: String(args.world ?? '').trim() === '' ? 'reality' : String(args.world).trim(),
+      }
+      const relation = String(args.relation ?? '').trim()
+      if (relation !== '') data.relation = relation
+      const rel = store.cardRelPath(data.id, data.world)
+      const saved = await store.writeCard(root, rel, data, sections)
+      if (saved.ok !== true) return `没能写成：${String(saved.error ?? '存盘失败')}`
+      return `写好了：${saved.path}\n${sections.length} 段，每段都对着材料里的原句核过。\n要接着补，就再调一次 lifecard_import_character（同名会覆盖，段落以这次为准）。`
+    },
+  )
+
+  register(
+    'lifecard_import_world',
+    [
+      '把材料里的一套设定整理成世界书。**只有用户明确同意之后才调用。**',
+      '流程同 lifecard_import_character：先读材料、把候选条目（触发词 + 内容 + 依据原句）列给用户看，',
+      '等用户点头，再带 approved: true 调这一次。每条都要附原句，逐字比对，对不上整次不写。',
+    ].join('\n'),
+    {
+      approved: { type: 'boolean', description: '用户是否已经明确同意写入。必须为 true 才会真的建世界书。' },
+      material: { type: 'string', description: '素材从哪来：材料的路径或文件名。' },
+      name: { type: 'string', description: '这本世界书叫什么（地方/时代/势力都行）。' },
+      genre: { type: 'string', description: '一句话说这是什么类型的设定（可选）。' },
+      entries: {
+        type: 'array',
+        description: '条目数组。每项 { keys, content, quote }：keys 是触发用的关键词（字符串或数组），content 是这条设定本身，quote 是材料里支撑它的原句。',
+      },
+    },
+    ['approved', 'material', 'name', 'entries'],
+    async (args) => {
+      const root = await resolveRoot(config)
+      const name = String(args.name ?? '').trim()
+      if (name === '') return '这本世界书的名字是空的，先问清它叫什么。'
+
+      const materials = await store.readMaterials(root)
+      const picked = pickMaterial(materials, args.material)
+      if (picked === null) return `没找到「${String(args.material ?? '')}」这份材料，先确认材料名。`
+      const source = String(materials[picked] ?? '')
+
+      const rows = Array.isArray(args.entries) ? args.entries : []
+      if (rows.length === 0) return '一条设定都没有，那就没东西可写。'
+      const bad = []
+      const entries = []
+      for (const row of rows) {
+        const content = String(row?.content ?? '').trim()
+        const quote = String(row?.quote ?? '').trim()
+        const rawKeys = row?.keys
+        const keys = (Array.isArray(rawKeys) ? rawKeys : String(rawKeys ?? '').split(/[,，、]/))
+          .map((k) => String(k).trim()).filter((k) => k !== '')
+        if (content === '') { bad.push('有一条没有内容'); continue }
+        if (quote === '') { bad.push(`「${content.slice(0, 20)}…」这条没给原句`); continue }
+        if (!hasQuote(source, quote)) { bad.push(`「${content.slice(0, 20)}…」引的原句在材料里找不到`); continue }
+        entries.push({ keys, content, insertion_order: 100 })
+      }
+      if (bad.length > 0) {
+        return `这一版没写。下面这些对不上材料：\n${bad.map((b) => `- ${b}`).join('\n')}\n\n改好之后再来一次。`
+      }
+
+      if (args.approved !== true) {
+        const preview = entries.map((e) => `- [${e.keys.join(' / ') || '常驻'}] ${e.content.slice(0, 50)}${e.content.length > 50 ? '…' : ''}`).join('\n')
+        return [
+          '还没写。先把这一版列给用户看，等他明确说要，再带 approved: true 重调一次。',
+          '',
+          `世界书：${name}`,
+          `材料：${picked}`,
+          `条目：`,
+          preview,
+        ].join('\n')
+      }
+
+      const id = core.safeId(name)
+      const data = {
+        lifecard: core.DATA_VERSION,
+        id,
+        kind: 'world',
+        name,
+        genre: String(args.genre ?? '').trim(),
+        entry_count: entries.length,
+      }
+      const body = entries.map((e) => renderWorldEntry(e)).join('\n')
+      const rel = path.posix.join('worlds', id, 'world.md')
+      const saved = await store.writeCard(root, rel, data, [{ title: '世界书条目', body }])
+      if (saved.ok !== true) return `没能写成：${String(saved.error ?? '存盘失败')}`
+      return `写好了：${saved.path}\n${entries.length} 条，每条都对着材料里的原句核过。`
+    },
+  )
+
   return true
+}
+
+/** 比对原句时先把空白和换行抹平：材料里的一句常被折行，逐字比会假失败。 */
+function squash(text) {
+  return String(text ?? '').replace(/\s+/g, '')
+}
+
+/** 材料里到底有没有这句话。宁可放过折行，绝不放过「差不多」。 */
+function hasQuote(source, quote) {
+  const q = squash(quote)
+  if (q === '') return false
+  return squash(source).includes(q)
+}
+
+/** 按路径、文件名、或独一无二的片段找那份材料。找不到回 null。 */
+function pickMaterial(materials, want) {
+  const key = String(want ?? '').trim()
+  if (key === '') return null
+  const rels = Object.keys(materials)
+  if (Object.hasOwn(materials, key)) return key
+  const norm = key.replace(/\\/g, '/')
+  const same = rels.filter((rel) => rel === norm || rel.endsWith('/' + norm) || path.posix.basename(rel) === norm)
+  if (same.length === 1) return same[0]
+  if (same.length > 1) return same[0]
+  const loose = rels.filter((rel) => rel.includes(norm))
+  return loose.length === 1 ? loose[0] : null
+}
+
+/** 一条世界书条目 → `- ` 开头的 YAML 块（parseWorldEntries 认这个形状）。 */
+function renderWorldEntry(entry) {
+  const keys = Array.isArray(entry.keys) ? entry.keys : []
+  const lines = [`- keys: ${JSON.stringify(keys)}`]
+  lines.push(`  insertion_order: ${Number.isFinite(entry.insertion_order) ? entry.insertion_order : 100}`)
+  lines.push('  content: |-')
+  for (const line of String(entry.content ?? '').split(/\r?\n/)) lines.push(`    ${line}`)
+  return lines.join('\n')
 }

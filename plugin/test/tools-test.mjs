@@ -1,4 +1,4 @@
-// lifecard-tools：把卡和世界书交给模型的那 5 个只读工具。
+// lifecard-tools：把卡和世界书交给模型的 9 个工具（7 个只读 + 2 个「批准后才写」）。
 //
 // 为什么值得单独测：这些工具将来是「LC 酒馆 / LC 小说 / LC 现实」三个预设
 // 唯一能读到用户档案的通道。它们坏掉不会让插件起不来——宿主会静默少几个
@@ -9,6 +9,7 @@ import path from 'node:path'
 
 import { registerTools } from '../lifecard-tools.js'
 import * as store from '../lib/store.js'
+import * as core from '../lib/core.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x) => { if (c) { pass++; console.log('  PASS', n) } else { fail++; console.log('  FAIL', n, x === undefined ? '' : String(x).slice(0, 400)) } }
@@ -55,8 +56,8 @@ await seed()
 const registered = new Map()
 registerTools({ tools: { register: (def) => { registered.set(def.name, def) } } }, { workspace: root })
 
-console.log('\n=== 1. 五个工具都注册上了 ===')
-for (const name of ['lifecard_cards', 'lifecard_card', 'lifecard_default', 'lifecard_roleplay', 'lifecard_world']) {
+console.log('\n=== 1. 九个工具都注册上了 ===')
+for (const name of ['lifecard_cards', 'lifecard_card', 'lifecard_default', 'lifecard_roleplay', 'lifecard_world', 'lifecard_materials', 'lifecard_material', 'lifecard_import_character', 'lifecard_import_world']) {
   t(`注册了 ${name}`, registered.has(name))
 }
 t('都带 parameters（模型要知道怎么传参）', [...registered.values()].every((d) => d.parameters?.type === 'object'))
@@ -132,6 +133,87 @@ console.log('\n=== 7. 环境不对时也不炸 ===')
   registerTools({ tools: { register: (def) => { empty.set(def.name, def) } } }, { workspace: path.join(root, 'nope') })
   const out = await empty.get('lifecard_cards').execute({})
   t('工作区不存在时给一句话，不是异常', typeof out?.text === 'string' && out.text.length > 0, out)
+}
+
+
+console.log('\n=== 8. 从材料提炼成卡 / 世界书：先列候选，用户同意才写 ===')
+{
+  // 一份「导入的小说」：两句原句分别对应一个人和一个地方。
+  const novel = [
+    '第一章',
+    '',
+    '码头上的雾还没散，陈默把怀里那本账册又按紧了一点。他说话总是先笑一声，' +
+    '笑完才开口，声音低得像怕吵醒谁。',
+    '',
+    '潮水退下去以后，旧码头的木桩露出来，上面结着一层白花花的盐。',
+  ].join('\n')
+  await mkdir(path.join(root, 'materials'), { recursive: true })
+  await writeFile(path.join(root, 'materials/2026-10-27-某篇小说.md'), novel, 'utf8')
+
+  t('材料也能被列出来', (await run('lifecard_materials')).includes('某篇小说'), await run('lifecard_materials'))
+  const text = await run('lifecard_material', { material: '2026-10-27-某篇小说.md' })
+  t('按文件名读得到正文', text.includes('陈默') && text.includes('旧码头'), text)
+
+  // ① 没批准：一个字都不许落盘
+  const noApprove = await run('lifecard_import_character', {
+    material: 'materials/2026-10-27-某篇小说.md',
+    name: '陈默',
+    sections: [{ title: '口癖', body: '说话总是先笑一声再开口。', quote: '他说话总是先笑一声' }],
+  })
+  t('没带 approved 时明说「还没写」', noApprove.includes('还没写'), noApprove)
+  t('没带 approved 时把候选列出来给用户看', noApprove.includes('陈默') && noApprove.includes('口癖'), noApprove)
+  const afterNo = await store.readCard(root, 'people/陈默.card.md')
+  t('没批准就真的没建卡', afterNo.ok !== true, afterNo)
+
+  // ② 引的原句材料里没有：整次拒绝
+  const badQuote = await run('lifecard_import_character', {
+    approved: true,
+    material: 'materials/2026-10-27-某篇小说.md',
+    name: '陈默',
+    sections: [{ title: '口癖', body: '说话总是先笑一声。', quote: '他从来不爱笑' }],
+  })
+  t('对不上原句时拒绝，并说清是哪一段', badQuote.includes('找不到') && badQuote.includes('口癖'), badQuote)
+  t('对不上就真的没建卡', (await store.readCard(root, 'people/陈默.card.md')).ok !== true)
+
+  // ③ 批准了、原句对得上：建卡
+  const made = await run('lifecard_import_character', {
+    approved: true,
+    material: 'materials/2026-10-27-某篇小说.md',
+    name: '陈默',
+    sections: [
+      { title: '口癖', body: '说话总是先笑一声，再开口。', quote: '他说话总是先笑一声，笑完才开口' },
+      { title: '场景', body: '常出现在雾没散的码头上。', quote: '码头上的雾还没散' },
+    ],
+  })
+  t('批准后说清写到了哪', made.includes('people/陈默.card.md'), made)
+  const card = await store.readCard(root, 'people/陈默.card.md')
+  t('卡真的建出来了', card.ok === true, card.error)
+  t('是虚构角色（材料里提炼的不是现实的人）', card.data?.kind === 'fictional', card.data?.kind)
+  t('段落按提的要求写进去了', card.ok === true && String(core.sectionBody(card.sections, '口癖')).includes('先笑一声'))
+  const listed = await run('lifecard_cards', { kind: 'fictional' })
+  t('新卡立刻能被列出来', listed.includes('陈默'), listed)
+
+  // ④ 世界观同样要批准 + 原句
+  const worldNo = await run('lifecard_import_world', {
+    material: 'materials/2026-10-27-某篇小说.md',
+    name: '旧码头',
+    entries: [{ keys: ['码头', '潮水'], content: '潮水退下去会露出旧码头的木桩。', quote: '旧码头的木桩露出来' }],
+  })
+  t('世界书没批准时也不许写', worldNo.includes('还没写'))
+  const worldMade = await run('lifecard_import_world', {
+    approved: true,
+    material: 'materials/2026-10-27-某篇小说.md',
+    name: '旧码头',
+    genre: '海边小镇',
+    entries: [{ keys: ['码头', '潮水'], content: '潮水退下去会露出旧码头的木桩，桩上一层白盐。', quote: '旧码头的木桩露出来' }],
+  })
+  t('批准后世界书写到 worlds 下', worldMade.includes('worlds/'), worldMade)
+  const worldFile = await store.readCard(root, 'worlds/旧码头-world/world.md').then((r) => r)
+  const anyWorld = await store.listAll(root)
+  const hit = anyWorld.worlds.find((w) => String(w.name ?? '') === '旧码头')
+  t('世界书进了列表', hit !== undefined, JSON.stringify(anyWorld.worlds.map((w) => w.name)))
+  t('条目数对得上', hit !== undefined && Number(hit.entry_count) === 1, hit?.entry_count)
+  void worldFile
 }
 
 await rm(root, { recursive: true, force: true })
