@@ -1357,7 +1357,6 @@ function LifeCardTab(props) {
               onDeleted: async () => { setActiveCard(null); setView(VIEWS.home); await refresh() },
               onInterview: (preset) => { setInterviewFor(preset); setView(VIEWS.interview) },
               onAnalyze: () => { setInterviewFor({ id: activeCard.data?.id, name: activeCard.data?.name }); setView(VIEWS.analyze) },
-              onTavern: mode === 'tavern' ? (preset) => startTavern(preset) : undefined,
             })
       case VIEWS.newCard:
         return h(NewCardView, {
@@ -1699,11 +1698,20 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
     return allWorlds.filter((w) => `${w.name ?? ''} ${w.id ?? ''} ${w.genre ?? ''}`.toLowerCase().includes(needle))
   }, [allWorlds, q])
   const byKind = useMemo(() => {
+
     const real = filtered.filter((c) => c.kind === 'real' || c.kind === 'self' || c.kind === 'hybrid')
     const fic = filtered.filter((c) => c.kind === 'fictional')
     const other = filtered.filter((c) => !['real', 'self', 'hybrid', 'fictional'].includes(c.kind))
     return { real, fic, other }
   }, [filtered])
+
+  // 右上角圆点：绿 = 这扇门现在用它，红 = 不用。再点一次绿的就取消。
+  // 写成普通函数（不是 hook），这样不动 hook 槽位。
+  const togglePin = (card) => {
+    const id = String(card?.id ?? '')
+    if (id === '') return
+    onPickPin?.(String(pinId ?? '') === id ? '' : id)
+  }
   // 酒馆那扇门里，现实里的人默认收起来：一进去先看见父母、同学、同事的一排卡，
   // 会让人不太舒服，也分不清哪些是拿来演的。想看的时候再展开。
   const [showRealForRole, setShowRealForRole] = useState(false)
@@ -1895,7 +1903,7 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
       ? (isReal
           ? h('div', null,
               h(GroupTitle, { icon: 'people' }, `认识的人 · ${byKind.real.length}`),
-              h('div', { className: 'lc-stack' }, byKind.real.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id], onDelete: onDeleteCard, onEdit: onEditCard }))),
+              h('div', { className: 'lc-stack' }, byKind.real.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id], onDelete: onDeleteCard, onEdit: onEditCard, pinned: String(pinId ?? '') === String(c.id ?? ''), onTogglePin: togglePin }))),
             )
           // 同一个文件夹里可能两样都有。这扇门不直接铺开真人，但也不能装作没有——
           // 用户会以为卡丢了。收起来一行，想看再展开，展开后是「复制一份来演」。
@@ -1927,28 +1935,21 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
             ))
       : null,
 
-    // 「现在用哪张」：写小说、酒馆那两扇门里演谁 / 写谁不用每次现挑；
-    // 真实人物那扇门用它决定首页先给谁。存在这个文件夹的 config.json 里。
+    // 「这扇门用哪张卡」：不再用下拉框挑，而是每张卡右上角一个圆点——
+    // 绿色 = 这扇门用它，红色 = 不用。再点一下绿的就取消（等于「不挑卡」）。
+    // 存在这个文件夹的 config.json 里。
     (() => {
       const pool = isReal ? byKind.real : byKind.fic
       if (pool.length === 0) return null
-      const label = isReal ? '这扇门先看谁' : (mode === 'tavern' ? '现在演谁' : '现在写谁')
       const chosen = String(pinId ?? '')
       const hit = chosen === '' ? undefined : pool.find((c) => String(c.id ?? '') === chosen)
-      // 空着也是一档：不挑卡。用户按一下下拉里的第一项就能取消选择，
-      // 之后写小说 / 演都从零开始，不读卡上的设定。
+      const label = isReal ? '这扇门先看谁' : (mode === 'tavern' ? '现在演谁' : '现在写谁')
       return h('div', null,
-        h('div', { className: 'lc-row', style: { marginTop: 10, marginBottom: 2, gap: 8 } },
-          h('span', { className: 'lc-meta', style: { flexShrink: 0 } }, label),
-          h('select', {
-            className: 'lc-select',
-            value: chosen,
-            onChange: (e) => onPickPin?.(String(e?.target?.value ?? '')),
-          },
-            h('option', { value: '' }, '不挑卡（从零开始）'),
-            pool.map((c) => h('option', { key: c.path, value: String(c.id ?? '') }, String(c.name ?? '(还没起名字)'))),
-          ),
-          hit === undefined ? null : h('span', { className: 'lc-meta' }, '说「演他」「写他」就默认用这张'),
+        h('div', { className: 'lc-row', style: { marginTop: 10, marginBottom: 2, gap: 8, flexWrap: 'wrap' } },
+          h('span', { className: 'lc-meta', style: { flexShrink: 0 } }, `${label}：`),
+          hit === undefined
+            ? h('span', { className: 'lc-meta' }, '点卡右上角的圆点挑一张（绿 = 用它，红 = 不用）')
+            : h('span', { className: 'lc-meta' }, `现在是「${String(hit.name ?? '')}」，点那个绿点可以取消`),
         ),
         chosen !== '' ? null : h('div', { className: 'lc-meta', style: { marginTop: 2 } },
           isReal
@@ -1962,14 +1963,14 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
     byKind.fic.length > 0
       ? h('div', null,
           h(GroupTitle, { tone: 'interview', icon: 'book' }, `${isReal ? '虚构角色' : (mode === 'tavern' ? '可以拿来演的角色' : '角色')} · ${byKind.fic.length}`),
-          h('div', { className: 'lc-stack' }, byKind.fic.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id], onDelete: onDeleteCard, onEdit: onEditCard }))),
+          h('div', { className: 'lc-stack' }, byKind.fic.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id], onDelete: onDeleteCard, onEdit: onEditCard, pinned: String(pinId ?? '') === String(c.id ?? ''), onTogglePin: togglePin }))),
         )
       : null,
 
     byKind.other.length > 0
       ? h('div', null,
           h(GroupTitle, { tone: 'analyze', icon: 'list' }, `其他 · ${byKind.other.length}`),
-          h('div', { className: 'lc-stack' }, byKind.other.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id], onDelete: onDeleteCard, onEdit: onEditCard }))),
+          h('div', { className: 'lc-stack' }, byKind.other.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id], onDelete: onDeleteCard, onEdit: onEditCard, pinned: String(pinId ?? '') === String(c.id ?? ''), onTogglePin: togglePin }))),
         )
       : null,
 
@@ -2068,7 +2069,7 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
   )
 }
 
-function CardRow({ card, onOpen, photo, onDelete, onEdit }) {
+function CardRow({ card, onOpen, photo, onDelete, onEdit, pinned, onTogglePin }) {
   // 整行是一个 button（点哪儿都能打开）。要再塞一个「删」进去，就不能
   // 在 button 里放 button——浏览器会把它们当兄弟节点拆开，React 也会警告。
   // 所以行改成 div，左边一块可点区域负责打开，右边单独一个真 button 负责删。
@@ -2122,6 +2123,24 @@ function CardRow({ card, onOpen, photo, onDelete, onEdit }) {
       onClick: (e) => { e?.stopPropagation?.(); onDelete(card) },
       style: { flex: '0 0 auto' },
     }, h(Icon, { name: 'trash', size: 13 })),
+    // 右上角那个圆点：绿 = 这扇门现在用它，红 = 不用。点一下切换。
+    // 放在最后一项 + alignSelf:flex-start，就贴在行的右上角。
+    onTogglePin === undefined ? null : h('button', {
+      type: 'button',
+      title: pinned === true
+        ? `这扇门现在用的是「${card.name ?? '这张卡'}」，点一下取消`
+        : `点一下让这扇门用「${card.name ?? '这张卡'}」`,
+      'aria-pressed': pinned === true,
+      'data-pinned': pinned === true ? 'yes' : 'no',
+      onClick: (e) => { e?.stopPropagation?.(); onTogglePin(card) },
+      style: {
+        flex: '0 0 auto', alignSelf: 'flex-start', width: 22, height: 22, borderRadius: 11,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, cursor: 'pointer',
+        border: pinned === true ? '1px solid var(--lc-doctor)' : '1px solid var(--lc-danger)',
+        background: pinned === true ? 'var(--lc-doctor)' : 'var(--lc-danger-soft)',
+        color: pinned === true ? '#ffffff' : 'var(--lc-danger)',
+      },
+    }, h(Icon, { name: pinned === true ? 'check' : 'x', size: 12 })),
   )
 }
 
@@ -3160,7 +3179,7 @@ function TavernView({ chat, onChat, onBack, flash }) {
   )
 }
 
-function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, onInterview, onAnalyze, worlds, onOpenWorld, onTavern, initialEditing }) {
+function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, onInterview, onAnalyze, worlds, onOpenWorld, initialEditing }) {
   const [editing, setEditing] = useState(initialEditing === true)
   const [busy, setBusy] = useState('')
   const [err, setErr] = useState(null)
@@ -3297,7 +3316,6 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
     h('div', { className: 'lc-row', style: { marginTop: 2 } },
       h(Btn, { tone: 'primary', icon: 'pencil', onClick: () => setEditing(true) }, '改这张卡'),
       h(Btn, { tone: 'interview', icon: 'chat', onClick: () => onInterview(buildPreset(data)) }, '接着聊'),
-      onTavern === undefined ? null : h(Btn, { tone: 'analyze', icon: 'mic', onClick: () => onTavern(buildPreset(data)) }, '和 TA 演一段'),
       h(Btn, { tone: 'analyze', size: 'sm', icon: 'spark', onClick: onAnalyze }, '读材料'),
     ),
 
