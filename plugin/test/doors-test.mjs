@@ -370,6 +370,18 @@ console.log('\n=== 6c. 每扇门都能先挑「现在用哪张卡」 ===')
     const words = textOf(tree)
     t(`${doorId} 那扇门能挑「${want}」`, words.includes(want), words.slice(0, 260))
     const sels = findNodes(tree, (n) => n.type === 'select')
+    // 第一项永远是「不挑卡」：按一下就把选择清掉，之后从零开始。
+    const firstOption = sels.length === 0 ? undefined : (Array.isArray(sels[0].props?.children) ? sels[0].props.children[0] : sels[0].props?.children)
+    const firstText = firstOption === undefined ? '' : textOf(firstOption)
+    t(`${doorId} 的下拉第一项就是「不挑卡」`, firstText.includes('不挑卡'), firstText)
+    if (doorId === 'tavern') {
+      // 没挑卡时页面上要说清楚「这一场不读卡上的设定」。
+      const none = renderRoot({ ...base('tavern'), 2: LIST, 24: 'tavern', 29: { real: '', tavern: '', novel: '' } })
+      const noneWords = textOf(none)
+      t('没挑卡时酒馆说清不读卡上的设定', noneWords.includes('不挑卡') && noneWords.includes('把人立起来'), noneWords.slice(0, 300))
+      const novelNone = renderRoot({ ...base('novel'), 2: LIST, 24: 'novel', 29: { real: '', tavern: '', novel: '' } })
+      t('没挑卡时写小说说清不读设定', textOf(novelNone).includes('只按写作方法来写'), textOf(novelNone).slice(0, 300))
+    }
     const sel = sels.find((n) => n.props?.value === (doorId === 'tavern' ? 'lin' : ''))
     t(`${doorId} 的下拉里选中了存下来的那张`, sel !== undefined, sels.map((n) => n.props?.value))
     if (sel !== undefined && doorId === 'tavern') {

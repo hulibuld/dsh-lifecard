@@ -1935,17 +1935,27 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
       const label = isReal ? '这扇门先看谁' : (mode === 'tavern' ? '现在演谁' : '现在写谁')
       const chosen = String(pinId ?? '')
       const hit = chosen === '' ? undefined : pool.find((c) => String(c.id ?? '') === chosen)
-      return h('div', { className: 'lc-row', style: { marginTop: 10, marginBottom: 2, gap: 8 } },
-        h('span', { className: 'lc-meta', style: { flexShrink: 0 } }, label),
-        h('select', {
-          className: 'lc-select',
-          value: chosen,
-          onChange: (e) => onPickPin?.(String(e?.target?.value ?? '')),
-        },
-          h('option', { value: '' }, '还没选（点这里挑一张）'),
-          pool.map((c) => h('option', { key: c.path, value: String(c.id ?? '') }, String(c.name ?? '(还没起名字)'))),
+      // 空着也是一档：不挑卡。用户按一下下拉里的第一项就能取消选择，
+      // 之后写小说 / 演都从零开始，不读卡上的设定。
+      return h('div', null,
+        h('div', { className: 'lc-row', style: { marginTop: 10, marginBottom: 2, gap: 8 } },
+          h('span', { className: 'lc-meta', style: { flexShrink: 0 } }, label),
+          h('select', {
+            className: 'lc-select',
+            value: chosen,
+            onChange: (e) => onPickPin?.(String(e?.target?.value ?? '')),
+          },
+            h('option', { value: '' }, '不挑卡（从零开始）'),
+            pool.map((c) => h('option', { key: c.path, value: String(c.id ?? '') }, String(c.name ?? '(还没起名字)'))),
+          ),
+          hit === undefined ? null : h('span', { className: 'lc-meta' }, '说「演他」「写他」就默认用这张'),
         ),
-        hit === undefined ? null : h('span', { className: 'lc-meta' }, '说「演他」「写他」就默认用这张'),
+        chosen !== '' ? null : h('div', { className: 'lc-meta', style: { marginTop: 2 } },
+          isReal
+            ? '没挑卡：这扇门不需要它，看谁点谁就行。'
+            : (mode === 'tavern'
+                ? '没挑卡：这一场不读卡上的设定，TA 会先问你两三句把人立起来。'
+                : '没挑卡：这一本不读卡上和世界书里的设定，AI 只按写作方法来写。')),
       )
     })(),
 

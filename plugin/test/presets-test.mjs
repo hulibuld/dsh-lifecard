@@ -42,6 +42,18 @@ try {
     t(`「${p.name}」里没有空话`, hit.length === 0, hit.join(','))
   }
 
+  console.log('\n=== 2b. 两种写法都在（传统文学 / 连载）===')
+  {
+    const serious = presets.findBuiltin('novel-serious')
+    const serial = presets.findBuiltin('novel-serial')
+    t('有「严肃短篇」这一档', serious !== null && serious.name === '严肃短篇')
+    t('严肃短篇写不被看见的人、情绪不当场结清', serious.prompt.includes('不被看见的人') && serious.prompt.includes('当场结清'))
+    t('有「连载章回」这一档', serial !== null && serial.name === '连载章回')
+    t('连载章回讲钩子和伏笔', serial.prompt.includes('钩子') && serial.prompt.includes('伏笔'))
+    t('两档都属于写小说', serious.mode === 'novel' && serial.mode === 'novel')
+    t('两档都说明白默认是传统标准', serious.prompt.includes('传统') || serious.prompt.includes('严肃'))
+  }
+
   console.log('\n=== 3. 按 id 找 ===')
   const one = presets.findBuiltin('tavern-slow')
   t('找得到 tavern-slow', one !== null && one.mode === 'tavern')
