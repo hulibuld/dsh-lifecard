@@ -500,6 +500,27 @@ const TEXT_FIELDS = [
   ['world', ['世界观', '世界', 'world', 'worldview']],
 ]
 
+/**
+ * 提示词式的卡（网上下的「破限/人设」txt 常见）没有「名字：性格：」这种字段，
+ * 整个文件被包在一两个外层标签里。这些标签名当作「整段放哪儿」的意思来认。
+ */
+const TEXT_WRAPPER_FIELDS = [
+  ['description', ['project_instructions', 'projectinstructions', 'system', 'system_prompt', 'persona', 'character', 'char', 'instruction', 'instructions', 'prompt', 'main', 'profile', 'context']],
+  ['creator_notes', ['user_style', 'userstyle', 'style', 'style_notes', 'stylesheet', 'notes', 'author_notes', 'postscript', 'appendix']],
+  ['mes_example', ['examples', 'dialogues', 'sample_dialogue', 'sample_messages']],
+  ['first_mes', ['greeting', 'opening', 'first_message']],
+]
+
+/** 外层容器标签对到「整段放哪个字段」；认不出返回 null。 */
+function textWrapperOf(rawKey) {
+  const key = String(rawKey ?? '').replace(/[\s\u3000]+/g, '').replace(/[-_]+/g, '_').toLowerCase()
+  if (key === '') return null
+  for (const [field, aliases] of TEXT_WRAPPER_FIELDS) {
+    if (aliases.includes(key)) return field
+  }
+  return null
+}
+
 /** 「外貌」「口癖」这些没有独立小节的，拼进自述里，加一个标签。 */
 const TEXT_EXTRA_FIELDS = new Set(['appearance', 'speech', 'relationship', 'world', 'extra'])
 
@@ -551,7 +572,8 @@ export function parseTextCard(raw, options = {}) {
   // 顶上单独一行的一级标题（`# 林小雨`）当名字兜底：
   // 后面再接「## 描述」这种小标题时，它本身对不上任何字段，但显然是名字。
   const topHeading = /^\s*#\s+(\S.*)$/m.exec(text.split('\n').filter((l) => l.trim() !== '')[0] ?? '')
-  const nameFallback = topHeading !== null && textFieldOf(topHeading[1]) === null ? topHeading[1].trim() : ''
+  const fileStem = String(options?.fileName ?? '').replace(/\.[^.]+$/, '').trim()
+  const nameFallback = topHeading !== null && textFieldOf(topHeading[1]) === null ? topHeading[1].trim() : fileStem
 
   // 2) 一行一个字段 / Markdown 小标题
   const entries = []
@@ -607,21 +629,20 @@ export function parseTextCard(raw, options = {}) {
   // 2) <标签>…</标签> 的写法（不少 txt 卡其实是当 XML 写的，中英标签都认）
   const tagEntries = []
   // `<名字>…</名字>`，以及带属性的 `<char name="张三">…</char>`
-  const tagRe = /<([A-Za-z\u4e00-\u9fff][\w\u4e00-\u9fff-]{0,15})([^>]*)>([\s\S]*?)<\/\1>/g
+  const tagRe = /<([A-Za-z\u4e00-\u9fff][\w\u4e00-\u9fff-]{0,30})([^>]*)>([\s\S]*?)<\/\1>/g
   let tagHit = tagRe.exec(text)
   while (tagHit !== null) {
     const tagName = tagHit[1]
     const attrText = tagHit[2]
     // 标签里紧跟着写了个冒号（`<名字>：阿澜`）也认——那只是在抄「字段：值」的习惯
     const body = tagHit[3].replace(/^\s*[:：]?\s*/, '').trimEnd()
+    // `<char name="沈九">正文</char>`：属性给名字，这一段正文算自述
+    const attrName = /name\s*=\s*["']?([^"'>]+)["']?/i.exec(attrText)
+    const attrIsName = attrName !== null && /^(char|character|character_card|bot|persona|card)$/i.test(tagName)
+    if (attrIsName) tagEntries.push({ field: 'name', key: tagName, lines: [attrName[1].trim()] })
     let field = textFieldOf(tagName)
-    if (field === null) {
-      const attrName = /name\s*=\s*["']?([^"'>]+)["']?/i.exec(attrText)
-      if (attrName !== null && /^(char|character|character_card|bot|persona|card)$/i.test(tagName)) {
-        tagEntries.push({ field: 'name', key: tagName, lines: [attrName[1].trim()] })
-        field = 'description'
-      }
-    }
+    if (field === null) field = textWrapperOf(tagName)
+    if (field === null && attrIsName) field = 'description'
     if (field !== null) {
       tagEntries.push({ field, key: tagName, lines: body === '' ? [] : body.split('\n') })
     } else if (body !== '') {
@@ -652,7 +673,7 @@ export function parseTextCard(raw, options = {}) {
             scenario: '',
             first_mes: '',
             mes_example: '',
-            creator_notes: '这份是按纯文本整份收进来的：里面的标签没能对到具体字段，正文原样放在自述里。',
+            creator_notes: '这份是提示词式的卡：里面没有「名字：」「性格：」这种分字段的写法，所以原文整份收在自述里，名字用的是文件名。想拆成小节可以手动改。',
             tags: [],
             system_prompt: '',
             post_history_instructions: '',
@@ -771,7 +792,7 @@ export async function extractCard(bytes, fileName = '') {
             scenario: '',
             first_mes: '',
             mes_example: '',
-            creator_notes: '这份是按纯文本整份收进来的：里面没有「名字：」「性格：」这种字段，原文完整放在自述里，你可以照着改。',
+            creator_notes: '这份是提示词式的卡：里面没有「名字：」「性格：」这种分字段的写法，所以原文整份收在自述里，名字用的是文件名。想拆成小节可以手动改。',
             tags: [],
             system_prompt: '',
             post_history_instructions: '',

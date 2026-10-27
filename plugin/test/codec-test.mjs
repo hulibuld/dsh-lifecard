@@ -223,7 +223,7 @@ console.log('=== 15. 文本角色卡（.txt） ===')
   t('.txt 就算没有字段也整份收进来', proseTxt.kind === 'v2' && proseTxt.source === 'text-raw', proseTxt.source)
   t('整份收进来时名字取文件名', proseTxt.json.data.name === '散文', proseTxt.json.data.name)
   t('整份收进来时原文都在', String(proseTxt.json.data.description).includes('风从北边过来'), proseTxt.json.data.description)
-  t('整份收进来时备注里写明怎么收的', String(proseTxt.json.data.creator_notes).includes('整份收进来'), proseTxt.json.data.creator_notes)
+  t('整份收进来时备注里写明怎么收的', String(proseTxt.json.data.creator_notes).includes('整份收在自述里'), proseTxt.json.data.creator_notes)
 
   let proseRejected = false
   try {
@@ -246,9 +246,24 @@ console.log('=== 15. 文本角色卡（.txt） ===')
   const attrTag = await K.extractCard(bytes('<char name="沈九">\n她开一间旧书店。\n</char>'), 'a.txt')
   t('带 name 属性的标签认得出名字', attrTag.json.data.name === '沈九', attrTag.json.data.name)
 
+  // 网上下的「提示词式」卡：没有分字段，整份包在一两个长标签里（标签名可能很长）
+  const promptCard = [
+    '<project_instructions>',
+    '你是一个只在夜里出现的修表匠。说话短，先动手后开口。',
+    '</project_instructions>',
+    '<user_style>',
+    '第一人称。别解释，别铺垫。',
+    '</user_style>',
+  ].join('\n')
+  const promptOut = await K.extractCard(bytes(promptCard), 'rat.txt')
+  t('长标签名的容器也认', promptOut.json.data.description.includes('修表匠'), promptOut.json.data.description?.slice(0, 40))
+  t('容器标签各自的段落进对了地方', promptOut.json.data.creator_notes.includes('第一人称'), promptOut.json.data.creator_notes?.slice(0, 40))
+  t('没有 name 字段时名字取文件名', promptOut.json.data.name === 'rat', promptOut.json.data.name)
+  t('这种收法不再写「对不上字段」', !String(promptOut.json.data.creator_notes).includes('没能对到'), promptOut.json.data.creator_notes)
+
   const unknownTag = await K.extractCard(bytes('<卡片>\n一些没对上的内容。\n</卡片>'), '沈九.txt')
   t('标签对不上字段时整份收进来，名字取文件名', unknownTag.json.data.name === '沈九' && String(unknownTag.json.data.description).includes('没对上'), unknownTag.json.data.name)
-  t('这种收法会在备注里说明', String(unknownTag.json.data.creator_notes).includes('整份收进来'), unknownTag.json.data.creator_notes)
+  t('这种收法会在备注里说明', String(unknownTag.json.data.creator_notes).includes('整份收在自述里'), unknownTag.json.data.creator_notes)
 
   let headShown = false
   try {
