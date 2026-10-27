@@ -3516,45 +3516,65 @@ function blankPng() {
  * skill，而不是整个插件起不来。
  */
 function registerInterviewSkill(ctx) {
+  registerBundledSkill(ctx, {
+    dir: 'lifecard-interview',
+    name: 'lifecard-interview',
+    fallback: '引导式对话访谈，把一张人物卡问出来。',
+    label: '访谈',
+  })
+  registerBundledSkill(ctx, {
+    dir: 'lifecard-novel-writing',
+    name: 'lifecard-novel-writing',
+    fallback: '中文小说与长文的写法：先分清用不用人物卡，按传统文学的标准写正文，要连载节奏就切。',
+    label: '写作',
+  })
+}
+
+/**
+ * 注册一个随包 skill。两处共同点都在这里：skills/SKILL.md 与 lib/ 同包，
+ * 用 import.meta.url 定位（不依赖 cwd）；没有 skills 服务时只少一个 skill，
+ * 不能让整个插件起不来。
+ */
+function registerBundledSkill(ctx, spec) {
   const skills = ctx.reflect?.get?.('skills', false)
   if (skills === undefined || skills === null || typeof skills.register !== 'function') {
-    ctx.logger?.warn?.('[lifecard] 没有 skills 服务，访谈 skill 未注册（不影响卡库功能）')
+    ctx.logger?.warn?.(`[lifecard] 没有 skills 服务，${spec.label} skill 未注册（不影响卡库功能）`)
     return
   }
-  const body = interviewSkillBody()
+  const body = bundledSkillBody(spec.dir)
   if (body === '') {
-    ctx.logger?.warn?.('[lifecard] 找不到 skills/lifecard-interview/SKILL.md，访谈 skill 未注册')
+    ctx.logger?.warn?.(`[lifecard] 找不到 skills/${spec.dir}/SKILL.md，${spec.label} skill 未注册`)
     return
   }
   const { frontmatter, content } = splitSkillFile(body)
   ctx.effect(
     () => skills.register({
-      name: 'lifecard-interview',
-      description: frontmatter.description ?? '引导式对话访谈，把一张人物卡问出来。',
+      name: spec.name,
+      description: frontmatter.description ?? spec.fallback,
       whenToUse: frontmatter.whenToUse,
       content,
       source: 'lifecard',
       invocation: { modelInvocable: true, userInvocable: true },
     }),
-    'dsh-lifecard: lifecard-interview skill',
+    `dsh-lifecard: ${spec.name} skill`,
   )
 }
 
 /** SKILL.md 与 lib/ 同包，用 import.meta.url 定位，不依赖 cwd。 */
-function interviewSkillPath() {
-  return path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'lifecard-interview', 'SKILL.md')
+function bundledSkillPath(dir) {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'skills', dir, 'SKILL.md')
 }
 
-let interviewSkillCache
-function interviewSkillBody() {
-  if (interviewSkillCache === undefined) {
+const bundledSkillCache = new Map()
+function bundledSkillBody(dir) {
+  if (!bundledSkillCache.has(dir)) {
     try {
-      interviewSkillCache = readFileSync(interviewSkillPath(), 'utf8')
+      bundledSkillCache.set(dir, readFileSync(bundledSkillPath(dir), 'utf8'))
     } catch {
-      interviewSkillCache = ''
+      bundledSkillCache.set(dir, '')
     }
   }
-  return interviewSkillCache
+  return bundledSkillCache.get(dir)
 }
 
 /** 拆 YAML frontmatter（只认 `key: value` 单行，够用且不引依赖）。 */
