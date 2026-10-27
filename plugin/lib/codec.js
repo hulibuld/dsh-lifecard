@@ -487,8 +487,8 @@ export function encodeCardJson(card, asV3 = false) {
  * 也有用 Markdown 小标题的，所以两种都认。
  */
 const TEXT_FIELDS = [
-  ['name', ['名字', '姓名', '名称', '角色名', '人名', 'name', 'char_name', 'character name']],
-  ['description', ['描述', '设定', '人物设定', '简介', '介绍', '背景', '人物背景', 'description', 'desc', 'persona']],
+  ['name', ['名字', '姓名', '名称', '角色名', '人名', '角色', '人物', '主角', 'name', 'char_name', 'character name']],
+  ['description', ['描述', '设定', '人物设定', '人设', '简介', '介绍', '背景', '人物背景', '背景设定', '角色设定', 'profile', 'description', 'desc', 'persona']],
   ['personality', ['性格', '个性', 'personality']],
   ['scenario', ['场景', '情景', 'scenario']],
   ['first_mes', ['开场白', '开场', '第一句话', '问候语', '初次见面', 'first_mes', 'first message', 'greeting', 'first_message']],
@@ -505,7 +505,13 @@ const TEXT_EXTRA_FIELDS = new Set(['appearance', 'speech', 'relationship', 'worl
 
 /** 把一个标题/键名对到字段名上；认不出返回 null。 */
 function textFieldOf(rawKey) {
-  const key = String(rawKey ?? '').replace(/[\s\u3000]+/g, '').replace(/^[#*>\-\s]+/, '').replace(/[:：]+$/, '').toLowerCase()
+  const key = String(rawKey ?? '')
+    .replace(/\{\{\s*(char|user|bot|character)\s*\}\}/gi, '')
+    .replace(/^(角色|人物|主角|TA|他|她)的/, '')
+    .replace(/[\s\u3000]+/g, '')
+    .replace(/^[#*>\-\s]+/, '')
+    .replace(/[:：]+$/, '')
+    .toLowerCase()
   if (key === '') return null
   for (const [field, aliases] of TEXT_FIELDS) {
     if (aliases.includes(key)) return field
@@ -526,7 +532,7 @@ function textFieldOf(rawKey) {
  * @param {string} raw
  * @returns {{ json: any, source: string } | null}
  */
-export function parseTextCard(raw) {
+export function parseTextCard(raw, options = {}) {
   const text = String(raw ?? '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').trim()
   if (text === '') return null
 
@@ -618,7 +624,7 @@ export function parseTextCard(raw) {
     }
     if (field !== null) {
       tagEntries.push({ field, key: tagName, lines: body === '' ? [] : body.split('\n') })
-    } else if (tagEntries.length > 0 && body !== '') {
+    } else if (body !== '') {
       tagEntries.push({ field: 'extra', key: tagName, lines: body.split('\n') })
     }
     tagHit = tagRe.exec(text)
@@ -627,6 +633,35 @@ export function parseTextCard(raw) {
   if (tagHasKnown) {
     const made = assemble(tagEntries, nameFallback)
     if (made !== null) return made
+  }
+  // 有 <标签>…</标签> 的结构、但一个字段都对不上：整份当自述收进来，别让人卡在「读不进去」。
+  // 名字取文件名（用户挑一份叫「张三.txt」的卡时，这几乎总是对的）。
+  if (tagEntries.length > 0) {
+    const stem = String(options?.fileName ?? '').replace(/\.[^.]+$/, '').trim()
+    const name = tagEntries.find((e) => e.key !== '')?.lines?.[0]?.trim() ?? ''
+    const body = text.trim()
+    if (body !== '') {
+      return {
+        json: {
+          spec: 'chara_card_v2',
+          spec_version: '2.0',
+          data: {
+            name: stem === '' ? (name === '' ? '未命名' : name) : stem,
+            description: body,
+            personality: '',
+            scenario: '',
+            first_mes: '',
+            mes_example: '',
+            creator_notes: '这份是按纯文本整份收进来的：里面的标签没能对到具体字段，正文原样放在自述里。',
+            tags: [],
+            system_prompt: '',
+            post_history_instructions: '',
+            alternate_greetings: [],
+          },
+        },
+        source: 'text-raw',
+      }
+    }
   }
 
   if (!sawKnown || entries.length === 0) return null
@@ -715,7 +750,7 @@ export async function extractCard(bytes, fileName = '') {
     json = JSON.parse(text)
   } catch {
     // 4) 文本角色卡（一行一个字段 / Markdown 小标题 / 改名成 .txt 的 JSON）
-    const textCard = parseTextCard(text)
+    const textCard = parseTextCard(text, { fileName })
     if (textCard !== null) {
       const kind = detectJsonKind(textCard.json)
       if (kind !== 'unknown') return { json: textCard.json, kind, source: textCard.source }

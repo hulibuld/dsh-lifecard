@@ -239,6 +239,10 @@ console.log('=== 15. 文本角色卡（.txt） ===')
   const attrTag = await K.extractCard(bytes('<char name="沈九">\n她开一间旧书店。\n</char>'), 'a.txt')
   t('带 name 属性的标签认得出名字', attrTag.json.data.name === '沈九', attrTag.json.data.name)
 
+  const unknownTag = await K.extractCard(bytes('<卡片>\n一些没对上的内容。\n</卡片>'), '沈九.txt')
+  t('标签对不上字段时整份收进来，名字取文件名', unknownTag.json.data.name === '沈九' && String(unknownTag.json.data.description).includes('没对上'), unknownTag.json.data.name)
+  t('这种收法会在备注里说明', String(unknownTag.json.data.creator_notes).includes('整份收进来'), unknownTag.json.data.creator_notes)
+
   let headShown = false
   try {
     await K.extractCard(bytes('<START>\n{{user}}: 你好'), 'chat.txt')
