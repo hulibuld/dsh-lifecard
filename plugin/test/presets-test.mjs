@@ -7,6 +7,7 @@
  */
 
 import fs from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import * as presets from '../lib/presets.js'
@@ -54,7 +55,27 @@ try {
     t('两档都说明白默认是传统标准', serious.prompt.includes('传统') || serious.prompt.includes('严肃'))
   }
 
-  console.log('\n=== 3. 按 id 找 ===')
+  console.log('\n=== 2c. LC 小说开场的几条路 ===')
+{
+  // 预设提示词写在随包的 cordis.patch.yml 里。用户第一句没说清要干什么时，
+  // 模型应当先给选项，而不是直接开写——这条行为只活在提示词里，所以只能
+  // 守住文案本身。
+  const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  t('补丁里有 LC 小说', patch.includes("name: 'LC 小说'"))
+  for (const key of ['文字模拟游戏', '改某一章', '接着往下写']) {
+    t(`挑了卡给的第「${key}」条`, patch.includes(key))
+  }
+  for (const key of ['网络文学连载小说', '现当代传统严肃小说', '长篇还是短篇']) {
+    t(`没挑卡给的「${key}」`, patch.includes(key))
+  }
+  t('说清了用户说清要做什么就别再问', patch.includes('不要再问一遍'))
+  // 挂上卡之后要先报一句挂的是哪张，否则用户不知道这一场在写谁。
+  t('挑了卡要先报出挂的是哪张卡', patch.includes('现在挂的是'))
+  t('卡名从 lifecard_default 查，不靠猜', patch.includes('lifecard_default'))
+  t('报卡名是开场第一件事', /现在挂的是[^\n]*\n[^\n]*1\. 玩一段文字模拟游戏/.test(patch) || patch.indexOf('现在挂的是') < patch.indexOf('1. 玩一段文字模拟游戏'))
+}
+
+console.log('\n=== 3. 按 id 找 ===')
   const one = presets.findBuiltin('tavern-slow')
   t('找得到 tavern-slow', one !== null && one.mode === 'tavern')
   t('找不到的返回 null', presets.findBuiltin('nope') === null)
