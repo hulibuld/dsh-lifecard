@@ -978,5 +978,28 @@ console.log('\n=== 22. 三扇门各自「现在用哪张卡」存得住 ===')
   await fs.rm(ws, { recursive: true, force: true })
 }
 
+console.log('\n=== 23. 文本角色卡（.txt）也能导进来 ===')
+{
+  const ws = await fs.mkdtemp(path.join(os.tmpdir(), 'lc-txt-'))
+  const table = api.buildApi({ get: () => undefined }, async () => ws, {})
+  const txt = [
+    '名字：陈默',
+    '性格：话少，说了就做',
+    '背景：在城南开一家修表铺',
+    '开场白：修表铺的灯是黄色的。',
+  ].join('\n')
+  const one = await table['import.cards']({ files: [{ name: '陈默.txt', base64: Buffer.from(txt, 'utf8').toString('base64') }] })
+  t('文本卡导入成功', one.ok === true && one.imported === 1, JSON.stringify(one).slice(0, 200))
+  const row = one.results[0] ?? {}
+  t('落成了卡文件', typeof row.path === 'string' && row.path.endsWith('.card.md'), row.path)
+  t('名字对', row.title === '陈默', row.title)
+  const read = await store.readCard(ws, row.path)
+  t('读回来有性格和开场白', read.ok === true && String(read.sections.find((x) => x.title === '性格')?.body ?? '').includes('话少'), read.ok)
+
+  const prose = await table['import.cards']({ files: [{ name: '散文.txt', base64: Buffer.from('他坐在院子里修一把旧椅子。\n天快黑了。', 'utf8').toString('base64') }] })
+  t('散文不当卡，且说清怎么走', prose.failed === 1 && String(prose.results[0]?.error).includes('先当材料导进来'), JSON.stringify(prose.results[0]).slice(0, 160))
+  await fs.rm(ws, { recursive: true, force: true })
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

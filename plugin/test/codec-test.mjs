@@ -187,5 +187,50 @@ function makeZip(files) {
   return Buffer.concat([localBuf, centralBuf, eocd])
 }
 
+console.log('=== 15. 文本角色卡（.txt） ===')
+{
+  const fieldCard = [
+    '名字：陈默',
+    '性别：男',
+    '外貌：瘦，左边眉毛有一道旧疤',
+    '性格：话少，说了就做',
+    '背景：在城南开一家修表铺',
+    '开场白：',
+    '修表铺的灯是黄色的。他抬头看了你一眼。',
+    '对话示例：{{user}}：这块表还能修吗',
+    '{{char}}：嗯。放这儿。',
+  ].join('\n')
+  const bytes = (text) => new Uint8Array(Buffer.from(text, 'utf8'))
+  const r = await K.extractCard(bytes(fieldCard), 'chen.txt')
+  t('一行一个字段能读出来', r.kind === 'v2' && r.source === 'text', { kind: r.kind, source: r.source })
+  t('名字取对了', r.json.data.name === '陈默', r.json.data.name)
+  t('多行开场白完整保留', String(r.json.data.first_mes).includes('修表铺的灯是黄色的'), r.json.data.first_mes)
+  t('对话里的冒号没被当成新字段', String(r.json.data.description).includes('外貌：瘦') && !String(r.json.data.description).includes('放这儿'), r.json.data.description)
+  t('对话示例自己那一段在', String(r.json.data.mes_example).includes('这块表还能修吗'), r.json.data.mes_example)
+
+  const md = await K.extractCard(bytes('# 林小雨\n\n## 描述\n小学语文老师。\n\n## 性格\n话多，爱笑。'), 'lin.md')
+  t('Markdown 小标题能读', md.json.data.name === '林小雨', md.json.data.name)
+  t('小标题下的正文进对了字段', md.json.data.description.includes('小学语文老师') && md.json.data.personality.includes('话多'), md.json.data)
+
+  const bracket = await K.extractCard(bytes('【名字】\n老刀\n【设定】\n火车站附近拉活的司机。'), 'dao.txt')
+  t('方括号标题能读', bracket.json.data.name === '老刀' && bracket.json.data.description.includes('拉活'), bracket.json.data)
+
+  const renamed = await K.extractCard(bytes('```json\n{"spec":"chara_card_v2","spec_version":"2.0","data":{"name":"阿澜","description":"海边长大"}}\n```'), 'alan.txt')
+  t('改名成 txt 的 JSON 也能读', renamed.json.data.name === '阿澜' && renamed.source === 'text-json', renamed.source)
+
+  let proseRejected = false
+  try {
+    await K.extractCard(bytes('他坐在院子里修一把旧椅子，手很稳。\n天快黑了，风从北边过来。'), 'prose.txt')
+  } catch (error) {
+    proseRejected = String(error.message).includes('先当材料导进来')
+  }
+  t('散文不硬当成卡，并指路', proseRejected)
+
+  const parsed = K.parseTextCard('名字：阿澜\n性格：沉默')
+  t('parseTextCard 单独可用', parsed !== null && parsed.json.data.name === '阿澜')
+  t('空文本返回 null', K.parseTextCard('   ') === null)
+  t('只有散文返回 null', K.parseTextCard('他坐在院子里，手很稳。') === null)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

@@ -4867,12 +4867,12 @@ function ImportView({ busy, onImport, onAnalyze, listing }) {
 
   const handleFiles = (fileList) => {
     const all = Array.from(fileList ?? [])
-    const files = all.filter((f) => /\.(png|json|charx|zip)$/i.test(f.name))
+    const files = all.filter((f) => /\.(png|json|charx|zip|txt|md)$/i.test(f.name))
     // 以前过滤完直接就 return：拖进来的是一张 jpg 头像或一份 md 设定，
     // 界面上什么都不发生，用户只会以为这块坏了。
     setSkipNote(files.length > 0 || all.length === 0
       ? ''
-      : `这些认不出来：${all.map((f) => f.name).join('、')}。只认角色卡文件（.png / .json / .charx / .zip）。想贴一段文字，就切到上面「一段文字」。`)
+      : `这些认不出来：${all.map((f) => f.name).join('、')}。只认角色卡文件（.png / .json / .charx / .zip / .txt）。想贴一段文字，就切到上面「一段文字」。`)
     if (files.length === 0) return
     onImport(files)
   }
@@ -4904,7 +4904,7 @@ function ImportView({ busy, onImport, onAnalyze, listing }) {
         h('h3', null, drag ? '松手就行' : '把文件拖到这里，或者点一下去选'),
         h('div', { className: 'lc-meta' }, '别人给你的角色卡都能读——图片也行，导出的文件也行。', h('br'), '可以一次选好几个。'),
         h('input', {
-          ref: inputRef, type: 'file', multiple: true, accept: '.png,.json,.charx,.zip',
+          ref: inputRef, type: 'file', multiple: true, accept: '.png,.json,.charx,.zip,.txt,.md',
           style: { display: 'none' }, onChange: (e) => handleFiles(e.target.files),
         }),
       ),

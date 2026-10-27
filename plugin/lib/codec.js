@@ -481,6 +481,165 @@ export function encodeCardJson(card, asV3 = false) {
  * @param {string} [fileName]
  * @returns {{ json: any, kind: string, source: string, rawFiles?: Record<string, Uint8Array> }}
  */
+/**
+ * 文本角色卡里常见的字段写法。
+ * 中文社区的 txt 卡八成是「名字：…／性格：…」这种一行一个字段，
+ * 也有用 Markdown 小标题的，所以两种都认。
+ */
+const TEXT_FIELDS = [
+  ['name', ['名字', '姓名', '名称', '角色名', '人名', 'name', 'char_name', 'character name']],
+  ['description', ['描述', '设定', '人物设定', '简介', '介绍', '背景', '人物背景', 'description', 'desc', 'persona']],
+  ['personality', ['性格', '个性', 'personality']],
+  ['scenario', ['场景', '情景', 'scenario']],
+  ['first_mes', ['开场白', '开场', '第一句话', '问候语', '初次见面', 'first_mes', 'first message', 'greeting', 'first_message']],
+  ['mes_example', ['对话示例', '示例对话', '对话范例', '例句', '示例', 'mes_example', 'example dialogue', 'examples']],
+  ['creator_notes', ['创作者备注', '备注', '说明', 'creator_notes', 'notes', 'creator comment']],
+  ['appearance', ['外貌', '长相', '外观', '穿着', 'appearance', 'looks']],
+  ['speech', ['说话方式', '口癖', '语气', '语癖', '说话风格', 'speech', 'voice', 'tone']],
+  ['relationship', ['关系', '与我的关系', '身份关系', 'relationship']],
+  ['world', ['世界观', '世界', 'world', 'worldview']],
+]
+
+/** 「外貌」「口癖」这些没有独立小节的，拼进自述里，加一个标签。 */
+const TEXT_EXTRA_FIELDS = new Set(['appearance', 'speech', 'relationship', 'world', 'extra'])
+
+/** 把一个标题/键名对到字段名上；认不出返回 null。 */
+function textFieldOf(rawKey) {
+  const key = String(rawKey ?? '').replace(/[\s\u3000]+/g, '').replace(/^[#*>\-\s]+/, '').replace(/[:：]+$/, '').toLowerCase()
+  if (key === '') return null
+  for (const [field, aliases] of TEXT_FIELDS) {
+    if (aliases.includes(key)) return field
+  }
+  return null
+}
+
+/**
+ * 把一份纯文本角色卡读成 CC v2 的 JSON 形状。
+ *
+ * 认三种写法：
+ *   1) 整份就是 JSON（可能在 ``` 里包着，常见于把 .json 改名成 .txt）
+ *   2) 「名字：张三 / 性格：沉默」一行一个字段（也认 `【名字】` 单独占一行的写法）
+ *   3) Markdown 小标题（`## 性格`）
+ * 认不出的键不丢，按「标签：内容」拼进自述；一行都没有的散文返回 null，
+ * 由调用方给出「先当材料导进来」的提示。
+ * @param {string} raw
+ * @returns {{ json: any, source: string } | null}
+ */
+export function parseTextCard(raw) {
+  const text = String(raw ?? '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').trim()
+  if (text === '') return null
+
+  // 1) 整份就是 JSON
+  const fenced = text.match(/^```(?:json|javascript)?\s*\n([\s\S]*?)\n```$/i)
+  const jsonBody = (fenced !== null ? fenced[1] : text).trim()
+  if (jsonBody.startsWith('{') || jsonBody.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(jsonBody)
+      return { json: parsed, source: 'text-json' }
+    } catch {
+      /* 不是合法 JSON，继续按字段读 */
+    }
+  }
+
+  // 顶上单独一行的一级标题（`# 林小雨`）当名字兜底：
+  // 后面再接「## 描述」这种小标题时，它本身对不上任何字段，但显然是名字。
+  const topHeading = /^\s*#\s+(\S.*)$/m.exec(text.split('\n').filter((l) => l.trim() !== '')[0] ?? '')
+  const nameFallback = topHeading !== null && textFieldOf(topHeading[1]) === null ? topHeading[1].trim() : ''
+
+  // 2) 一行一个字段 / Markdown 小标题
+  const entries = []
+  let current = null
+  let sawKnown = false
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.replace(/\u3000/g, ' ').trimEnd()
+    const trimmed = line.trim()
+    if (trimmed === '') {
+      if (current !== null) current.lines.push('')
+      continue
+    }
+    const heading = /^#{1,4}\s*(.+?)\s*#*$/.exec(trimmed)
+    const bracket = /^[【\[](.{1,12}?)[】\]]\s*[:：]?\s*(.*)$/.exec(trimmed)
+    const colon = /^(.{1,12}?)\s*[:：]\s*(.*)$/.exec(trimmed)
+    let key = null
+    let inline = ''
+    if (heading !== null) {
+      key = heading[1]
+    } else if (bracket !== null) {
+      key = bracket[1]
+      inline = bracket[2]
+    } else if (colon !== null) {
+      key = colon[1]
+      inline = colon[2]
+    }
+    // 对话行（`{{user}}：…`、`<旁白>：…`）里的冒号不是字段分隔符
+    const keyLooksLikeLabel = key !== null
+      && !/[{}<>\[\]"'“”‘’「」《》]/.test(key)
+      && !/\s/.test(String(key).trim())
+    if (key !== null && !keyLooksLikeLabel) key = null
+    if (key !== null) {
+      const field = textFieldOf(key)
+      if (field !== null) {
+        sawKnown = true
+        current = { field, key: String(key).trim(), lines: inline.trim() === '' ? [] : [inline] }
+        entries.push(current)
+        continue
+      }
+      // 认不出的键：只有在已经确认这是张卡（见过已知字段）之后才当标签，否则当成正文
+      if (sawKnown && !/^[\s"'“”‘’《》（）()，。！？、；]/.test(key)) {
+        current = { field: 'extra', key: String(key).trim(), lines: inline.trim() === '' ? [] : [inline] }
+        entries.push(current)
+        continue
+      }
+    }
+    if (current !== null) current.lines.push(line)
+    else if (trimmed !== '') {
+      current = { field: 'extra', key: '', lines: [line] }
+      entries.push(current)
+    }
+  }
+  if (!sawKnown || entries.length === 0) return null
+
+  const take = (field) => {
+    const found = entries.filter((e) => e.field === field)
+    if (found.length === 0) return ''
+    return found.map((e) => e.lines.join('\n').trim()).filter((v) => v !== '').join('\n\n').trim()
+  }
+
+  const extraBlocks = []
+  for (const entry of entries) {
+    if (!TEXT_EXTRA_FIELDS.has(entry.field)) continue
+    const value = entry.lines.join('\n').trim()
+    if (value === '') continue
+    if (entry.key === '') extraBlocks.push(value)
+    else if (value.includes('\n')) extraBlocks.push(`【${entry.key}】\n${value}`)
+    else extraBlocks.push(`${entry.key}：${value}`)
+  }
+
+  const rawName = take('name').split('\n')[0].trim() === '' ? nameFallback : take('name').split('\n')[0].trim()
+  const descriptionParts = [take('description'), ...extraBlocks].map((v) => String(v ?? '').trim()).filter((v) => v !== '')
+  const description = descriptionParts.join('\n\n').trim()
+  if (rawName === '' && description === '') return null
+
+  const json = {
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: {
+      name: rawName === '' ? '未命名' : rawName,
+      description,
+      personality: take('personality'),
+      scenario: take('scenario'),
+      first_mes: take('first_mes'),
+      mes_example: take('mes_example'),
+      creator_notes: take('creator_notes'),
+      tags: [],
+      system_prompt: '',
+      post_history_instructions: '',
+      alternate_greetings: [],
+    },
+  }
+  return { json, source: 'text' }
+}
+
 export async function extractCard(bytes, fileName = '') {
   const lower = fileName.toLowerCase()
   // 1) PNG
@@ -517,7 +676,13 @@ export async function extractCard(bytes, fileName = '') {
   try {
     json = JSON.parse(text)
   } catch {
-    throw new Error('这个文件读不出内容，可能不是角色卡')
+    // 4) 文本角色卡（一行一个字段 / Markdown 小标题 / 改名成 .txt 的 JSON）
+    const textCard = parseTextCard(text)
+    if (textCard !== null) {
+      const kind = detectJsonKind(textCard.json)
+      if (kind !== 'unknown') return { json: textCard.json, kind, source: textCard.source }
+    }
+    throw new Error('这个文件读不出角色卡。它不像卡（没有名字/性格这些字段）。如果是散文式的人物介绍，先当材料导进来，用「让 AI 读一读」或提炼功能建卡。')
   }
   return { json, kind: detectJsonKind(json), source: 'json' }
 }
