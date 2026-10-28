@@ -331,8 +331,17 @@ const CSS = `
 }
 /* 门的按动感：悬停抬一点，按下去真的往下沉 */
 .lc-door {
+  /* 顶上是门楣，底下是门槛：上圆下平，才像个门洞而不是一张卡 */
+  border-radius: 18px 18px 8px 8px;
   transition: transform .12s ease, box-shadow .16s ease, border-color .16s ease;
   will-change: transform;
+}
+/* 铰链：门板靠左那一条竖线，让人一眼看出这是一扇能推开的门 */
+.lc-door-hinge {
+  position: absolute; left: 14px; top: 14px; bottom: 52px; width: 2px;
+  border-radius: 2px; background: rgba(0, 0, 0, .09);
+  box-shadow: 1px 0 0 rgba(255, 255, 255, .55);
+  pointer-events: none;
 }
 .lc-door:hover { transform: translateY(-2px); box-shadow: 0 16px 30px rgba(0, 0, 0, .16); }
 .lc-door:active { transform: translateY(1px) scale(.992); box-shadow: 0 6px 14px rgba(0, 0, 0, .12), inset 0 2px 6px rgba(0, 0, 0, .10); }
@@ -1766,6 +1775,7 @@ function DoorsView({ onPick, state, features, hidden, onHide, onShow }) {
           }),
           // 门板与门缝：一块纯色方块看起来像色卡，加了这两层才像门。
           h('span', { className: 'lc-door-panel', 'aria-hidden': 'true' }),
+          h('span', { className: 'lc-door-hinge', 'aria-hidden': 'true' }),
           h('span', { className: 'lc-door-jamb', 'aria-hidden': 'true' }),
           // ── 删掉这扇门：鼠标放上来才露出来（免得误点）──
           h('button', {
