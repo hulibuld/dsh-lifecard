@@ -1741,7 +1741,9 @@ for (const [label, tree] of [
   t('展开之后列出真人卡', openedText.includes('老张'), openedText.slice(0, 300))
   t('展开之后能收起', openedText.includes('先收起'), openedText.slice(0, 300))
   // 点一张卡＝把「要不要复制」那句话问出来
-  const row = flatButtons(opened).find((b) => textOf(b).includes('老张'))
+  // 卡面正面只有头像和名字，名字下面那个「详细信息」才是打开卡页的入口
+  // （点整张卡本身是翻面——翻面不在这里断言，它属于卡面自己的行为）。
+  const row = flatButtons(opened).find((b) => typeof b.props?.title === 'string' && b.props.title.includes('老张') && textOf(b).includes('详细信息'))
   if (row === null || row === undefined) t('真人的卡能点', false, '没找到这一行')
   else {
     row.props.onClick()

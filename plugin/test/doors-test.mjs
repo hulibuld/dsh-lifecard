@@ -224,7 +224,9 @@ console.log('\n=== 4. 列表里能直接删卡（不用先进去滚到底）==='
     const tree = renderRoot({ ...base('home'), 2: listing })
     // 每张卡旁边都得有一个「删掉「X」」的按钮
     const trash = findNodes(tree, (n) => n.type === 'button' && typeof n.props?.title === 'string' && n.props.title.startsWith('删掉'))
-    t('列表里每张卡都有删除按钮', trash.length === 2, trash.map((b) => b.props.title))
+    // 卡有正反两面，两面各留一个删除入口（翻到背面也能删），所以每张卡两个。
+    const trashNames = [...new Set(trash.map((b) => b.props.title))]
+    t('列表里每张卡都有删除按钮', trashNames.length === 2, trashNames)
     t('删除按钮带名字，不会删错人', trash.some((b) => b.props.title.includes('林小雨')) && trash.some((b) => b.props.title.includes('妈妈')), trash.map((b) => b.props.title))
 
     // 点一下：先问一句，问的话要说清后果
@@ -323,8 +325,9 @@ await (async () => {
   }
   try {
     const tavernHome = renderRoot({ ...base('tavern'), 2: LIST, 24: 'tavern', 17: [] })
-    const cardBtn = findNodes(tavernHome, (n) => n.type === 'button' && textOf(n).includes('林小雨'))[0]
-    t('酒馆门里看得到那张卡', cardBtn !== undefined, textOf(tavernHome).slice(0, 300))
+    // 卡面正面只有头像和名字，名字下面是「详细信息」；点这张卡本身是翻面。
+    const cardBtn = findNodes(tavernHome, (n) => n.type === 'button' && textOf(n).includes('详细信息'))[0]
+    t('酒馆门里看得到那张卡', textOf(tavernHome).includes('林小雨') && cardBtn !== undefined, textOf(tavernHome).slice(0, 300))
     if (cardBtn !== undefined) {
       cardBtn.props.onClick()
       // openCard 会先等 card.get 回来再切屏，所以要让出一轮
@@ -444,6 +447,44 @@ console.log('\n=== 13. 门能收起来，也能装回来 ===')
   await backs[0].props.onClick()
   globalThis.fetch = before
   t('装回来会请求把门放出来', posts.some((b) => b.includes('door.set') && b.includes('"hidden":false')), posts)
+}
+
+{
+  // 2026-10-28：卡从「一行字」改成「一张卡」——正面只有头像和名字，
+  // 点卡片翻面看简介；门上的删除入口是垃圾桶（叉容易看成「关闭」）。
+  const cabinet = {
+    cards: [
+      { id: 'lin', path: 'people/lin.card.md', name: '林小雨', kind: 'fictional', coverage: 40, tags: [], intro: '在城南的旧书店做事。' },
+    ],
+    worlds: [], relations: [], materials: [], proposals: [], errors: [], systems: [], redactions: [],
+  }
+  const tree = renderRoot({ ...base('tavern'), 2: cabinet, 24: 'tavern', 17: [] })
+  const faces = findNodes(tree, (n) => n.type === 'div' && n.props?.['data-face'] !== undefined)
+  const front = faces.filter((n) => n.props['data-face'] === 'front')
+  const back = faces.filter((n) => n.props['data-face'] === 'back')
+  t('每张卡都有正反两面', front.length >= 1 && back.length === front.length, `${front.length}/${back.length}`)
+  const frontText = front.map((n) => textOf(n)).join(' ')
+  const backText = back.map((n) => textOf(n)).join(' ')
+  t('正面只有名字和一个「详细信息」', frontText.includes('林小雨') && frontText.includes('详细信息'), frontText.slice(0, 160))
+  t('正面不铺简介和百分比', !frontText.includes('写全') && !frontText.includes('这张卡还没写自述'), frontText.slice(0, 160))
+  t('背面写简介和「写全多少」', backText.includes('写全 40%') && backText.includes('在城南的旧书店做事'), backText.slice(0, 160))
+  t('点正面会翻面', typeof front[0]?.props?.onClick === 'function', typeof front[0]?.props?.onClick)
+  t('点背面会翻回来', typeof back[0]?.props?.onClick === 'function', typeof back[0]?.props?.onClick)
+
+  // 收起来的按钮在「选门」那一屏，不在门里的首页。
+  const doorsScreen = renderRoot(base('doors'))
+  const hides = findNodes(doorsScreen, (n) => n.type === 'button' && n.props?.['data-door-hide'] !== undefined)
+  // 叉容易被读成「关闭」，所以按钮里不再有「×」这两个字，只剩一个图标。
+  t('收起按钮不再写成「×」', hides.length === 3 && !hides.some((b) => textOf(b).includes('×')), hides.map((b) => textOf(b)))
+  t('收起按钮的提示写的是「收起来」', hides.every((b) => String(b.props?.title ?? '').includes('收起来')), hides.map((b) => b.props?.title))
+
+  // 收起来的那扇门：灰黑，放上去能装回来，并且列清里面有什么（分模块，装回来方便）
+  const dead = renderRoot(base('doors', { 1: { ...STATE, hidden_doors: ['novel', 'tavern'] } }))
+  const deadNodes = findNodes(dead, (n) => n.type === 'div' && n.props?.['data-door-dead'] !== undefined)
+  const deadText = deadNodes.map((n) => textOf(n)).join(' ')
+  t('收起来的门变灰黑，还看得见名字', deadNodes.length === 2 && deadText.includes('写小说'), deadText.slice(0, 120))
+  t('收起来的门里列清了有哪些模块', deadText.includes('书架与章节') && deadText.includes('会话存档'), deadText.slice(0, 200))
+  t('收起来的门上有装回来的按钮', deadText.includes('装回来'), deadText.slice(0, 200))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

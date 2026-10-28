@@ -312,6 +312,44 @@ const CSS = `
   display: inline-flex; align-items: center; justify-content: center;
 }
 .lc-door-back-btn:hover { background: #4a4a4a; border-color: #c8c8c8; }
+.lc-door-dead-name {
+  color: #9a9a9a; font-size: 13.5px; font-weight: 600; margin-top: 8px; letter-spacing: .04em;
+}
+
+/* 门框里那道内嵌的门板：让一块色块看起来是「一扇门」而不是一张卡 */
+.lc-door-panel {
+  position: absolute; inset: 10px 10px 46px 10px; border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, .10);
+  box-shadow: inset 0 2px 6px rgba(255, 255, 255, .55), inset 0 -10px 22px rgba(0, 0, 0, .06);
+  pointer-events: none;
+}
+.lc-door-jamb {
+  position: absolute; left: 10px; right: 10px; bottom: 40px; height: 6px;
+  border-radius: 0 0 8px 8px; background: rgba(0, 0, 0, .10);
+  box-shadow: 0 2px 0 rgba(255, 255, 255, .5);
+  pointer-events: none;
+}
+/* 门的按动感：悬停抬一点，按下去真的往下沉 */
+.lc-door {
+  transition: transform .12s ease, box-shadow .16s ease, border-color .16s ease;
+  will-change: transform;
+}
+.lc-door:hover { transform: translateY(-2px); box-shadow: 0 16px 30px rgba(0, 0, 0, .16); }
+.lc-door:active { transform: translateY(1px) scale(.992); box-shadow: 0 6px 14px rgba(0, 0, 0, .12), inset 0 2px 6px rgba(0, 0, 0, .10); }
+.lc-door:focus-visible { outline: 2px solid var(--lc-accent); outline-offset: 2px; }
+/* 按钮立体 + 按下去的下沉动效（所有按钮一起变，不用逐处改） */
+.lc-btn {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .7) inset, 0 2px 4px rgba(0, 0, 0, .10), 0 1px 0 rgba(0, 0, 0, .06);
+  transition: transform .1s ease, box-shadow .14s ease, background .14s ease, border-color .14s ease;
+}
+.lc-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 1px 0 rgba(255, 255, 255, .7) inset, 0 4px 8px rgba(0, 0, 0, .12); }
+.lc-btn:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, .16), 0 0 0 rgba(0, 0, 0, 0);
+}
+/* 卡面：悬停抬起来一点，翻面靠内层 transform */
+.lc-fcard { transition: transform .16s ease; }
+.lc-fcard:hover { transform: translateY(-2px); }
 
 /* 按钮：颜色即语义 */
 .lc-btn {
@@ -1576,18 +1614,21 @@ const DOORS = [
     title: '真实人物记录',
     desc: '身边的人：他做过什么、怎么说话、你们之间发生过什么。',
     bullets: ['聊着建，把他说的话记下来', '贴材料，让 AI 读出能核实的内容', '找工作：贴招聘说明、练面试'],
+    modules: ['人物卡', '访谈记录', '材料与建议', '简历与规划'],
   },
   {
     id: 'novel', icon: 'book', tone: 'import',
     title: '写小说',
     desc: '虚构的角色和世界：先把人立起来，再一章一章往下写。',
-    bullets: ['立角色：性格、口癖、绝不会做的事', '写世界：地方、规矩、里面还有谁'],
+    bullets: ['立角色：性格、口癖、绝不会做的事', '写世界：地方、规矩、里面还有谁', '一章一章往下写，能导出整本'],
+    modules: ['角色卡', '世界书', '书架与章节', '文字模拟游戏', '写作预设'],
   },
   {
     id: 'tavern', icon: 'chat', tone: 'analyze',
     title: '酒馆',
     desc: '拿一张角色卡，和 TA 你一句一句地演。',
-    bullets: ['挑一张角色卡就开演', '拿现实里的人来演也行（复制一份，原卡不动）'],
+    bullets: ['挑一张角色卡就开演', '拿现实里的人来演也行（复制一份，原卡不动）', '演到一半能收个尾，把这段备忘接着用'],
+    modules: ['角色卡', '会话存档', '演法与语气预设'],
   },
 ]
 
@@ -1723,6 +1764,9 @@ function DoorsView({ onPick, state, features, hidden, onHide, onShow }) {
               background: t.fg, opacity: .55,
             },
           }),
+          // 门板与门缝：一块纯色方块看起来像色卡，加了这两层才像门。
+          h('span', { className: 'lc-door-panel', 'aria-hidden': 'true' }),
+          h('span', { className: 'lc-door-jamb', 'aria-hidden': 'true' }),
           // ── 删掉这扇门：鼠标放上来才露出来（免得误点）──
           h('button', {
             type: 'button',
@@ -1733,7 +1777,8 @@ function DoorsView({ onPick, state, features, hidden, onHide, onShow }) {
               e?.stopPropagation?.()
               onHide?.(door.id)
             },
-          }, '×'),
+          // 叉容易看成「关闭」，用垃圾桶才一眼知道是「删掉/收起来」。
+          }, h(Icon, { name: 'trash', size: 13 })),
         )
       }),
       // ── 收起来的门：一块灰黑的死门，鼠标放上去露出装回来的按钮 ──
@@ -1743,6 +1788,7 @@ function DoorsView({ onPick, state, features, hidden, onHide, onShow }) {
         'data-door-dead': door.id,
       },
         h('div', { className: 'lc-door-dead-icon' }, h(Icon, { name: (tint[door.id] ?? tint.real).icon, size: 34 })),
+        h('div', { className: 'lc-door-dead-name' }, door.title),
         h('div', {
           className: 'lc-door-back',
         },
@@ -1754,6 +1800,11 @@ function DoorsView({ onPick, state, features, hidden, onHide, onShow }) {
             onClick: () => onShow?.(door.id),
           }, h(Icon, { name: 'download', size: 26 })),
           h('div', { style: { fontSize: 13.5, fontWeight: 600 } }, '装回来'),
+          // 分模块列清楚：装回来只是把门重新露出来，里面的东西一样不少。
+          (door.modules ?? []).length === 0 ? null : h('div', {
+            className: 'lc-door-dead-mods',
+            style: { fontSize: 11.5, color: '#cfcfcf', textAlign: 'center', padding: '0 10px', lineHeight: 1.6 },
+          }, (door.modules ?? []).join(' · ')),
         ),
       )),
     ),
@@ -2017,7 +2068,7 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
       ? (isReal
           ? h('div', null,
               h(GroupTitle, { icon: 'people' }, `认识的人 · ${byKind.real.length}`),
-              h('div', { className: 'lc-stack' }, byKind.real.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id], onDelete: onDeleteCard, onEdit: onEditCard, pinned: String(pinId ?? '') === String(c.id ?? ''), onTogglePin: togglePin }))),
+              h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'stretch' } }, byKind.real.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id], onDelete: onDeleteCard, onEdit: onEditCard, pinned: String(pinId ?? '') === String(c.id ?? ''), onTogglePin: togglePin }))),
             )
           // 同一个文件夹里可能两样都有。这扇门不直接铺开真人，但也不能装作没有——
           // 用户会以为卡丢了。收起来一行，想看再展开，展开后是「复制一份来演」。
@@ -2077,7 +2128,7 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
     byKind.fic.length > 0
       ? h('div', null,
           h(GroupTitle, { tone: 'interview', icon: 'book' }, `${isReal ? '虚构角色' : (mode === 'tavern' ? '可以拿来演的角色' : '角色')} · ${byKind.fic.length}`),
-          h('div', { className: 'lc-stack' }, byKind.fic.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id], onDelete: onDeleteCard, onEdit: onEditCard, pinned: String(pinId ?? '') === String(c.id ?? ''), onTogglePin: togglePin }))),
+          h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'stretch' } }, byKind.fic.map((c) => h(CardRow, { key: c.path, card: c, onOpen, photo: avatars[c.id], onDelete: onDeleteCard, onEdit: onEditCard, pinned: String(pinId ?? '') === String(c.id ?? ''), onTogglePin: togglePin }))),
         )
       : null,
 
@@ -2184,77 +2235,128 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
 }
 
 function CardRow({ card, onOpen, photo, onDelete, onEdit, pinned, onTogglePin }) {
-  // 整行是一个 button（点哪儿都能打开）。要再塞一个「删」进去，就不能
-  // 在 button 里放 button——浏览器会把它们当兄弟节点拆开，React 也会警告。
-  // 所以行改成 div，左边一块可点区域负责打开，右边单独一个真 button 负责删。
-  return h('div', { className: 'lc-card-item', style: { display: 'flex', alignItems: 'center', gap: 8, cursor: 'default' } },
-    h('button', {
-      type: 'button',
-      className: 'lc-row',
-      onClick: () => onOpen(card),
-      style: {
-        flex: '1 1 auto', minWidth: 0, background: 'transparent', border: 0,
-        padding: 0, textAlign: 'left', cursor: 'pointer', font: 'inherit', color: 'inherit',
-        display: 'flex', alignItems: 'center', gap: 8,
-      },
+  // 「一张卡」而不是「一行字」：正面只有头像和名字，名字下面一个「详细信息」；
+  // 直接点卡片，卡片翻过来露出背面的简介，再点一下翻回来。
+  // 翻面用 CSS 3D（transform + backface-visibility），没有 JS 动画成本。
+  const [flipped, setFlipped] = useState(false)
+  const name = String(card.name ?? '').trim() === '' ? '（还没起名字）' : card.name
+  const intro = String(card.intro ?? '').trim()
+  const face = {
+    position: 'absolute', inset: 0, borderRadius: 14, border: '1px solid var(--lc-line)',
+    background: 'var(--lc-panel)', overflow: 'hidden', display: 'flex', flexDirection: 'column',
+    backfaceVisibility: 'hidden', WebkitBackfaceVisibility: 'hidden',
+    boxShadow: '0 10px 22px rgba(0, 0, 0, .12), inset 0 1px 0 rgba(255, 255, 255, .55)',
+  }
+  const iconBtn = (opts) => h('button', {
+    type: 'button',
+    title: opts.title,
+    'data-card-action': opts.act,
+    onClick: (e) => { e?.stopPropagation?.(); opts.onClick() },
+    style: {
+      width: 26, height: 26, borderRadius: 9, padding: 0, cursor: 'pointer', flex: '0 0 auto',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      border: '1px solid var(--lc-line)', background: 'rgba(255,255,255,.82)', color: 'var(--lc-ink-2)',
+      boxShadow: '0 1px 0 rgba(255,255,255,.7), 0 2px 4px rgba(0,0,0,.08)',
     },
-    h(Avatar, { name: card.name, kind: card.kind, photo }),
-    h('div', { className: 'lc-grow' },
-      h('div', { className: 'lc-row' },
-        h('span', { style: { fontWeight: 600, flex: '0 1 auto', overflow: 'hidden', textOverflow: 'ellipsis' } }, card.name),
-        card.relation === undefined || card.relation === '' ? null : h('span', { className: 'lc-meta' }, card.relation),
-        h('span', { className: 'lc-grow' }),
-        card.issues?.some((i) => i.level === 'error')
-          ? h(Tag, { tone: 'err' }, '有问题')
-          : null,
-      ),
-      h('div', { className: 'lc-row', style: { marginTop: 3 } },
-        h(Bar, { value: card.coverage }),
-        // 「10%」以前只有一个数字，没人知道是什么。它是这张卡写全了多少：
-        // 关系、性格、说话习惯、做过的事……这些栏里填了几样。
-        h('span', { className: 'lc-meta', style: { flexShrink: 0 }, title: '这张卡写全了多少：性格、说话习惯、做过的事这些填了几样' }, `写全 ${card.coverage}%`),
-      ),
-      (card.tags ?? []).length > 0
-        ? h('div', { className: 'lc-wrap', style: { marginTop: 5 } }, card.tags.slice(0, 4).map((t) => h(Tag, { key: t }, t)))
-        : null,
-    ),
-    ),
-    // 列表里直接能删：以前必须先点开卡、滚到最底下才找得到「删掉这张卡」，
-    // 建错一张（比如「复制一份来演」试了几次）就得来回点好几屏。
-    // 「写全 10%」后面以前没有任何「去补它」的入口：要改这张卡，得先点开、
-    // 再在卡页上找「改这张卡」。一行一个铅笔，直接进修改。
-    onEdit === undefined ? null : h('button', {
-      type: 'button',
-      className: 'lc-btn ghost sm',
-      title: `改「${card.name ?? '这张卡'}」`,
-      onClick: (e) => { e?.stopPropagation?.(); onEdit(card) },
-      style: { flex: '0 0 auto' },
-    }, h(Icon, { name: 'pencil', size: 13 })),
-    onDelete === undefined ? null : h('button', {
-      type: 'button',
-      className: 'lc-btn ghost sm',
-      title: `删掉「${card.name ?? '这张卡'}」`,
-      onClick: (e) => { e?.stopPropagation?.(); onDelete(card) },
-      style: { flex: '0 0 auto' },
-    }, h(Icon, { name: 'trash', size: 13 })),
-    // 右上角那个圆点：绿 = 这扇门现在用它，红 = 不用。点一下切换。
-    // 放在最后一项 + alignSelf:flex-start，就贴在行的右上角。
+  }, h(Icon, { name: opts.icon, size: 13 }))
+
+  return h('div', {
+    className: 'lc-fcard',
+    style: { flex: '1 1 150px', maxWidth: 210, minWidth: 132, perspective: 900 },
+  },
+  h('div', {
+    style: {
+      position: 'relative', width: '100%', aspectRatio: '3 / 4',
+      transformStyle: 'preserve-3d', transition: 'transform .42s cubic-bezier(.2, .7, .3, 1)',
+      transform: flipped ? 'rotateY(180deg)' : 'none',
+    },
+  },
+  // ── 正面：头像 + 名字 + 「详细信息」 ───────────────────────────────────
+  h('div', {
+    style: face,
+    'data-face': 'front',
+    onClick: () => setFlipped(true),
+  },
+  h('div', { className: 'lc-row', style: { padding: '8px 8px 0 8px', gap: 6, alignItems: 'flex-start' } },
     onTogglePin === undefined ? null : h('button', {
       type: 'button',
       title: pinned === true
-        ? `这扇门现在用的是「${card.name ?? '这张卡'}」，点一下取消`
-        : `点一下让这扇门用「${card.name ?? '这张卡'}」`,
+        ? `这扇门现在用的是「${name}」，点一下取消`
+        : `点一下让这扇门用「${name}」`,
       'aria-pressed': pinned === true,
       'data-pinned': pinned === true ? 'yes' : 'no',
       onClick: (e) => { e?.stopPropagation?.(); onTogglePin(card) },
       style: {
-        flex: '0 0 auto', alignSelf: 'flex-start', width: 22, height: 22, borderRadius: 11,
-        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, cursor: 'pointer',
+        width: 24, height: 24, borderRadius: 12, padding: 0, cursor: 'pointer', flex: '0 0 auto',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
         border: pinned === true ? '1px solid var(--lc-doctor)' : '1px solid var(--lc-danger)',
         background: pinned === true ? 'var(--lc-doctor)' : 'var(--lc-danger-soft)',
         color: pinned === true ? '#ffffff' : 'var(--lc-danger)',
       },
     }, h(Icon, { name: pinned === true ? 'check' : 'x', size: 12 })),
+    h('span', { style: { flex: '1 1 auto' } }),
+    onEdit === undefined ? null : iconBtn({ act: 'edit', icon: 'pencil', title: `改「${name}」`, onClick: () => onEdit(card) }),
+    onDelete === undefined ? null : iconBtn({ act: 'delete', icon: 'trash', title: `删掉「${name}」`, onClick: () => onDelete(card) }),
+  ),
+  h('div', {
+    style: {
+      flex: '1 1 auto', display: 'flex', flexDirection: 'column', alignItems: 'center',
+      justifyContent: 'center', gap: 8, padding: '4px 10px 10px 10px', minHeight: 0,
+    },
+  },
+  h(Avatar, { name, kind: card.kind, photo, big: true }),
+  h('div', {
+    style: {
+      fontWeight: 700, fontSize: 15.5, textAlign: 'center', maxWidth: '100%',
+      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+    },
+  }, name),
+  card.relation === undefined || card.relation === '' ? null : h('div', { className: 'lc-meta' }, card.relation),
+  onOpen === undefined ? null : h('button', {
+    type: 'button',
+    className: 'lc-btn sm',
+    'data-card-open': card.id ?? '',
+    title: `看「${name}」的详细信息`,
+    onClick: (e) => { e?.stopPropagation?.(); onOpen(card) },
+    style: { marginTop: 2, width: '100%' },
+  }, '详细信息'),
+  ),
+  h('div', {
+    className: 'lc-meta',
+    style: { textAlign: 'center', padding: '0 8px 8px 8px', fontSize: 11.5 },
+  }, '点卡片翻面'),
+  ),
+
+  // ── 背面：简介 + 写全多少 + 标签 ───────────────────────────────────────
+  h('div', {
+    style: { ...face, transform: 'rotateY(180deg)' },
+    'data-face': 'back',
+    onClick: () => setFlipped(false),
+  },
+  h('div', { className: 'lc-row', style: { padding: '8px 8px 0 8px', gap: 6, alignItems: 'flex-start' } },
+    h('span', { style: { fontWeight: 700, fontSize: 13.5, flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, name),
+    onDelete === undefined ? null : iconBtn({ act: 'delete-back', icon: 'trash', title: `删掉「${name}」`, onClick: () => onDelete(card) }),
+  ),
+  h('div', {
+    style: {
+      flex: '1 1 auto', minHeight: 0, overflow: 'hidden', padding: '6px 10px 0 10px',
+      fontSize: 13, lineHeight: 1.65, color: 'var(--lc-ink-2)',
+    },
+  },
+  intro === '' ? '这张卡还没写自述。' : intro,
+  ),
+  h('div', { style: { padding: '6px 10px 8px 10px' } },
+    h('div', { className: 'lc-row', style: { gap: 6 } },
+      h(Bar, { value: card.coverage }),
+      h('span', { className: 'lc-meta', style: { flexShrink: 0 }, title: '这张卡写全了多少：性格、说话习惯、做过的事这些填了几样' }, `写全 ${card.coverage}%`),
+    ),
+    (card.tags ?? []).length > 0
+      ? h('div', { className: 'lc-wrap', style: { marginTop: 5 } }, card.tags.slice(0, 3).map((t) => h(Tag, { key: t }, t)))
+      : null,
+    h('div', { className: 'lc-meta', style: { marginTop: 5, textAlign: 'center' } }, '再点一下翻回正面'),
+  ),
+  ),
+  ),
   )
 }
 

@@ -738,6 +738,8 @@ export async function listAll(root) {
           relation: r.data?.relation,
           status: r.data?.status,
           tags: Array.isArray(r.data?.tags) ? r.data.tags : [],
+          // 卡背面要显示一段「简介」：取自述的头一段，够长又不至于把整卡铺出来。
+          intro: String(core.sectionBody(r.sections, '自述') ?? '').replace(/\s+/g, ' ').trim().slice(0, 160),
           coverage: cov.percent,
           empty: cov.empty.map((e) => e.label),
           unmarkedRatio: cov.unmarkedRatio,
