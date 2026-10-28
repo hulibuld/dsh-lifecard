@@ -1818,7 +1818,8 @@ function DoorsView({ onPick, state, features, hidden, onHide, onShow }) {
         ),
       )),
     ),
-    workspace === '' ? null : h('div', { className: 'lc-meta', style: { flex: '0 0 auto', paddingTop: 10 } }, '档案就在你选的那个文件夹里'),
+    workspace === '' ? null : h('div', { className: 'lc-meta', style: { flex: '0 0 auto', paddingTop: 10 } },
+      '档案就在你选的那个文件夹里。想让它开口说话，聊天前先在顶部把预设切成「LC 酒馆 / LC 小说 / LC 现实」——那张卡接在预设后面，不切预设带不进去。'),
   )
 }
 
