@@ -11,7 +11,7 @@
 
 import z from '@deepseek-ai/schemastery'
 import path from 'node:path'
-import { promises as fs, readFileSync, statSync, readdirSync } from 'node:fs'
+import { promises as fs, readFileSync, statSync, readdirSync, appendFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import os from 'node:os'
@@ -3678,6 +3678,19 @@ export function buildPersonaSection(root, mode) {
   return out.join('\n')
 }
 
+/** 人物卡注入的诊断日志。写文件而不是 console：宿主把插件的 stdout 丢进 /dev/null。 */
+function notePersona(step, detail) {
+  try {
+    const file = path.join(os.tmpdir(), 'lifecard-persona.log')
+    const line = `${new Date().toISOString()} ${step} ${JSON.stringify(detail)}\n`
+    appendFileSync(file, line)
+    const size = statSync(file).size
+    if (size > 200 * 1024) writeFileSync(file, line)
+  } catch {
+    /* 日志写不了不影响正事 */
+  }
+}
+
 /** 从会话标签里认出用的是哪个预设（不同版本字段位置不完全一样，挨个试）。 */
 function presetIdOfAgent(agent) {
   const spots = [
@@ -3700,6 +3713,74 @@ function modeForAgent(agent) {
   if (preset.includes('lc-tavern')) return 'tavern'
   if (preset.includes('lc-novel')) return 'novel'
   return ''
+}
+
+/** 子代理不挂人设：它不该以为自己是那个人。 */
+function isMainAgent(agent) {
+  const origin = String(agent?.meta?.origin ?? agent?.session?.header?.origin ?? '')
+  if (origin === 'subagent') return false
+  const depth = Number(agent?.meta?.delegationDepth ?? agent?.session?.header?.delegationDepth ?? 0)
+  return !(Number.isFinite(depth) && depth > 0)
+}
+
+/**
+ * 给一个会话挂上人物卡段落。返回 true 表示挂上了。
+ *
+ * 必须挂在 agent 自己的 ctx 上：段落按 scope 分发，注册在插件 ctx 上的段落
+ * 落不到任何会话的组装里（上一版就这么写的，模型压根看不见卡）。
+ */
+export function attachCardToAgent(agent, options = {}) {
+  const rootNow = typeof options.rootNow === 'function' ? options.rootNow : () => defaultWorkspace()
+  const attached = options.attached instanceof Set ? options.attached : null
+  const note = typeof options.note === 'function' ? options.note : () => {}
+  try {
+    if (agent === null || agent === undefined) return false
+    const agentId = typeof agent.id === 'string' ? agent.id : ''
+    if (attached !== null && agentId !== '' && attached.has(agentId)) return false
+    if (!isMainAgent(agent)) return false
+    const agentCtx = agent.ctx
+    if (agentCtx === null || agentCtx === undefined || typeof agentCtx.effect !== 'function') return false
+    const prompt = agentCtx.get('systemPrompt', false)
+    if (prompt === null || prompt === undefined || typeof prompt.section !== 'function') return false
+    const mode = modeForAgent(agent)
+    note('attach', { agent: agentId, preset: presetIdOfAgent(agent), mode })
+    if (mode === '') return false
+    let order = 500
+    try {
+      const anchor = prompt.getSectionOrder('deployment:persona-prefix')
+      if (typeof anchor === 'number' && Number.isFinite(anchor)) order = anchor + 0.5
+    } catch {
+      /* 拿不到锚点就用一个靠前但又不抢位置的值 */
+    }
+    let evaluated = 0
+    agentCtx.effect(
+      () =>
+        prompt.section({
+          name: 'lifecard:card',
+          order,
+          text: () => {
+            try {
+              const text = buildPersonaSection(rootNow(), mode)
+              if (evaluated < 3) {
+                evaluated += 1
+                note('text', { agent: agentId, mode, chars: text.length, root: rootNow() })
+              }
+              return text
+            } catch {
+              // 提示词拼不出来也不能挡住这一句话。
+              return ''
+            }
+          },
+          interpolate: false,
+        }),
+      'lifecard: 人物卡段落',
+    )
+    if (attached !== null && agentId !== '') attached.add(agentId)
+    return true
+  } catch (error) {
+    console.error('[lifecard] 人物卡段落没挂上：', error)
+    return false
+  }
 }
 
 function registerInterviewSkill(ctx) {
@@ -3887,44 +3968,38 @@ export function apply(ctx, config) {
   // 用 ctx.inject 等 tools 服务就绪：apply 跑的时候它可能还没起来，
   // 直接 ctx.get('tools') 会拿到 undefined，工具就静默少了。
   // 把挑好的那张卡拼进系统提示（不是对话里的资料）。
-  // 用 ctx.inject 等 systemPrompt 就绪；`text` 传函数，每轮重新求值，
-  // 所以换卡/改卡下一句就生效。只对 LC 酒馆、LC 小说两个预设生效。
-  if (typeof ctx.inject === 'function') {
-    ctx.inject(['systemPrompt'], (promptCtx) => {
+  //
+  // 必须挂在 **agent 自己的 ctx** 上。段落是按 scope 分发的：注册在插件自己
+  // 那个 ctx 上的段落，落不到任何一个会话的组装里——上一版就是这么写的，
+  // 结果模型压根看不见卡，只能反问「演 rat 是什么意思」，然后去翻工具。
+  // `text` 传函数，每轮组装都会重新求值，所以换卡/改卡下一句就生效。
+  const attachedAgents = new Set()
+  const attachCard = (agent) =>
+    attachCardToAgent(agent, { rootNow, attached: attachedAgents, note: notePersona })
+
+  // agent/created 是 serial 事件：这里同步抛错会否决整个会话的创建，
+  // 所以宁可没人设，也绝不能让用户开不了会话。
+  try {
+    ctx.on('agent/created', (event) => {
       try {
-        const prompt = promptCtx.get('systemPrompt', false)
-        if (prompt === undefined || prompt === null || typeof prompt.section !== 'function') {
-          console.warn('[lifecard] 系统提示服务不可用，人物卡改由工具提供')
-          return
-        }
-        let order = 500
-        try {
-          const anchorOrder = prompt.getSectionOrder('deployment:persona-suffix')
-          if (typeof anchorOrder === 'number' && Number.isFinite(anchorOrder)) order = anchorOrder - 0.5
-        } catch {
-          /* 拿不到锚点就用手写的位置 */
-        }
-        promptCtx.effect(
-          () =>
-            prompt.section({
-              name: 'lifecard:card',
-              order,
-              text: (assembly) => {
-                try {
-                  const mode = modeForAgent(assembly?.agent)
-                  if (mode === '') return ''
-                  return buildPersonaSection(rootNow(), mode)
-                } catch {
-                  // 提示词拼不出来也不能挡住这一句话。
-                  return ''
-                }
-              },
-              interpolate: false,
-            }),
-          'lifecard: 人物卡段落',
-        )
+        attachCard(event?.agent)
       } catch (error) {
-        console.error('[lifecard] 人物卡段落没挂上：', error)
+        console.error('[lifecard] agent/created 处理失败：', error)
+      }
+    })
+  } catch (error) {
+    console.error('[lifecard] 没能监听 agent/created：', error)
+  }
+  // 已经在跑的会话不会再发 agent/created（插件重载、宿主启动时已存在的会话），
+  // 所以要再扫一遍。
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['agents'], (agentsCtx) => {
+      try {
+        const registry = agentsCtx.get('agents', false)
+        const list = typeof registry?.list === 'function' ? registry.list() : []
+        for (const agent of list) attachCard(agent)
+      } catch (error) {
+        console.error('[lifecard] 补挂已有会话失败：', error)
       }
     })
   }
