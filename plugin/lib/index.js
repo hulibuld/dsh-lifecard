@@ -3700,6 +3700,27 @@ export function buildPersonaSection(root, mode) {
   return out.join('\n')
 }
 
+/** 把一个 agent 上跟「预设」有关的字段都抄出来，用来定位到底哪个字段才是真的。 */
+function shapeOfAgent(agent) {
+  const pick = (obj, keys) => {
+    const out = {}
+    for (const key of keys) {
+      const value = obj?.[key]
+      if (value !== undefined && value !== null && typeof value !== 'object') out[key] = String(value).slice(0, 60)
+    }
+    return out
+  }
+  return {
+    id: typeof agent?.id === 'string' ? agent.id : '',
+    options: pick(agent?.options, ['agentPreset', 'preset', 'presetId', 'model', 'provider']),
+    meta: pick(agent?.meta, ['agentPreset', 'preset', 'origin', 'delegationDepth', 'cwd']),
+    header: pick(agent?.header, ['agentPreset', 'cwd']),
+    sessionHeader: pick(agent?.session?.header, ['agentPreset', 'cwd', 'origin']),
+    optionKeys: Object.keys(agent?.options ?? {}).slice(0, 20),
+    metaKeys: Object.keys(agent?.meta ?? {}).slice(0, 20),
+  }
+}
+
 /** 人物卡注入的诊断日志。写文件而不是 console：宿主把插件的 stdout 丢进 /dev/null。 */
 function notePersona(step, detail) {
   try {
@@ -3724,6 +3745,29 @@ function presetIdOfAgent(agent) {
   ]
   for (const spot of spots) {
     if (typeof spot === 'string' && spot !== '') return spot
+  }
+  return ''
+}
+
+/**
+ * 从预设注册表里问「这个会话当初是按哪一份预设装的」。
+ *
+ * 为什么需要这条：DSH 顶部的预设是在会话建好之后才定下来的，
+ * agent 上那些 agentPreset 字段实测会停在默认值（standard），
+ * 直接读它会认错门，卡就永远进不去。
+ * inspectCompositions(ctx) 的返回形状没有公开文档，所以这里只做一件事：
+ * 把它序列化之后找 lc-tavern / lc-novel 这两个名字。
+ */
+function modeFromPresetRegistry(ctx, agent) {
+  try {
+    const registry = ctx?.get?.('agentPresets', false)
+    if (registry === null || registry === undefined || typeof registry.inspectCompositions !== 'function') return ''
+    const rows = registry.inspectCompositions(agent?.ctx) ?? []
+    const blob = JSON.stringify(rows)
+    if (blob.includes('lc-tavern')) return 'tavern'
+    if (blob.includes('lc-novel')) return 'novel'
+  } catch {
+    /* 问不到就当不知道 */
   }
   return ''
 }
@@ -3753,41 +3797,51 @@ function isMainAgent(agent) {
  */
 export function attachCardToAgent(agent, options = {}) {
   const rootNow = typeof options.rootNow === 'function' ? options.rootNow : () => defaultWorkspace()
-  const attached = options.attached instanceof Set ? options.attached : null
+  const attached = options.attached !== null && typeof options.attached?.has === 'function' && typeof options.attached?.add === 'function' ? options.attached : null
   const note = typeof options.note === 'function' ? options.note : () => {}
+  const pluginCtx = options.ctx ?? null
   try {
     if (agent === null || agent === undefined) return false
     const agentId = typeof agent.id === 'string' ? agent.id : ''
-    if (attached !== null && agentId !== '' && attached.has(agentId)) return false
+    if (attached !== null && attached.has(agent)) return false
     if (!isMainAgent(agent)) return false
     const agentCtx = agent.ctx
     if (agentCtx === null || agentCtx === undefined || typeof agentCtx.effect !== 'function') return false
     const prompt = agentCtx.get('systemPrompt', false)
     if (prompt === null || prompt === undefined || typeof prompt.section !== 'function') return false
-    const mode = modeForAgent(agent)
-    note('attach', { agent: agentId, preset: presetIdOfAgent(agent), mode })
-    if (mode === '') return false
-    // 紧贴在预设正文（persona prefix）后面：从模型那边看，这一段和预设是同一层，
-    // 属于「系统给人的设定」，不是对话里的一条消息。
-    let order = 500
-    try {
-      const anchor = prompt.getSectionOrder('deployment:persona-prefix')
-      if (typeof anchor === 'number' && Number.isFinite(anchor)) order = anchor + 0.5
-    } catch {
-      /* 拿不到锚点就用一个靠前但又不抢位置的值 */
-    }
+    // 注意：这里**不**按预设提前返回。DSH 顶部的预设是在会话建好之后才通过
+    // agentPresets.select 定下来的，创建那一刻 agent 上的预设字段还可能是默认值
+    // （实测拿到的是 standard）。所以段落一律挂上，每次组装提示词时再按当下的
+    // 预设判断要不要给内容——换预设立刻生效，也不用等重新建会话。
     let evaluated = 0
+    let reported = false
     agentCtx.effect(
       () =>
         prompt.section({
           name: 'lifecard:card',
-          order,
+          order: (() => {
+            try {
+              const anchor = prompt.getSectionOrder('deployment:persona-prefix')
+              if (typeof anchor === 'number' && Number.isFinite(anchor)) return anchor + 0.5
+            } catch {
+              /* 拿不到锚点就用一个靠前但又不抢位置的值 */
+            }
+            return 500
+          })(),
           text: () => {
             try {
+              const mode = modeForAgent(agent) || modeFromPresetRegistry(pluginCtx, agent)
+              if (mode === '') {
+                if (!reported) {
+                  reported = true
+                  notePersona('no-door', { agent: agentId, ...shapeOfAgent(agent) })
+                }
+                return ''
+              }
               const text = buildPersonaSection(rootNow(), mode)
               if (evaluated < 3) {
                 evaluated += 1
-                note('text', { agent: agentId, mode, chars: text.length, root: rootNow() })
+                notePersona('text', { agent: agentId, mode, chars: text.length, root: rootNow() })
               }
               return text
             } catch {
@@ -3799,7 +3853,7 @@ export function attachCardToAgent(agent, options = {}) {
         }),
       'lifecard: 人物卡段落',
     )
-    if (attached !== null && agentId !== '') attached.add(agentId)
+    if (attached !== null) attached.add(agent)
     return true
   } catch (error) {
     console.error('[lifecard] 人物卡段落没挂上：', error)
@@ -3997,9 +4051,15 @@ export function apply(ctx, config) {
   // 那个 ctx 上的段落，落不到任何一个会话的组装里——上一版就是这么写的，
   // 结果模型压根看不见卡，只能反问「演 rat 是什么意思」，然后去翻工具。
   // `text` 传函数，每轮组装都会重新求值，所以换卡/改卡下一句就生效。
-  const attachedAgents = new Set()
-  const attachCard = (agent) =>
-    attachCardToAgent(agent, { rootNow, attached: attachedAgents, note: notePersona })
+  // 去重按 **agent 对象**，不是按会话 id：在顶部换预设时 DSH 会给同一个会话
+  // 重新建一个 agent（新对象、新的 meta），按 id 去重会把换过预设的会话锁死在
+  // 「第一次那个 agent 认成 standard」的结果上。换对象就重新挂一次。
+  const attachedAgents = new WeakSet()
+  const attachCard = (agent) => {
+    const ok = attachCardToAgent(agent, { rootNow, attached: attachedAgents, note: notePersona, ctx })
+    if (ok !== true) notePersona('skip', shapeOfAgent(agent))
+    return ok
+  }
 
   // agent/created 是 serial 事件：这里同步抛错会否决整个会话的创建，
   // 所以宁可没人设，也绝不能让用户开不了会话。
