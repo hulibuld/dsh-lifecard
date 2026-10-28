@@ -417,6 +417,35 @@ console.log('\n=== 7. 卡列表里的百分比要说明白是什么 ===')
   t('不再只甩一个裸数字', !/(^|[^全 ])10%/.test(words.replace('写全 10%', '')), words.slice(0, 200))
 }
 
+console.log('\n=== 13. 门能收起来，也能装回来 ===')
+{
+  // 三扇门都在的时候：每扇门上都藏着一个「收起来」的按钮（鼠标放上去才露）
+  const full = renderRoot(base('doors'))
+  const hides = findNodes(full, (n) => typeof n.props?.['data-door-hide'] === 'string')
+  t('三扇门各有一个收起来的按钮', hides.length === 3, hides.map((n) => n.props['data-door-hide']))
+  t('没有收起来的门就没有灰门', findNodes(full, (n) => typeof n.props?.['data-door-dead'] === 'string').length === 0, '')
+
+  // 收掉酒馆之后：酒馆那块不摆了，改摆一块灰黑的门
+  const one = renderRoot(base('doors', { 1: { ...STATE, hidden_doors: ['tavern'] } }))
+  const tree = one
+  const dead = findNodes(tree, (n) => typeof n.props?.['data-door-dead'] === 'string')
+  t('收起来的门变成一块灰门', dead.length === 1 && dead[0].props['data-door-dead'] === 'tavern', dead.length)
+  t('灰门上没有「推门进去」', !textOf(dead[0]).includes('推门进去'), textOf(dead[0]).slice(0, 40))
+  const backs = findNodes(tree, (n) => typeof n.props?.['data-door-show'] === 'string')
+  t('灰门上有装回来的按钮', backs.length === 1 && backs[0].props['data-door-show'] === 'tavern', backs.length)
+
+  // 点「装回来」要真的发请求
+  const posts = []
+  const before = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    posts.push(`${String(url)} ${String(init?.body ?? '')}`)
+    return { ok: true, status: 200, json: async () => ({ ok: true, hidden_doors: [] }) }
+  }
+  await backs[0].props.onClick()
+  globalThis.fetch = before
+  t('装回来会请求把门放出来', posts.some((b) => b.includes('door.set') && b.includes('"hidden":false')), posts)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 
 process.exit(fail === 0 ? 0 : 1)

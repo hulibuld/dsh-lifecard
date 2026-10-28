@@ -759,6 +759,16 @@ function buildApi(ctx, workspace, config, options) {
         home: homedir(),
         hasLlm: ctx.get?.('llm') !== undefined && ctx.get?.('llm') !== null,
         defaults: { workspace: ws },
+        // 界面上被收起来的门。读不出来就一个都不收（宁可多摆一扇，也不要空一块）。
+        hidden_doors: await (async () => {
+          try {
+            const conf = await store.readConfigState(ws)
+            const list = conf.ok === true ? conf.config?.hidden_doors : []
+            return Array.isArray(list) ? list.filter((x) => typeof x === 'string') : []
+          } catch {
+            return []
+          }
+        })(),
         summary,
         relations: prompts.RELATION_TYPES,
       }
@@ -1010,6 +1020,30 @@ function buildApi(ctx, workspace, config, options) {
       await store.writeConfig(ws, { default_cards: pins })
       return { ok: true, cards: pins }
     },
+      /**
+     * 把一扇门从界面上收起来 / 装回来。
+     *
+     * 只是界面上的开关：卡、世界书、书、会话一个字节都不动，
+     * 所以「删掉」这件事随时可以反悔。
+     */
+    'door.set': async (body) => {
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id !== 'real' && id !== 'novel' && id !== 'tavern') return { ok: false, error: '不知道你说的是哪扇门。' }
+      const confState = await store.readConfigState(ws)
+      if (confState.ok !== true) return { ok: false, error: confState.error ?? '这个文件夹里的设置读不出来。' }
+      const conf = confState.config ?? {}
+      const hidden = Array.isArray(conf?.hidden_doors) ? conf.hidden_doors.filter((x) => typeof x === 'string') : []
+      const want = body?.hidden === true
+      const next = want
+        ? (hidden.includes(id) ? hidden : [...hidden, id])
+        : hidden.filter((x) => x !== id)
+      if (next.length === 3) return { ok: false, error: '三扇门都收起来就没地方进去了，至少留一扇。' }
+      const saved = await store.writeConfig(ws, { ...conf, hidden_doors: next })
+      if (saved === false || saved?.ok === false) return { ok: false, error: '这个开关没能存下来，等一会儿再试一次。' }
+      return { ok: true, hidden_doors: next }
+    },
+
     'card.history': async (body) => {
       const ws = await root(body)
       const safe = await insideWorkspace(ws, body?.path)

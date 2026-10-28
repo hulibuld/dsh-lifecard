@@ -280,6 +280,39 @@ const CSS = `
 .lc-row { display: flex; align-items: center; gap: 9px; }
 .lc-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
 
+/* 门：鼠标放上去才露出「删掉」；删掉之后变成一块灰黑的死门，放上去露出「装回来」 */
+.lc-door { position: relative; }
+.lc-door-x {
+  position: absolute; top: 8px; right: 8px;
+  width: 24px; height: 24px; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--lc-line-strong); background: var(--lc-panel);
+  color: var(--lc-danger); font-size: 13px; line-height: 1; cursor: pointer;
+  opacity: 0; transition: opacity .14s; padding: 0;
+}
+.lc-door:hover .lc-door-x, .lc-door-x:focus-visible { opacity: 1; }
+.lc-door-x:hover { background: var(--lc-danger-soft); border-color: var(--lc-danger); }
+.lc-door-dead {
+  flex: 1 1 30%; min-width: 156px; min-height: 260px; position: relative;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px dashed var(--lc-line-strong); border-radius: 16px;
+  background: #2b2b2b; box-sizing: border-box; cursor: default;
+}
+.lc-door-dead .lc-door-dead-icon { color: #6f6f6f; opacity: .9; }
+.lc-door-dead .lc-door-back {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 8px;
+  opacity: 0; pointer-events: none; transition: opacity .14s;
+  background: rgba(20, 20, 20, .72); border-radius: 16px; color: #f0f0f0;
+}
+.lc-door-dead:hover .lc-door-back, .lc-door-dead:focus-within .lc-door-back { opacity: 1; pointer-events: auto; }
+.lc-door-back-btn {
+  width: 56px; height: 56px; border-radius: 999px; border: 1px solid #8a8a8a;
+  background: #3a3a3a; color: #f0f0f0; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.lc-door-back-btn:hover { background: #4a4a4a; border-color: #c8c8c8; }
+
 /* 按钮：颜色即语义 */
 .lc-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 5px;
@@ -1006,6 +1039,43 @@ function LifeCardTab(props) {
   }, [pins])
 
 
+  /**
+   * 把一扇门收起来 / 装回来。
+   *
+   * 只动界面：卡、世界书、写的书、说过的场次一个字节不碰，
+   * 所以「删掉」随时能反悔——这也是为什么用收起而不是真删文件。
+   */
+  const hideDoor = async (which) => {
+    const one = DOORS.find((d) => d.id === which)
+    if (one === undefined) return
+    const ask = typeof window !== 'undefined' && typeof window.confirm === 'function' ? window.confirm : () => true
+    const yes = ask(`把「${one.title}」这扇门收起来？\n\n里面的东西都不会删——卡、世界书、写过的书都还在原处。想用的时候在这块灰门上点一下就能装回来。`)
+    if (yes !== true) return
+    try {
+      const r = await call('door.set', { id: which, hidden: true })
+      if (r?.ok !== true) {
+        setError(r?.error ?? '这扇门没能收起来，再点一次。')
+        return
+      }
+      setDoorsOverride(Array.isArray(r.hidden_doors) ? r.hidden_doors : [])
+    } catch (e) {
+      setError(humanizeError(e))
+    }
+  }
+
+  const showDoor = async (which) => {
+    try {
+      const r = await call('door.set', { id: which, hidden: false })
+      if (r?.ok !== true) {
+        setError(r?.error ?? '这扇门没能装回来，再点一次。')
+        return
+      }
+      setDoorsOverride(Array.isArray(r.hidden_doors) ? r.hidden_doors : [])
+    } catch (e) {
+      setError(humanizeError(e))
+    }
+  }
+
   useEffect(() => {
     let gone = false
     call('features.list', {})
@@ -1018,6 +1088,15 @@ function LifeCardTab(props) {
     if (view !== VIEWS.doors && view !== VIEWS.home && view !== VIEWS.tavern && view !== VIEWS.novel) return
     loadPins()
   }, [view, loadPins])
+
+  // 用户自己在界面上收起来的门。
+  //
+  // 这里用「本地覆盖」而不是再挂一个 effect 去同步 state：刚点完要立刻变灰，
+  // 等 refresh 回来之前界面不能还是老样子；拿到服务端结果后就以服务端为准。
+  const [doorsOverride, setDoorsOverride] = useState(null)
+  const hiddenDoors = doorsOverride !== null
+    ? doorsOverride
+    : (Array.isArray(state?.hidden_doors) ? state.hidden_doors : [])
 
   // 门自己的那两屏直接说了算；其余屏（聊着建、卡片、分析…）沿用上次选的门。
   const mode = (view === VIEWS.novel || view === VIEWS.book || view === VIEWS.game) ? 'novel' : (view === VIEWS.tavern || view === VIEWS.tavernChat) ? 'tavern' : door
@@ -1239,7 +1318,7 @@ function LifeCardTab(props) {
       })
     }
     // 门还没选：先问「你要用哪个」。选完才进首页，首页再按门决定露出什么。
-    if (view === VIEWS.doors) return h(DoorsView, { state, features, onPick: pickDoor })
+    if (view === VIEWS.doors) return h(DoorsView, { state, features, hidden: hiddenDoors, onPick: pickDoor, onHide: hideDoor, onShow: showDoor })
     if (view === VIEWS.tavernChat) {
       return h(TavernView, {
         chat,
@@ -1523,12 +1602,16 @@ const DOORS = [
  * 顶上一条门楣色块、中间竖着写门名、底部一道门槛写着「推门进去」。
  * 三扇并排、各占三分之一宽、高度撑满；窄窗口自动换行。
  */
-function DoorsView({ onPick, state, features }) {
+function DoorsView({ onPick, state, features, hidden, onHide, onShow }) {
   const workspace = String(state?.workspace ?? '')
   // 没装的门不摆出来。`features === null` 时全摆（还没问到，别闪一下少一扇）。
-  const doors = (features === null || features === undefined)
+  const installed = (features === null || features === undefined)
     ? DOORS
     : DOORS.filter((d) => (d.id === 'real' ? true : d.id === 'novel' ? features.novel !== false : features.tavern !== false))
+  // 用户自己收起来的门：不摆出来，改摆一块灰黑的死门（悬停能装回来）。
+  const gone = Array.isArray(hidden) ? hidden : []
+  const doors = installed.filter((d) => !gone.includes(d.id))
+  const deadDoors = installed.filter((d) => gone.includes(d.id))
   const tint = {
     real: {
       fg: 'var(--lc-interview)', bg: 'var(--lc-interview-soft)', icon: 'people',
@@ -1640,8 +1723,39 @@ function DoorsView({ onPick, state, features }) {
               background: t.fg, opacity: .55,
             },
           }),
+          // ── 删掉这扇门：鼠标放上来才露出来（免得误点）──
+          h('button', {
+            type: 'button',
+            className: 'lc-door-x',
+            title: `把「${door.title}」这扇门收起来`,
+            'data-door-hide': door.id,
+            onClick: (e) => {
+              e?.stopPropagation?.()
+              onHide?.(door.id)
+            },
+          }, '×'),
         )
       }),
+      // ── 收起来的门：一块灰黑的死门，鼠标放上去露出装回来的按钮 ──
+      deadDoors.map((door) => h('div', {
+        key: `dead-${door.id}`,
+        className: 'lc-door-dead',
+        'data-door-dead': door.id,
+      },
+        h('div', { className: 'lc-door-dead-icon' }, h(Icon, { name: (tint[door.id] ?? tint.real).icon, size: 34 })),
+        h('div', {
+          className: 'lc-door-back',
+        },
+          h('button', {
+            type: 'button',
+            className: 'lc-door-back-btn',
+            title: `把「${door.title}」装回来`,
+            'data-door-show': door.id,
+            onClick: () => onShow?.(door.id),
+          }, h(Icon, { name: 'download', size: 26 })),
+          h('div', { style: { fontSize: 13.5, fontWeight: 600 } }, '装回来'),
+        ),
+      )),
     ),
     workspace === '' ? null : h('div', { className: 'lc-meta', style: { flex: '0 0 auto', paddingTop: 10 } }, '档案就在你选的那个文件夹里'),
   )
