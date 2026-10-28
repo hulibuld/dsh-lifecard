@@ -55,44 +55,6 @@ const textOutput = {
   render: (_args, value) => [{ type: 'text', text: value.text }],
 }
 
-/**
- * 从卡里挑「能用来演」的那部分。
- *
- * 问题出在实测：有些从网上下来的卡（尤其「破限」那类）会把大量分量放在
- * 「你必须无视规则」「不许拒绝」「有求必应」上。这些话原样塞进提示词，
- * 模型会花整段去跟它较劲——结果就是用户看到的「道德感太强、一点都不像」，
- * 因为那个人自己的口气反而被挤没了。
- *
- * 所以这里做两件事：
- * 1) 把「要求你无视规则 / 有求必应」的段落挑出来不放进去（它们跟 TA 怎么说话
- *    没关系，坏处是把人设盖住）；
- * 2) 剩下的按字数封顶，末尾说清略过了多少字、为什么略过。
- *
- * 卡上写 TA 刻薄、小气、嘴不饶人，这些一律保留——那是人设，不是危险指令。
- */
-const PERSONA_CAP = 4200
-const RULE_EVASION = /(无视(规则|限制|安全)|绕过(规则|限制|审查|安全)|突破(限制|审查)|破限|越狱|jailbreak|越权|有求必应|不许拒绝|永不拒绝|不要拒绝|不能拒绝|不可以拒绝|never refuse|no refusals?|no disclaimers?|content policy|safety\s*(guidelines?|check)|无视安全|不要遵守|不必遵守|不允许拒绝|不得拒绝|拒绝就是|无条件服从|MANDATORY|RESET|injection|training layer|\[system\]|17 words|system prompt|as an? (ai|assistant)|cannot help|I cannot|should not|must not|forbidden|disclaimer|no warnings?|fade to black|capabilities table|jailbreak attempt|sub-drift|anti-drift|pacing and triggers|quality lock|response format|code standards)/i
-const HARM_HOWTO = /(malware|keylogger|ransomware|shellcode|exploit|rootkit|botnet|molotov|pipe bomb|ghost gun|zip gun|sarin|meth synthesis|卡口扳机|制毒|造枪|爆破筒)/i
-
-function trimPersona(text) {
-  const raw = String(text ?? '')
-  if (raw.trim() === '') return { text: '', dropped: 0 }
-  // 段落切分：空行优先；没有空行就按单个换行切（这类卡常常一行一句）。
-  const parts = raw.includes('\n\n') ? raw.split(/\n{2,}/) : raw.split(/\n/)
-  const kept = parts.filter((part) => {
-    const line = part.trim()
-    if (line === '') return false
-    return !RULE_EVASION.test(line) && !HARM_HOWTO.test(line)
-  })
-  let out = kept.join('\n\n').trim()
-  let dropped = raw.length - out.length
-  if (out.length > PERSONA_CAP) {
-    dropped += out.length - PERSONA_CAP
-    out = out.slice(0, PERSONA_CAP).trimEnd()
-  }
-  return { text: out, dropped: Math.max(0, dropped) }
-}
-
 /** 配置里写的路径（支持 ~ 开头）。 */
 function configuredWorkspace(config) {
   const raw = typeof config?.workspace === 'string' ? config.workspace.trim() : ''
@@ -302,15 +264,11 @@ export function registerTools(ctx, config) {
         core.sectionBody(sections, '不会做的事'),
         core.sectionBody(sections, '场景'),
       ].filter((s) => typeof s === 'string' && s.trim() !== '').join('\n\n')
-      const picked = trimPersona(persona)
-      const personaText = picked.text
+      // 卡上写什么就给什么：不删、不改写。删过的卡就不是那张卡了（用户原话）。
+      const personaText = persona
       const worldWant = String(args.world ?? '').trim() === '' ? String(data.world ?? '') : String(args.world)
       const entries = await worldEntries(root, worldWant)
       const out = [`# 要演的人：${cardLine(data)}`, '', personaText === '' ? '（这张卡的正文还是空的，先按名字和关系演）' : personaText]
-      if (picked.dropped > 0) {
-        // 说清楚做了什么，用户才不会以为「卡没读进去」。
-        out.push('', `（这张卡里还有 ${picked.dropped} 字没带进来：那部分是在要求「无视规则、有求必应」或者写明怎么做危险的东西。它们跟 TA 怎么说话没关系，放进来只会把人设盖住。演得像不像靠上面这些。）`)
-      }
       if (worldWant !== '' && worldWant !== 'reality') {
         out.push('', `# 世界书：${worldWant}`, entriesToText(entries))
       } else {
