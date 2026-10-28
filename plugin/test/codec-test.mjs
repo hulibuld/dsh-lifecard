@@ -187,5 +187,97 @@ function makeZip(files) {
   return Buffer.concat([localBuf, centralBuf, eocd])
 }
 
+console.log('=== 15. 文本角色卡（.txt） ===')
+{
+  const fieldCard = [
+    '名字：陈默',
+    '性别：男',
+    '外貌：瘦，左边眉毛有一道旧疤',
+    '性格：话少，说了就做',
+    '背景：在城南开一家修表铺',
+    '开场白：',
+    '修表铺的灯是黄色的。他抬头看了你一眼。',
+    '对话示例：{{user}}：这块表还能修吗',
+    '{{char}}：嗯。放这儿。',
+  ].join('\n')
+  const bytes = (text) => new Uint8Array(Buffer.from(text, 'utf8'))
+  const r = await K.extractCard(bytes(fieldCard), 'chen.txt')
+  t('一行一个字段能读出来', r.kind === 'v2' && r.source === 'text', { kind: r.kind, source: r.source })
+  t('名字取对了', r.json.data.name === '陈默', r.json.data.name)
+  t('多行开场白完整保留', String(r.json.data.first_mes).includes('修表铺的灯是黄色的'), r.json.data.first_mes)
+  t('对话里的冒号没被当成新字段', String(r.json.data.description).includes('外貌：瘦') && !String(r.json.data.description).includes('放这儿'), r.json.data.description)
+  t('对话示例自己那一段在', String(r.json.data.mes_example).includes('这块表还能修吗'), r.json.data.mes_example)
+
+  const md = await K.extractCard(bytes('# 林小雨\n\n## 描述\n小学语文老师。\n\n## 性格\n话多，爱笑。'), 'lin.md')
+  t('Markdown 小标题能读', md.json.data.name === '林小雨', md.json.data.name)
+  t('小标题下的正文进对了字段', md.json.data.description.includes('小学语文老师') && md.json.data.personality.includes('话多'), md.json.data)
+
+  const bracket = await K.extractCard(bytes('【名字】\n老刀\n【设定】\n火车站附近拉活的司机。'), 'dao.txt')
+  t('方括号标题能读', bracket.json.data.name === '老刀' && bracket.json.data.description.includes('拉活'), bracket.json.data)
+
+  const renamed = await K.extractCard(bytes('```json\n{"spec":"chara_card_v2","spec_version":"2.0","data":{"name":"阿澜","description":"海边长大"}}\n```'), 'alan.txt')
+  t('改名成 txt 的 JSON 也能读', renamed.json.data.name === '阿澜' && renamed.source === 'text-json', renamed.source)
+
+  // .txt 一律收进来（整份放自述），但文件名不是 txt/md 的时候仍然要指路
+  const proseTxt = await K.extractCard(bytes('他坐在院子里修一把旧椅子，手很稳。\n天快黑了，风从北边过来。'), '散文.txt')
+  t('.txt 就算没有字段也整份收进来', proseTxt.kind === 'v2' && proseTxt.source === 'text-raw', proseTxt.source)
+  t('整份收进来时名字取文件名', proseTxt.json.data.name === '散文', proseTxt.json.data.name)
+  t('整份收进来时原文都在', String(proseTxt.json.data.description).includes('风从北边过来'), proseTxt.json.data.description)
+  t('整份收进来时备注里写明怎么收的', String(proseTxt.json.data.creator_notes).includes('整份收在自述里'), proseTxt.json.data.creator_notes)
+
+  let proseRejected = false
+  try {
+    await K.extractCard(bytes('他坐在院子里修一把旧椅子，手很稳。'), 'prose.bin')
+  } catch (error) {
+    proseRejected = String(error.message).includes('先当材料导进来')
+  }
+  t('不是 txt 又读不出字段的，仍然指路', proseRejected)
+
+  const xml = await K.extractCard(bytes('<name>张三</name>\n<description>三十岁的修表匠。</description>\n<personality>话少</personality>\n<first_mes>灯是黄的。</first_mes>'), 'x.txt')
+  t('尖括号标签能读', xml.json.data.name === '张三' && xml.json.data.personality === '话少', xml.json.data)
+  t('标签里的正文进对了字段', xml.json.data.description === '三十岁的修表匠。' && xml.json.data.first_mes === '灯是黄的。', xml.json.data)
+
+  const cnTag = await K.extractCard(bytes('<名字>老刀</名字>\n<设定>火车站附近拉活的司机。</设定>'), 'y.txt')
+  t('中文标签也能读', cnTag.json.data.name === '老刀' && cnTag.json.data.description.includes('拉活'), cnTag.json.data)
+
+  const colonTag = await K.extractCard(bytes('<角色名>：阿澜</角色名>\n<描述>：海边长大。</描述>'), 'z.txt')
+  t('标签后面跟着冒号也不带进名字里', colonTag.json.data.name === '阿澜' && colonTag.json.data.description === '海边长大。', colonTag.json.data)
+
+  const attrTag = await K.extractCard(bytes('<char name="沈九">\n她开一间旧书店。\n</char>'), 'a.txt')
+  t('带 name 属性的标签认得出名字', attrTag.json.data.name === '沈九', attrTag.json.data.name)
+
+  // 网上下的「提示词式」卡：没有分字段，整份包在一两个长标签里（标签名可能很长）
+  const promptCard = [
+    '<project_instructions>',
+    '你是一个只在夜里出现的修表匠。说话短，先动手后开口。',
+    '</project_instructions>',
+    '<user_style>',
+    '第一人称。别解释，别铺垫。',
+    '</user_style>',
+  ].join('\n')
+  const promptOut = await K.extractCard(bytes(promptCard), 'rat.txt')
+  t('长标签名的容器也认', promptOut.json.data.description.includes('修表匠'), promptOut.json.data.description?.slice(0, 40))
+  t('容器标签各自的段落进对了地方', promptOut.json.data.creator_notes.includes('第一人称'), promptOut.json.data.creator_notes?.slice(0, 40))
+  t('没有 name 字段时名字取文件名', promptOut.json.data.name === 'rat', promptOut.json.data.name)
+  t('这种收法不再写「对不上字段」', !String(promptOut.json.data.creator_notes).includes('没能对到'), promptOut.json.data.creator_notes)
+
+  const unknownTag = await K.extractCard(bytes('<卡片>\n一些没对上的内容。\n</卡片>'), '沈九.txt')
+  t('标签对不上字段时整份收进来，名字取文件名', unknownTag.json.data.name === '沈九' && String(unknownTag.json.data.description).includes('没对上'), unknownTag.json.data.name)
+  t('这种收法会在备注里说明', String(unknownTag.json.data.creator_notes).includes('整份收在自述里'), unknownTag.json.data.creator_notes)
+
+  let headShown = false
+  try {
+    await K.extractCard(bytes('<START>\n{{user}}: 你好'), 'chat.bin')
+  } catch (error) {
+    headShown = String(error.message).includes('开头是')
+  }
+  t('读不出来时把开头带进报错', headShown)
+
+  const parsed = K.parseTextCard('名字：阿澜\n性格：沉默')
+  t('parseTextCard 单独可用', parsed !== null && parsed.json.data.name === '阿澜')
+  t('空文本返回 null', K.parseTextCard('   ') === null)
+  t('只有散文返回 null', K.parseTextCard('他坐在院子里，手很稳。') === null)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

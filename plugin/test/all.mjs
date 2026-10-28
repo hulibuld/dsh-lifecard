@@ -1,6 +1,7 @@
 // 一把跑完全部测试。
 import { spawnSync } from 'node:child_process'
 const files = ['test/roundtrip.mjs', 'test/codec-test.mjs', 'test/store-test.mjs', 'test/score-test.mjs', 'test/memory-test.mjs', 'test/jobs-test.mjs', 'test/tavern-test.mjs', 'test/tools-test.mjs',
+  'test/persona-test.mjs',
   'test/interview-test.mjs', 'test/json-extract.mjs', 'test/prompt.test.mjs', 'test/client-smoke.mjs', 'test/skill-register.mjs', 'test/routes-test.mjs', 'test/hardening-routes.mjs', 'test/hardening-data.mjs', 'test/render-all.mjs', 'test/draft-flush-test.mjs', 'test/editor-add-test.mjs', 'test/novel-test.mjs', 'test/doors-test.mjs', 'test/presets-test.mjs', 'test/game-test.mjs', 'test/modular-test.mjs', 'test/career-test.mjs', 'test/wording-test.mjs']
 
 let failed = 0

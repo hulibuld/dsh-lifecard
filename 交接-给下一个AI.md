@@ -11,9 +11,9 @@
 - 项目：`<项目根>`（本机工作副本所在的位置；换机器时换成你的实际路径）
 - 是什么：DSH（DeepSeek Harness）的侧边栏插件，本地优先的人物档案库——把身边的人写成 Markdown+YAML 的「卡」，带关系网、题料、AI 抽取（**每条断言必须有原文引文**）、求职与模拟面试。
 - 代码在哪：全部在 `plugin/`。`plugin/lib/` 16 个模块（`client/index/store/core/codec/prompts/score/memory/jobs/jobs-store/jobs-interview/interview` + 四个可拆的 `tavern/novel/game/presets/career`），`plugin/test/` 28 个 `.mjs`。
-- 当前状态：`main` 分支，工作区干净，HEAD = `dd2cd47`，共 130 次提交。
-- 测试：全量 **2361 项**通过（28 个测试文件）；对一个真实运行的实例做端到端验收 **22 项全过**（`test/live.mjs`，含两次真模型调用：分析 + 酒馆里让 TA 回一句）。
-- 发布：npm 上是 **0.1.2**、GitHub 是 **hulibuld/dsh-lifecard（public）**，都停在 2026-10-25；**今天的活（预设/游戏/简历/可拆卸架构/两轮审查修复）还没发布**。发布必须先拿到用户明确指令（铁律），别自己发。`research/`、`HANDOFF.md`、`交接-给下一个AI.md`、两份策划书都已被 `.gitignore` 排除（仅本地保留）。
+- 当前状态：`main` 分支，工作区干净，HEAD = `f97aa9e`，共 134 次提交。
+- 测试：全量 **2378 项**通过（28 个测试文件）；对一个真实运行的实例做端到端验收 **22 项全过**（`test/live.mjs`，含两次真模型调用：分析 + 酒馆里让 TA 回一句）。
+- 发布：npm 上是 **0.2.0**（2026-10-26 发的）、GitHub 是 **hulibuld/dsh-lifecard（public，commit `13a5783`）**、插件市场已提交 PR（`awesome-dsh-plugin/awesome-dsh-plugin#9548`，已合并与否要看那边）。发布必须先拿到用户明确指令（铁律），别自己发。`research/`、`HANDOFF.md`、`交接-给下一个AI.md`、两份策划书都已被 `.gitignore` 排除（仅本地保留）。
 - 给朋友用的试用包：`dist/LifeCard-试用版.zip`（已拷到 `~/Desktop/`），里面有 `先看这里.md` 和 `install.command`。
 
 ---
@@ -339,7 +339,7 @@ const mode = view === VIEWS.novel ? 'novel' : (view === VIEWS.tavern || view ===
 
 ### 要不要修，可以问用户（P2，别自己拍板）
 - 两份策划书（`策划书.md` / `策划书-第二部分.md`）要不要随包发布（`research/`、`HANDOFF.md`、本文件都已 `.gitignore`）。
-- **今天这些活还没发版**：要不要发 npm `0.2.0` + 推到 GitHub。**没拿到明确指令不许发。**
+- ~~今天这些活还没发版~~ → **2026-10-26 14:20 已发**：npm `dsh-lifecard@0.2.0`、GitHub `hulibuld/dsh-lifecard` commit `13a5783`、插件市场 PR [awesome-dsh-plugin#9548](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/9548)（一个 PR 只加`data/plugins/hulibuld__dsh-lifecard.yml` 这一个文件）。下一次发版仍需用户明确指令。
 
 ## 7. 「分析」卡住不动的根因（已修，重启后生效）
 

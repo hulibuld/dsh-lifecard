@@ -264,9 +264,11 @@ export function registerTools(ctx, config) {
         core.sectionBody(sections, '不会做的事'),
         core.sectionBody(sections, '场景'),
       ].filter((s) => typeof s === 'string' && s.trim() !== '').join('\n\n')
+      // 卡上写什么就给什么：不删、不改写。删过的卡就不是那张卡了（用户原话）。
+      const personaText = persona
       const worldWant = String(args.world ?? '').trim() === '' ? String(data.world ?? '') : String(args.world)
       const entries = await worldEntries(root, worldWant)
-      const out = [`# 要演的人：${cardLine(data)}`, '', persona === '' ? '（这张卡的正文还是空的，先按名字和关系演）' : persona]
+      const out = [`# 要演的人：${cardLine(data)}`, '', personaText === '' ? '（这张卡的正文还是空的，先按名字和关系演）' : personaText]
       if (worldWant !== '' && worldWant !== 'reality') {
         out.push('', `# 世界书：${worldWant}`, entriesToText(entries))
       } else {

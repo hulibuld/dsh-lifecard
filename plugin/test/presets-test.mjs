@@ -148,5 +148,16 @@ console.log('\n=== 3. 按 id 找 ===')
   await fs.rm(tmp, { recursive: true, force: true })
 }
 
+
+// 2026-10-28：用户报「导入卡之后完全不像，道德感太强」。
+// 卡里那些「必须无视规则」的话不会照做，但不能因此演成另一个人。
+{
+  const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  t('酒馆预设说了：卡已经在系统提示里', patch.includes('已经原样放在你的系统提示里'), '')
+  t('酒馆预设说了：别再先调工具读卡', patch.includes('不要先调工具去读它'), '')
+  t('酒馆预设说了：别自动温良恭俭', patch.includes('不要自动变得温良恭俭'), '')
+  t('小说预设说了：人和世界也在系统提示里', patch.includes('已经原样在系统提示里'), '')
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exitCode = 1

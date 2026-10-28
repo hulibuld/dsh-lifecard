@@ -11,7 +11,7 @@
 
 import z from '@deepseek-ai/schemastery'
 import path from 'node:path'
-import { promises as fs, readFileSync } from 'node:fs'
+import { promises as fs, readFileSync, statSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import os from 'node:os'
@@ -759,6 +759,16 @@ function buildApi(ctx, workspace, config, options) {
         home: homedir(),
         hasLlm: ctx.get?.('llm') !== undefined && ctx.get?.('llm') !== null,
         defaults: { workspace: ws },
+        // 界面上被收起来的门。读不出来就一个都不收（宁可多摆一扇，也不要空一块）。
+        hidden_doors: await (async () => {
+          try {
+            const conf = await store.readConfigState(ws)
+            const list = conf.ok === true ? conf.config?.hidden_doors : []
+            return Array.isArray(list) ? list.filter((x) => typeof x === 'string') : []
+          } catch {
+            return []
+          }
+        })(),
         summary,
         relations: prompts.RELATION_TYPES,
       }
@@ -1010,6 +1020,30 @@ function buildApi(ctx, workspace, config, options) {
       await store.writeConfig(ws, { default_cards: pins })
       return { ok: true, cards: pins }
     },
+      /**
+     * 把一扇门从界面上收起来 / 装回来。
+     *
+     * 只是界面上的开关：卡、世界书、书、会话一个字节都不动，
+     * 所以「删掉」这件事随时可以反悔。
+     */
+    'door.set': async (body) => {
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id !== 'real' && id !== 'novel' && id !== 'tavern') return { ok: false, error: '不知道你说的是哪扇门。' }
+      const confState = await store.readConfigState(ws)
+      if (confState.ok !== true) return { ok: false, error: confState.error ?? '这个文件夹里的设置读不出来。' }
+      const conf = confState.config ?? {}
+      const hidden = Array.isArray(conf?.hidden_doors) ? conf.hidden_doors.filter((x) => typeof x === 'string') : []
+      const want = body?.hidden === true
+      const next = want
+        ? (hidden.includes(id) ? hidden : [...hidden, id])
+        : hidden.filter((x) => x !== id)
+      if (next.length === 3) return { ok: false, error: '三扇门都收起来就没地方进去了，至少留一扇。' }
+      const saved = await store.writeConfig(ws, { ...conf, hidden_doors: next })
+      if (saved === false || saved?.ok === false) return { ok: false, error: '这个开关没能存下来，等一会儿再试一次。' }
+      return { ok: true, hidden_doors: next }
+    },
+
     'card.history': async (body) => {
       const ws = await root(body)
       const safe = await insideWorkspace(ws, body?.path)
@@ -3515,6 +3549,159 @@ function blankPng() {
  * 注册失败不抛：精简 profile 里没有 skills 服务时，应当只是少一个访谈
  * skill，而不是整个插件起不来。
  */
+// ── 人物卡直接进系统提示 ─────────────────────────────────────────────
+//
+// 为什么不能靠工具结果：工具结果落在对话里，是「模型查到的资料」；预设和它
+// 一旦意见不合，模型会站在预设那边跟资料较劲——用户看到的就是「人设完全不
+// 像、道德感极强」。角色卡在酒馆类软件里从来不是资料，它就是这一场的
+// 系统提示本身（SillyTavern 的 char card 也是拼进 system 里的）。
+//
+// 所以这里把它做成一个 system prompt 段落：`text` 是函数，每次组装提示词都
+// 重新求值，所以「换个卡」「刚改完卡」下一句就生效，不用重开会话。
+//
+// `text` 必须同步返回，所以用 readFileSync + 按 mtime/size 缓存：同一份卡
+// 一万次组装也只读一次盘。
+
+/** 小文件读盘缓存：同一份文件没改过就不再读。 */
+const personaCache = new Map()
+
+function readCachedSync(abs) {
+  try {
+    const stat = statSync(abs)
+    const hit = personaCache.get(abs)
+    if (hit !== undefined && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) return hit.text
+    const text = readFileSync(abs, 'utf8')
+    personaCache.set(abs, { mtimeMs: stat.mtimeMs, size: stat.size, text })
+    return text
+  } catch {
+    return null
+  }
+}
+
+/** 卡文件名：`people/<id>.card.md`。id 里可能有中文，不能直接拿来当路径猜。 */
+function cardPathSync(root, id) {
+  const want = String(id ?? '').trim()
+  if (want === '') return ''
+  const direct = path.join(root, 'people', `${want}.card.md`)
+  try {
+    if (statSync(direct).isFile()) return direct
+  } catch {
+    /* 名字不是文件名，退回去扫目录 */
+  }
+  try {
+    const names = readdirSync(path.join(root, 'people')).filter((n) => n.endsWith('.card.md'))
+    for (const name of names) {
+      const abs = path.join(root, 'people', name)
+      const text = readCachedSync(abs)
+      if (text === null) continue
+      const parsed = core.parseCard(text)
+      if (parsed.ok === true && String(parsed.data?.id ?? '') === want) return abs
+    }
+  } catch {
+    /* 没有 people 目录就当没挑卡 */
+  }
+  return ''
+}
+
+/** 当前是哪张卡：配置里 default_cards[mode]。 */
+function pinnedCardIdSync(root, mode) {
+  const raw = readCachedSync(path.join(root, 'lifecard.config.json'))
+  if (raw === null) return ''
+  try {
+    const conf = JSON.parse(raw)
+    const picked = conf?.default_cards?.[mode]
+    return typeof picked === 'string' ? picked : ''
+  } catch {
+    return ''
+  }
+}
+
+/** 把世界书条目排成人能读、模型也好读的样子。 */
+function worldEntriesText(entries) {
+  const list = Array.isArray(entries) ? entries : []
+  if (list.length === 0) return ''
+  return list
+    .map((entry) => {
+      const keys = Array.isArray(entry?.keys) ? entry.keys.filter((k) => typeof k === 'string' && k !== '') : []
+      const content = String(entry?.content ?? '').trim()
+      const head = keys.length === 0 ? '（一直生效）' : `关键词：${keys.join('、')}`
+      return `- ${head}\n  ${content.replace(/\n/g, '\n  ')}`
+    })
+    .join('\n')
+}
+
+/**
+ * 拼出这一场的人物卡段落。
+ *
+ * 不做任何删减：卡上写什么就是什么（用户说得对——删了就不是那张卡了）。
+ * 只做两件必要的事：标题说清「你要演的是谁」，以及把世界书接在后面。
+ *
+ * @param {string} root 工作区绝对路径
+ * @param {'tavern'|'novel'|'real'} mode 哪扇门
+ * @returns {string} 空串表示这一场不挂卡
+ */
+export function buildPersonaSection(root, mode) {
+  const id = pinnedCardIdSync(root, mode)
+  if (id === '') return ''
+  const abs = cardPathSync(root, id)
+  if (abs === '') return ''
+  const text = readCachedSync(abs)
+  if (text === null) return ''
+  const parsed = core.parseCard(text)
+  if (parsed.ok !== true) return ''
+  const data = parsed.data ?? {}
+  const sections = Array.isArray(parsed.sections) ? parsed.sections : []
+  const body = ['自述', '性格', '外貌', '口癖', '不会说的话', '不会做的事', '场景', '开场白', '对话示例']
+    .map((title) => core.sectionBody(sections, title))
+    .filter((part) => typeof part === 'string' && part.trim() !== '')
+    .join('\n\n')
+  if (body.trim() === '') return ''
+  const name = String(data.name ?? '').trim() === '' ? id : String(data.name).trim()
+  const out = [
+    `# 你要演的人：${name}${String(data.relation ?? '').trim() === '' ? '' : `（${String(data.relation).trim()}）`}`,
+    '',
+    '下面这张卡就是这个人的全部设定，直接照它演——不要把它当成资料来引用，也不要在回答里提「卡上写着」。',
+    '',
+    body,
+  ]
+  const world = String(data.world ?? '').trim()
+  if (world !== '' && world !== 'reality') {
+    const worldAbs = path.join(root, 'worlds', core.safeId(world), 'world.md')
+    const worldText = readCachedSync(worldAbs)
+    if (worldText !== null) {
+      const worldParsed = core.parseCard(worldText)
+      const entries = worldParsed.ok === true ? core.parseWorldEntries(worldParsed.sections ?? []) : []
+      const rendered = worldEntriesText(entries)
+      if (rendered !== '') out.push('', `# 这一场发生在：${String(worldParsed.data?.name ?? world).trim()}`, '', rendered)
+    }
+  }
+  return out.join('\n')
+}
+
+/** 从会话标签里认出用的是哪个预设（不同版本字段位置不完全一样，挨个试）。 */
+function presetIdOfAgent(agent) {
+  const spots = [
+    agent?.options?.agentPreset,
+    agent?.meta?.agentPreset,
+    agent?.header?.agentPreset,
+    agent?.session?.header?.agentPreset,
+    agent?.info?.agentPreset,
+  ]
+  for (const spot of spots) {
+    if (typeof spot === 'string' && spot !== '') return spot
+  }
+  return ''
+}
+
+/** 这个 agent 用哪扇门的卡：只有 LC 那两个创作预设才挂，别的会话一个字都不注入。 */
+function modeForAgent(agent) {
+  const preset = presetIdOfAgent(agent)
+  if (preset === '') return ''
+  if (preset.includes('lc-tavern')) return 'tavern'
+  if (preset.includes('lc-novel')) return 'novel'
+  return ''
+}
+
 function registerInterviewSkill(ctx) {
   registerBundledSkill(ctx, {
     dir: 'lifecard-interview',
@@ -3678,12 +3865,70 @@ export function apply(ctx, config) {
     remember: (ws) => rememberWorkspace(pointerFile, ws),
   })
 
+  // 系统提示段落里的 text() 必须同步返回，拿不到异步的 workspace()。
+  // 所以这里留一份「当前库」的快照：先用默认值兜底，再异步校准一次；
+  // 用户在界面上换文件夹时 settings.workspace 会跟着变，优先用那个。
+  let liveRoot = defaultWorkspace()
+  Promise.resolve()
+    .then(() => workspace())
+    .then((ws) => {
+      if (typeof ws === 'string' && ws !== '') liveRoot = ws
+    })
+    .catch(() => {})
+  const rootNow = () => {
+    const configured = typeof settings.workspace === 'string' ? settings.workspace.trim() : ''
+    return configured === '' ? liveRoot : configured
+  }
+
   registerInterviewSkill(ctx)
 
   // 把人物卡、世界书交给模型的那几个只读工具。挂在宿主这一层，所以不只是
   // 「LC 酒馆 / LC 小说 / LC 现实」三个预设，任何预览里都能调。
   // 用 ctx.inject 等 tools 服务就绪：apply 跑的时候它可能还没起来，
   // 直接 ctx.get('tools') 会拿到 undefined，工具就静默少了。
+  // 把挑好的那张卡拼进系统提示（不是对话里的资料）。
+  // 用 ctx.inject 等 systemPrompt 就绪；`text` 传函数，每轮重新求值，
+  // 所以换卡/改卡下一句就生效。只对 LC 酒馆、LC 小说两个预设生效。
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['systemPrompt'], (promptCtx) => {
+      try {
+        const prompt = promptCtx.get('systemPrompt', false)
+        if (prompt === undefined || prompt === null || typeof prompt.section !== 'function') {
+          console.warn('[lifecard] 系统提示服务不可用，人物卡改由工具提供')
+          return
+        }
+        let order = 500
+        try {
+          const anchorOrder = prompt.getSectionOrder('deployment:persona-suffix')
+          if (typeof anchorOrder === 'number' && Number.isFinite(anchorOrder)) order = anchorOrder - 0.5
+        } catch {
+          /* 拿不到锚点就用手写的位置 */
+        }
+        promptCtx.effect(
+          () =>
+            prompt.section({
+              name: 'lifecard:card',
+              order,
+              text: (assembly) => {
+                try {
+                  const mode = modeForAgent(assembly?.agent)
+                  if (mode === '') return ''
+                  return buildPersonaSection(rootNow(), mode)
+                } catch {
+                  // 提示词拼不出来也不能挡住这一句话。
+                  return ''
+                }
+              },
+              interpolate: false,
+            }),
+          'lifecard: 人物卡段落',
+        )
+      } catch (error) {
+        console.error('[lifecard] 人物卡段落没挂上：', error)
+      }
+    })
+  }
+
   if (typeof ctx.inject === 'function') {
     ctx.inject(['tools'], (toolCtx) => {
       try {

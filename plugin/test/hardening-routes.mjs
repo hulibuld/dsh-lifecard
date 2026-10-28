@@ -978,5 +978,60 @@ console.log('\n=== 22. 三扇门各自「现在用哪张卡」存得住 ===')
   await fs.rm(ws, { recursive: true, force: true })
 }
 
+console.log('\n=== 22b. 三扇门能收起来、也能装回来 ===')
+{
+  const ws = await fs.mkdtemp(path.join(os.tmpdir(), 'lc-doors-'))
+  await store.openWorkspace(ws)
+  const table = api.buildApi({ get: () => undefined }, async () => ws, {})
+  const before = await table['state.get']({})
+  t('一开始一扇都没收', Array.isArray(before.hidden_doors) && before.hidden_doors.length === 0, JSON.stringify(before.hidden_doors))
+  const hid = await table['door.set']({ id: 'tavern', hidden: true })
+  t('能把酒馆收起来', hid.ok === true && hid.hidden_doors.includes('tavern'), JSON.stringify(hid))
+  const after = await table['state.get']({})
+  t('state.get 也说它被收了', after.hidden_doors.includes('tavern'), JSON.stringify(after.hidden_doors))
+  const cfg = await store.readConfig(ws)
+  t('写进了这个文件夹的设置', Array.isArray(cfg?.hidden_doors) && cfg.hidden_doors.includes('tavern'), JSON.stringify(cfg?.hidden_doors))
+  const back = await table['door.set']({ id: 'tavern', hidden: false })
+  t('也能装回来', back.ok === true && !back.hidden_doors.includes('tavern'), JSON.stringify(back))
+  const bad = await table['door.set']({ id: 'nope', hidden: true })
+  t('不认识的门直接拒绝', bad.ok === false && String(bad.error).includes('哪扇门'), JSON.stringify(bad))
+  await table['door.set']({ id: 'novel', hidden: true })
+  await table['door.set']({ id: 'tavern', hidden: true })
+  const two = await table['door.set']({ id: 'real', hidden: true })
+  t('三扇门全收起来会被拦住', two.ok === false && String(two.error).includes('至少留一扇'), JSON.stringify(two))
+  await table['door.set']({ id: 'tavern', hidden: false })
+  const again = await table['door.set']({ id: 'novel', hidden: true })
+  t('收两次不会重复记', again.ok === true && again.hidden_doors.filter((x) => x === 'novel').length === 1, JSON.stringify(again.hidden_doors))
+  // 收门只是界面开关：卡一个字节都不能少
+  await store.writeCard(ws, 'people/keep.card.md', { lifecard: '0.1', id: 'keep', kind: 'fictional', world: 'reality', name: '留着' }, [{ title: '自述', body: '还在。' }])
+  await table['door.set']({ id: 'tavern', hidden: true })
+  const cards = await table['workspace.list']({})
+  t('收门不影响卡', cards.ok === true && (cards.cards ?? []).some((c) => c.id === 'keep'), JSON.stringify((cards.cards ?? []).length))
+  await fs.rm(ws, { recursive: true, force: true })
+}
+
+console.log('\n=== 23. 文本角色卡（.txt）也能导进来 ===')
+{
+  const ws = await fs.mkdtemp(path.join(os.tmpdir(), 'lc-txt-'))
+  const table = api.buildApi({ get: () => undefined }, async () => ws, {})
+  const txt = [
+    '名字：陈默',
+    '性格：话少，说了就做',
+    '背景：在城南开一家修表铺',
+    '开场白：修表铺的灯是黄色的。',
+  ].join('\n')
+  const one = await table['import.cards']({ files: [{ name: '陈默.txt', base64: Buffer.from(txt, 'utf8').toString('base64') }] })
+  t('文本卡导入成功', one.ok === true && one.imported === 1, JSON.stringify(one).slice(0, 200))
+  const row = one.results[0] ?? {}
+  t('落成了卡文件', typeof row.path === 'string' && row.path.endsWith('.card.md'), row.path)
+  t('名字对', row.title === '陈默', row.title)
+  const read = await store.readCard(ws, row.path)
+  t('读回来有性格和开场白', read.ok === true && String(read.sections.find((x) => x.title === '性格')?.body ?? '').includes('话少'), read.ok)
+
+  const prose = await table['import.cards']({ files: [{ name: '散文.txt', base64: Buffer.from('他坐在院子里修一把旧椅子。\n天快黑了。', 'utf8').toString('base64') }] })
+  t('没有字段的 txt 也整份收进来，不会卡在「读不进去」', prose.imported === 1 && (prose.results[0]?.path ?? '').endsWith('.card.md'), JSON.stringify(prose.results[0]).slice(0, 160))
+  await fs.rm(ws, { recursive: true, force: true })
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

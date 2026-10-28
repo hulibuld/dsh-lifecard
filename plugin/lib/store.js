@@ -76,6 +76,8 @@ export function defaultConfig() {
     // 三扇门各自「当前用哪张卡」。写小说、酒馆那两扇门里演谁 / 写谁，
     // 不用每次都现挑；「真实人物记录」那扇门用它来决定首页先给谁。
     default_cards: { real: '', tavern: '', novel: '' },
+    // 界面上被收起来的门（用户自己删的）。随时能装回来，数据一点没动。
+    hidden_doors: [],
     created_at: new Date().toISOString(),
   }
 }
@@ -736,6 +738,8 @@ export async function listAll(root) {
           relation: r.data?.relation,
           status: r.data?.status,
           tags: Array.isArray(r.data?.tags) ? r.data.tags : [],
+          // 卡背面要显示一段「简介」：取自述的头一段，够长又不至于把整卡铺出来。
+          intro: String(core.sectionBody(r.sections, '自述') ?? '').replace(/\s+/g, ' ').trim().slice(0, 160),
           coverage: cov.percent,
           empty: cov.empty.map((e) => e.label),
           unmarkedRatio: cov.unmarkedRatio,

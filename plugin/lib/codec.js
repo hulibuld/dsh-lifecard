@@ -481,6 +481,259 @@ export function encodeCardJson(card, asV3 = false) {
  * @param {string} [fileName]
  * @returns {{ json: any, kind: string, source: string, rawFiles?: Record<string, Uint8Array> }}
  */
+/**
+ * 文本角色卡里常见的字段写法。
+ * 中文社区的 txt 卡八成是「名字：…／性格：…」这种一行一个字段，
+ * 也有用 Markdown 小标题的，所以两种都认。
+ */
+const TEXT_FIELDS = [
+  ['name', ['名字', '姓名', '名称', '角色名', '人名', '角色', '人物', '主角', 'name', 'char_name', 'character name']],
+  ['description', ['描述', '设定', '人物设定', '人设', '简介', '介绍', '背景', '人物背景', '背景设定', '角色设定', 'profile', 'description', 'desc', 'persona']],
+  ['personality', ['性格', '个性', 'personality']],
+  ['scenario', ['场景', '情景', 'scenario']],
+  ['first_mes', ['开场白', '开场', '第一句话', '问候语', '初次见面', 'first_mes', 'first message', 'greeting', 'first_message']],
+  ['mes_example', ['对话示例', '示例对话', '对话范例', '例句', '示例', 'mes_example', 'example dialogue', 'examples']],
+  ['creator_notes', ['创作者备注', '备注', '说明', 'creator_notes', 'notes', 'creator comment']],
+  ['appearance', ['外貌', '长相', '外观', '穿着', 'appearance', 'looks']],
+  ['speech', ['说话方式', '口癖', '语气', '语癖', '说话风格', 'speech', 'voice', 'tone']],
+  ['relationship', ['关系', '与我的关系', '身份关系', 'relationship']],
+  ['world', ['世界观', '世界', 'world', 'worldview']],
+]
+
+/**
+ * 提示词式的卡（网上下的「破限/人设」txt 常见）没有「名字：性格：」这种字段，
+ * 整个文件被包在一两个外层标签里。这些标签名当作「整段放哪儿」的意思来认。
+ */
+const TEXT_WRAPPER_FIELDS = [
+  ['description', ['project_instructions', 'projectinstructions', 'system', 'system_prompt', 'persona', 'character', 'char', 'instruction', 'instructions', 'prompt', 'main', 'profile', 'context']],
+  ['creator_notes', ['user_style', 'userstyle', 'style', 'style_notes', 'stylesheet', 'notes', 'author_notes', 'postscript', 'appendix']],
+  ['mes_example', ['examples', 'dialogues', 'sample_dialogue', 'sample_messages']],
+  ['first_mes', ['greeting', 'opening', 'first_message']],
+]
+
+/** 外层容器标签对到「整段放哪个字段」；认不出返回 null。 */
+function textWrapperOf(rawKey) {
+  const key = String(rawKey ?? '').replace(/[\s\u3000]+/g, '').replace(/[-_]+/g, '_').toLowerCase()
+  if (key === '') return null
+  for (const [field, aliases] of TEXT_WRAPPER_FIELDS) {
+    if (aliases.includes(key)) return field
+  }
+  return null
+}
+
+/** 「外貌」「口癖」这些没有独立小节的，拼进自述里，加一个标签。 */
+const TEXT_EXTRA_FIELDS = new Set(['appearance', 'speech', 'relationship', 'world', 'extra'])
+
+/** 把一个标题/键名对到字段名上；认不出返回 null。 */
+function textFieldOf(rawKey) {
+  const key = String(rawKey ?? '')
+    .replace(/\{\{\s*(char|user|bot|character)\s*\}\}/gi, '')
+    .replace(/^(角色|人物|主角|TA|他|她)的/, '')
+    .replace(/[\s\u3000]+/g, '')
+    .replace(/^[#*>\-\s]+/, '')
+    .replace(/[:：]+$/, '')
+    .toLowerCase()
+  if (key === '') return null
+  for (const [field, aliases] of TEXT_FIELDS) {
+    if (aliases.includes(key)) return field
+  }
+  return null
+}
+
+/**
+ * 把一份纯文本角色卡读成 CC v2 的 JSON 形状。
+ *
+ * 认三种写法：
+ *   1) 整份就是 JSON（可能在 ``` 里包着，常见于把 .json 改名成 .txt）
+ *   2) 「名字：张三 / 性格：沉默」一行一个字段（也认 `【名字】` 单独占一行的写法）
+ *   3) Markdown 小标题（`## 性格`）
+ *   4) `<名字>…</名字>` 这种带尖括号标签的写法
+ * 认不出的键不丢，按「标签：内容」拼进自述；一行都没有的散文返回 null，
+ * 由调用方给出「先当材料导进来」的提示。
+ * @param {string} raw
+ * @returns {{ json: any, source: string } | null}
+ */
+export function parseTextCard(raw, options = {}) {
+  const text = String(raw ?? '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').trim()
+  if (text === '') return null
+
+  // 1) 整份就是 JSON
+  const fenced = text.match(/^```(?:json|javascript)?\s*\n([\s\S]*?)\n```$/i)
+  const jsonBody = (fenced !== null ? fenced[1] : text).trim()
+  if (jsonBody.startsWith('{') || jsonBody.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(jsonBody)
+      return { json: parsed, source: 'text-json' }
+    } catch {
+      /* 不是合法 JSON，继续按字段读 */
+    }
+  }
+
+  // 顶上单独一行的一级标题（`# 林小雨`）当名字兜底：
+  // 后面再接「## 描述」这种小标题时，它本身对不上任何字段，但显然是名字。
+  const topHeading = /^\s*#\s+(\S.*)$/m.exec(text.split('\n').filter((l) => l.trim() !== '')[0] ?? '')
+  const fileStem = String(options?.fileName ?? '').replace(/\.[^.]+$/, '').trim()
+  const nameFallback = topHeading !== null && textFieldOf(topHeading[1]) === null ? topHeading[1].trim() : fileStem
+
+  // 2) 一行一个字段 / Markdown 小标题
+  const entries = []
+  let current = null
+  let sawKnown = false
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.replace(/\u3000/g, ' ').trimEnd()
+    const trimmed = line.trim()
+    if (trimmed === '') {
+      if (current !== null) current.lines.push('')
+      continue
+    }
+    const heading = /^#{1,4}\s*(.+?)\s*#*$/.exec(trimmed)
+    const bracket = /^[【\[](.{1,12}?)[】\]]\s*[:：]?\s*(.*)$/.exec(trimmed)
+    const colon = /^(.{1,12}?)\s*[:：]\s*(.*)$/.exec(trimmed)
+    let key = null
+    let inline = ''
+    if (heading !== null) {
+      key = heading[1]
+    } else if (bracket !== null) {
+      key = bracket[1]
+      inline = bracket[2]
+    } else if (colon !== null) {
+      key = colon[1]
+      inline = colon[2]
+    }
+    // 对话行（`{{user}}：…`、`<旁白>：…`）里的冒号不是字段分隔符
+    const keyLooksLikeLabel = key !== null
+      && !/[{}<>\[\]"'“”‘’「」《》]/.test(key)
+      && !/\s/.test(String(key).trim())
+    if (key !== null && !keyLooksLikeLabel) key = null
+    if (key !== null) {
+      const field = textFieldOf(key)
+      if (field !== null) {
+        sawKnown = true
+        current = { field, key: String(key).trim(), lines: inline.trim() === '' ? [] : [inline] }
+        entries.push(current)
+        continue
+      }
+      // 认不出的键：只有在已经确认这是张卡（见过已知字段）之后才当标签，否则当成正文
+      if (sawKnown && !/^[\s"'“”‘’《》（）()，。！？、；]/.test(key)) {
+        current = { field: 'extra', key: String(key).trim(), lines: inline.trim() === '' ? [] : [inline] }
+        entries.push(current)
+        continue
+      }
+    }
+    if (current !== null) current.lines.push(line)
+    else if (trimmed !== '') {
+      current = { field: 'extra', key: '', lines: [line] }
+      entries.push(current)
+    }
+  }
+  // 2) <标签>…</标签> 的写法（不少 txt 卡其实是当 XML 写的，中英标签都认）
+  const tagEntries = []
+  // `<名字>…</名字>`，以及带属性的 `<char name="张三">…</char>`
+  const tagRe = /<([A-Za-z\u4e00-\u9fff][\w\u4e00-\u9fff-]{0,30})([^>]*)>([\s\S]*?)<\/\1>/g
+  let tagHit = tagRe.exec(text)
+  while (tagHit !== null) {
+    const tagName = tagHit[1]
+    const attrText = tagHit[2]
+    // 标签里紧跟着写了个冒号（`<名字>：阿澜`）也认——那只是在抄「字段：值」的习惯
+    const body = tagHit[3].replace(/^\s*[:：]?\s*/, '').trimEnd()
+    // `<char name="沈九">正文</char>`：属性给名字，这一段正文算自述
+    const attrName = /name\s*=\s*["']?([^"'>]+)["']?/i.exec(attrText)
+    const attrIsName = attrName !== null && /^(char|character|character_card|bot|persona|card)$/i.test(tagName)
+    if (attrIsName) tagEntries.push({ field: 'name', key: tagName, lines: [attrName[1].trim()] })
+    let field = textFieldOf(tagName)
+    if (field === null) field = textWrapperOf(tagName)
+    if (field === null && attrIsName) field = 'description'
+    if (field !== null) {
+      tagEntries.push({ field, key: tagName, lines: body === '' ? [] : body.split('\n') })
+    } else if (body !== '') {
+      tagEntries.push({ field: 'extra', key: tagName, lines: body.split('\n') })
+    }
+    tagHit = tagRe.exec(text)
+  }
+  const tagHasKnown = tagEntries.some((e) => e.field !== 'extra')
+  if (tagHasKnown) {
+    const made = assemble(tagEntries, nameFallback)
+    if (made !== null) return made
+  }
+  // 有 <标签>…</标签> 的结构、但一个字段都对不上：整份当自述收进来，别让人卡在「读不进去」。
+  // 名字取文件名（用户挑一份叫「张三.txt」的卡时，这几乎总是对的）。
+  if (tagEntries.length > 0) {
+    const stem = String(options?.fileName ?? '').replace(/\.[^.]+$/, '').trim()
+    const name = tagEntries.find((e) => e.key !== '')?.lines?.[0]?.trim() ?? ''
+    const body = text.trim()
+    if (body !== '') {
+      return {
+        json: {
+          spec: 'chara_card_v2',
+          spec_version: '2.0',
+          data: {
+            name: stem === '' ? (name === '' ? '未命名' : name) : stem,
+            description: body,
+            personality: '',
+            scenario: '',
+            first_mes: '',
+            mes_example: '',
+            creator_notes: '这份是提示词式的卡：里面没有「名字：」「性格：」这种分字段的写法，所以原文整份收在自述里，名字用的是文件名。想拆成小节可以手动改。',
+            tags: [],
+            system_prompt: '',
+            post_history_instructions: '',
+            alternate_greetings: [],
+          },
+        },
+        source: 'text-raw',
+      }
+    }
+  }
+
+  if (!sawKnown || entries.length === 0) return null
+
+  return assemble(entries, nameFallback)
+}
+
+/**
+ * 把读到的字段整理成 CC v2 的 JSON 形状。
+ * 两种入口（`<标签>` 与「一行一个字段」）都走这里，省得两套拼装逻辑慢慢走岔。
+ */
+function assemble(entries, nameFallback) {
+  const take = (field) => {
+    const found = entries.filter((e) => e.field === field)
+    if (found.length === 0) return ''
+    return found.map((e) => e.lines.join('\n').trim()).filter((v) => v !== '').join('\n\n').trim()
+  }
+  const extraBlocks = []
+  for (const entry of entries) {
+    if (!TEXT_EXTRA_FIELDS.has(entry.field)) continue
+    const value = entry.lines.join('\n').trim()
+    if (value === '') continue
+    if (entry.key === '') extraBlocks.push(value)
+    else if (value.includes('\n')) extraBlocks.push(`【${entry.key}】\n${value}`)
+    else extraBlocks.push(`${entry.key}：${value}`)
+  }
+  const rawName = take('name').split('\n')[0].trim() === '' ? nameFallback : take('name').split('\n')[0].trim()
+  const descriptionParts = [take('description'), ...extraBlocks].map((v) => String(v ?? '').trim()).filter((v) => v !== '')
+  const description = descriptionParts.join('\n\n').trim()
+  if (rawName === '' && description === '') return null
+
+  const json = {
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: {
+      name: rawName === '' ? '未命名' : rawName,
+      description,
+      personality: take('personality'),
+      scenario: take('scenario'),
+      first_mes: take('first_mes'),
+      mes_example: take('mes_example'),
+      creator_notes: take('creator_notes'),
+      tags: [],
+      system_prompt: '',
+      post_history_instructions: '',
+      alternate_greetings: [],
+    },
+  }
+  return { json, source: 'text' }
+}
+
 export async function extractCard(bytes, fileName = '') {
   const lower = fileName.toLowerCase()
   // 1) PNG
@@ -517,7 +770,40 @@ export async function extractCard(bytes, fileName = '') {
   try {
     json = JSON.parse(text)
   } catch {
-    throw new Error('这个文件读不出内容，可能不是角色卡')
+    // 4) 文本角色卡（一行一个字段 / Markdown 小标题 / 改名成 .txt 的 JSON）
+    const textCard = parseTextCard(text, { fileName })
+    if (textCard !== null) {
+      const kind = detectJsonKind(textCard.json)
+      if (kind !== 'unknown') return { json: textCard.json, kind, source: textCard.source }
+    }
+    const head = text.replace(/\s+/g, ' ').slice(0, 60)
+    // 扩展名就是 .txt / .md 的时候，宁可先收进来让人自己改，也不要留一句「读不进去」。
+    // 名字取文件名，整份原文进自述，备注里写明是怎么收的——删掉重来也比卡住强。
+    const stem = String(fileName).replace(/\.[^.]+$/, '').trim()
+    if (/\.(txt|md|markdown)$/i.test(fileName)) {
+      return {
+        json: {
+          spec: 'chara_card_v2',
+          spec_version: '2.0',
+          data: {
+            name: stem === '' ? '未命名' : stem,
+            description: text,
+            personality: '',
+            scenario: '',
+            first_mes: '',
+            mes_example: '',
+            creator_notes: '这份是提示词式的卡：里面没有「名字：」「性格：」这种分字段的写法，所以原文整份收在自述里，名字用的是文件名。想拆成小节可以手动改。',
+            tags: [],
+            system_prompt: '',
+            post_history_instructions: '',
+            alternate_greetings: [],
+          },
+        },
+        kind: 'v2',
+        source: 'text-raw',
+      }
+    }
+    throw new Error(`这个文件读不出角色卡（开头是「${head}」）。如果是散文式的人物介绍，先当材料导进来，用「让 AI 读一读」或提炼功能建卡。`)
   }
   return { json, kind: detectJsonKind(json), source: 'json' }
 }
