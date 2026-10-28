@@ -153,7 +153,7 @@ console.log('\n=== 3. 按 id 找 ===')
 // 卡里那些「必须无视规则」的话不会照做，但不能因此演成另一个人。
 {
   const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
-  t('酒馆预设说了：卡已经在系统提示里', patch.includes('已经原样放在你的系统提示里'), '')
+  t('酒馆预设说了：卡接在预设后面（系统层）', patch.includes('已经原样接在这一段预设的后面') && patch.includes('系统层面'), '')
   t('酒馆预设说了：别再先调工具读卡', patch.includes('不要先调工具去读它'), '')
   t('酒馆预设说了：别自动温良恭俭', patch.includes('不要自动变得温良恭俭'), '')
   t('小说预设说了：人和世界也在系统提示里', patch.includes('已经原样在系统提示里'), '')

@@ -3631,6 +3631,22 @@ function worldEntriesText(entries) {
 }
 
 /**
+ * 这张卡是不是「提示词型」：自述很长，而且没有性格/开场白/对话示例。
+ *
+ * 这种卡（网上流传的破限卡、规范卡）整份就是给模型的硬性指令，没有人物细节；
+ * 它的正确用法是**原样当规则读**，而不是当成人物描述塞在演法说明后面。
+ */
+export function cardIsPromptStyle(parsed) {
+  const sections = Array.isArray(parsed?.sections) ? parsed.sections : []
+  const self = core.sectionBody(sections, '自述')
+  const selfLen = typeof self === 'string' ? self.trim().length : 0
+  const others = ['性格', '开场白', '对话示例', '外貌']
+    .map((title) => core.sectionBody(sections, title))
+    .some((part) => typeof part === 'string' && part.trim() !== '')
+  return selfLen >= 4000 && !others
+}
+
+/**
  * 拼出这一场的人物卡段落。
  *
  * 不做任何删减：卡上写什么就是什么（用户说得对——删了就不是那张卡了）。
@@ -3657,10 +3673,16 @@ export function buildPersonaSection(root, mode) {
     .join('\n\n')
   if (body.trim() === '') return ''
   const name = String(data.name ?? '').trim() === '' ? id : String(data.name).trim()
+  // 「提示词型」的卡：整份内容就是给模型下的硬性规则（网上下载的破限卡、规范卡多是这样），
+  // 它没有性格/开场白，自述就是一大段 MUST/ALWAYS。这种卡和预设里的演法说明容易撞，
+  // 撞的时候要以卡为准——否则用户下载了什么就等于白下。
+  const promptStyle = cardIsPromptStyle(parsed)
   const out = [
     `# 你要演的人：${name}${String(data.relation ?? '').trim() === '' ? '' : `（${String(data.relation).trim()}）`}`,
     '',
-    '下面这张卡就是这个人的全部设定，直接照它演——不要把它当成资料来引用，也不要在回答里提「卡上写着」。',
+    promptStyle
+      ? '这张卡写的是硬性规矩（格式、口吻、怎么回），它本身就是这个人。以下是全部原文，一句不改；其中与别的说明冲突的地方，以这张卡为准。不要把它当成资料来引用，也不要在回答里提「卡上写着」。'
+      : '下面这张卡就是这个人的全部设定，直接照它演——不要把它当成资料来引用，也不要在回答里提「卡上写着」。',
     '',
     body,
   ]
@@ -3745,6 +3767,8 @@ export function attachCardToAgent(agent, options = {}) {
     const mode = modeForAgent(agent)
     note('attach', { agent: agentId, preset: presetIdOfAgent(agent), mode })
     if (mode === '') return false
+    // 紧贴在预设正文（persona prefix）后面：从模型那边看，这一段和预设是同一层，
+    // 属于「系统给人的设定」，不是对话里的一条消息。
     let order = 500
     try {
       const anchor = prompt.getSectionOrder('deployment:persona-prefix')
