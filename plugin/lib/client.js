@@ -4893,7 +4893,7 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
         // 没问着问题不等于问完了。以前这里不看结果：AI 没连上、模型抽风、
         // 文件夹读不出来，界面都会直接跳到结束页，还写「现在写满了 undefined%」。
         if (p?.ok !== true) {
-          setErr(`${p?.error ?? '想不出下一题'}。刚才那一句已经记下了，这里是没接上——过一会儿点「再问一题」接着来。`)
+          setErr(`${p?.error ?? '想不出下一题'}。刚才那一句已经记下了，这里是没接上——过一会儿点下面「再问一题」接着来。`)
           return
         }
         setPlan(p)
@@ -4910,6 +4910,24 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
         setCurrent(rest[0])
       }
       await onRecorded()
+    } catch (e) {
+      setErr(humanizeError(e))
+    } finally { setBusy(false) }
+  }
+
+  // 队列走空了、但下一组问题没要到（模型没连上/抽风）时的退路。
+  // 以前错误文案让人点「再问一题」，界面上根本没有这个按钮，
+  // 用户只能重开一场或者干脆放弃。
+  const askMore = async () => {
+    if (busy === true) return
+    setBusy(true); setErr(null)
+    try {
+      const p = await call('interview.plan', { about: aboutId, relation, limit: 3, kind: fiction ? 'fictional' : 'real' })
+      if (p?.ok !== true) { setErr(p?.error ?? '这会儿想不出下一题，过一会儿再点一次。'); return }
+      setPlan(p)
+      setQueue(p.next ?? [])
+      setCurrent((p.next ?? [])[0] ?? null)
+      if ((p.next ?? []).length === 0) { setPhase('done'); await onRecorded() }
     } catch (e) {
       setErr(humanizeError(e))
     } finally { setBusy(false) }
@@ -5101,7 +5119,14 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
       ),
     ),
     h('div', { style: { padding: 10, borderTop: '1px solid var(--lc-line)', background: 'var(--lc-panel)' } },
-      err === null ? null : h('div', { style: { marginBottom: 6 } }, h(Err, { text: err })),
+      err === null ? null : h('div', { style: { marginBottom: 6 } },
+        h(Err, { text: err }),
+        // 这一题已经记下了、下一组问题没要到：给一个真的能点的「再问一题」，
+        // 而不是让人对着错误信息干等。
+        queue.length <= 1
+          ? h('div', { style: { marginTop: 6 } }, h(Btn, { size: 'sm', icon: 'chat', tone: 'primary', disabled: busy, onClick: askMore }, '再问一题'))
+          : null,
+      ),
       h('textarea', {
         className: 'lc-textarea', style: { minHeight: 62, marginBottom: 6 },
         value: answer, onChange: (e) => setAnswer(e.target.value),

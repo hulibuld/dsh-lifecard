@@ -581,6 +581,13 @@ renderOne('陪他聊聊（已经在横线里写了爷爷）', seen.get('Intervie
     })
     const past = findNodes(cur, (n) => n.props?.['data-past-option'] === 'yes')
     t('上一题的选项留着但点不动', past.length === 2 && past.every((n) => typeof n.props.onClick !== 'function'), String(past.length))
+
+    // 记完这一题、下一组问题没要到：错误提示旁边要有一个真的能点的「再问一题」。
+    const stuck = renderOne('陪他聊聊（下一组问题没要到）', seen.get('InterviewView'), { state: STATE, listing: LISTING }, {
+      0: 'talk', 8: [], 9: Q, 10: '', 12: false, 13: '刚才那一句已经记下了，这里是没接上',
+    })
+    const retry = flatButtons(expand(stuck)).find((b) => textOf(b).includes('再问一题'))
+    t('没要到下一组问题时给一个能点的「再问一题」', retry !== undefined && typeof retry.props.onClick === 'function')
   }
 
   const asked = []
