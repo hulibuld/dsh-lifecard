@@ -545,6 +545,14 @@ renderRoot('让 AI 读材料（已有材料）', base('analyze', { 9: { id: 'mam
   const joined = visibleText.slice(before).join('|')
   t('分析页给的是「开始读」', joined.includes('开始读'), joined.slice(0, 160))
 }
+function findNodes(node, pred, out = []) {
+  if (node === null || node === undefined || typeof node !== 'object') return out
+  if (Array.isArray(node)) { for (const item of node) findNodes(item, pred, out); return out }
+  if (pred(node)) out.push(node)
+  if (node.children !== undefined) findNodes(node.children, pred, out)
+  return out
+}
+
 renderRoot('陪他聊聊', base('interview'))
 renderRoot('陪他聊聊（从卡片进来）', base('interview', { 9: { id: 'mama', name: '妈妈', relationLabel: '母亲' } }))
 // 「还有什么」点开之后的样子：收起时只是一行灰字，摊开才有输入框。
@@ -558,6 +566,23 @@ renderOne('陪他聊聊（已经在横线里写了爷爷）', seen.get('Intervie
   // InterviewView 的 hook 槽（续上）：6 customFocus / 7 plan / 8 queue / 9 current /
   // 10 answer / 11 log / 12 busy / 13 err / 14 aboutId / 15 dropped / 16 ref
   const Q = { id: 'cooking-1', ask: '你妈做饭的时候有什么固定动作？', options: ['先把菜全切好'], fills: ['habit'] }
+  {
+    // 答题时屏幕上必须看得见「这一题问的是什么」。
+    // 以前问题只写进日志气泡，而气泡是答完才追加的 —— 用户在答第 N 题时，
+    // 屏幕上最后一条还是第 N-1 题，写什么都像在答上一题。
+    const live = renderOne('陪他聊聊（这一题的问题看得见）', seen.get('InterviewView'), { state: STATE, listing: LISTING }, { 0: 'talk', 9: Q, 10: '' })
+    const askNodes = findNodes(live, (n) => n.props?.['data-current-ask'] !== undefined)
+    t('答题时显示这一题的问题', askNodes.length === 1 && textOf(askNodes[0]).includes('有什么固定动作'), String(askNodes.length))
+
+    // 上一题的选项只是回看用：它们不能再点，否则会把答案填进「这一题」。
+    const cur = renderOne('陪他聊聊（带着上一题的记录）', seen.get('InterviewView'), { state: STATE, listing: LISTING }, {
+      0: 'talk', 9: Q, 10: '',
+      11: [{ role: 'bot', text: '你妈说话声音大吗？', options: ['大', '不大'] }, { role: 'me', text: '大' }],
+    })
+    const past = findNodes(cur, (n) => n.props?.['data-past-option'] === 'yes')
+    t('上一题的选项留着但点不动', past.length === 2 && past.every((n) => typeof n.props.onClick !== 'function'), String(past.length))
+  }
+
   const asked = []
   const realConfirm = fakeWindow.confirm
   fakeWindow.confirm = (msg) => { asked.push(String(msg)); return false }

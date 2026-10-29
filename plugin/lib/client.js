@@ -566,6 +566,9 @@ const CSS = `
 
 /* 关系选项：一片一片能点的词，比下拉框好点——一屏就能看见父亲母亲爷爷都在 */
 .lc-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+/* 上一题留下的选项：只是给人回看的，不要长得像能点的按钮 */
+.lc-opt-past { opacity: .72; cursor: default; }
+.lc-opt-past:hover { background: inherit; }
 .lc-chip {
   padding: 5px 11px; border-radius: 999px; border: 1px solid var(--lc-line-strong);
   background: var(--lc-panel); color: inherit; font-family: inherit; font-size: 14.5px;
@@ -4846,6 +4849,10 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
   }
 
   const advance = async (status, reason) => {
+    // 正记着的时候再点一次，会把同一题记两遍、还多跳一题——
+    // 用户看到的就是「答案和题目错位」。按键已经 disabled，
+    // 但键盘回车和连点仍可能挤进来，所以这里再挡一道。
+    if (busy === true) return
     if (current === null) return
     const q = current
     setBusy(true); setErr(null)
@@ -4858,6 +4865,7 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
         status,
         reason,
         fills: q.fills,
+        options: q.options,
       })
       // 记不下来就别往下走。以前这里不看结果：盘写不进去（文件夹被挪走、
       // 变成只读）时界面照样把这一问答进对话、照样跳下一题，用户答了半小时，
@@ -4878,8 +4886,8 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
         setLog((prev) => [...prev, { role: 'bot', text: q.ask, options: q.options }, { role: 'me', text: status === 'skipped' ? (reason === 'sealed' ? '（这个不想说）' : '（跳过）') : '（以后再说）' }])
       }
       setAnswer('')
-      // 队列推进
-      const rest = queue.slice(1)
+      // 队列推进：按「这一题不在队里了」来算，不靠 slice(1) 的位置假设
+      const rest = queue.filter((item) => item.id !== q.id)
       if (rest.length === 0) {
         const p = await call('interview.plan', { about: aboutId, relation, limit: 3, kind: fiction ? 'fictional' : 'real' })
         // 没问着问题不等于问完了。以前这里不看结果：AI 没连上、模型抽风、
@@ -5063,17 +5071,26 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
       log.map((entry, n) => entry.role === 'bot'
         ? h('div', { key: n, className: 'lc-stack' },
             h('div', { className: 'lc-bubble bot' }, h('div', { style: { whiteSpace: 'pre-wrap' } }, entry.text)),
+            // 已经答完的那几题，选项只留着让人回看，**不能再点**：
+            // 它们属于上一题，点下去会把那句话填进「这一题」的答案框，
+            // 于是记下来的答案和题对不上（用户说的「选项和上一题答案错位」）。
             (entry.options ?? []).length > 0
               ? h('div', { className: 'lc-stack', style: { marginTop: 4 } },
-                  entry.options.map((opt, k) => h('button', {
-                    key: k, className: 'lc-opt', type: 'button',
-                    onClick: () => setAnswer(opt),
+                  entry.options.map((opt, k) => h('div', {
+                    key: k, className: 'lc-opt lc-opt-past',
+                    'data-past-option': 'yes',
                   }, h('span', { className: 'lc-opt-num' }, String(k + 1)), h('span', null, opt))))
               : null,
           )
         : h('div', { key: n, className: 'lc-bubble me' }, h('div', { style: { whiteSpace: 'pre-wrap' } }, entry.text))),
 
       current === null ? null : h('div', { className: 'lc-stack', style: { marginTop: 10 } },
+        // 这一题的问题必须**在答题时就看得见**。以前只把问题写进日志气泡，
+        // 而气泡是答完才追加的，于是用户在答「第 N 题」时，屏幕上最后一条
+        // 还是「第 N-1 题」——答的什么、写进哪一题，全靠猜。
+        h('div', { className: 'lc-bubble bot', 'data-current-ask': current.id },
+          h('div', { style: { whiteSpace: 'pre-wrap' } }, String(current.ask ?? '')),
+          h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '这一题')),
         (current.options ?? []).length > 0
           ? h('div', { className: 'lc-meta' }, '选一个，或者直接在下面写自己的：')
           : null,

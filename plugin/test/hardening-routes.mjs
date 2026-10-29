@@ -379,6 +379,16 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   t('已问过的那题不再问', plain.next.every((q) => q.id !== 'friend.q01'), plain.next)
   t('另一个人一题都不该被算成已问', neighbor.next.some((q) => q.id === 'friend.q01'), neighbor.next)
   t('两个人的已问数不同', plain.askedAlready === 1 && neighbor.askedAlready === 0, { plain: plain.askedAlready, neighbor: neighbor.askedAlready })
+
+  // 材料块的标题必须是「问题本身」。以前是 `## friend.q01`，回头「整理进卡里」
+  // 时模型看到的是一串题号加裸答案，不知道这句话在回答什么，只能把答案
+  // 硬塞进不相干的格子里。
+  const recText = rec.material === null ? '' : await fs.readFile(path.join(ws, rec.material), 'utf8')
+  t('访谈材料的标题是那句问题', recText.includes('## 怎么认识的'), recText.slice(0, 160))
+  t('访谈材料里留着题号方便回查', recText.includes('问过的题号：friend.q01'), recText.slice(0, 200))
+  const rec2 = await api3['interview.record']({ about: 'zsan', q: 'friend.q02', ask: '平时怎么称呼', answer: '叫老张', options: ['老张', '张哥'] })
+  const rec2Text = await fs.readFile(path.join(ws, rec2.material), 'utf8')
+  t('访谈材料带上当时给的几个方向', rec2Text.includes('老张 / 张哥'), rec2Text.slice(-260))
 }
 
 // ── 访谈：跳过 ≠ 不想说 ────────────────────────────────────────

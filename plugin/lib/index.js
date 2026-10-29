@@ -2325,7 +2325,25 @@ function buildApi(ctx, workspace, config, options) {
       const materialName = `${date}-${core.safeId(aboutId)}访谈`
       let saved = null
       if (status === 'answered' && answer.trim() !== '') {
-        const block = `## ${questionId}\n\n> ${String(body?.ask ?? '').trim()}\n\n${answer.trim()}\n\n\`\`\`\nq: ${questionId}\nasked_at: ${new Date().toISOString()}\n\`\`\`\n`
+        // 标题用**问题本身**，不只用题号。以前标题是 `## real.q03`，回头
+        // 「整理进卡里」时模型看到的是一串题号加裸答案，不知道这句话在回答什么，
+        // 只能瞎猜字段——于是把答案硬塞进不相干的格子里。
+        const askText = String(body?.ask ?? '').trim()
+        const options = Array.isArray(body?.options) ? body.options.filter((x) => String(x ?? '').trim() !== '') : []
+        const block = [
+          `## ${askText === '' ? questionId : askText}`,
+          '',
+          `问过的题号：${questionId}`,
+          ...(options.length === 0 ? [] : ['', `当时给的几个方向：${options.map((x) => String(x).trim()).join(' / ')}`]),
+          '',
+          answer.trim(),
+          '',
+          '```',
+          `q: ${questionId}`,
+          `asked_at: ${new Date().toISOString()}`,
+          '```',
+          '',
+        ].join('\n')
         saved = await store.appendMaterial(ws, materialName, block)
       }
       // 账本
