@@ -215,6 +215,8 @@ for (const [doorLabel, doorId, expectWord, forbidWord, expectPreset, expectPhras
   const home = renderRoot({ ...base(viewAfterDoor), 24: doorId })
   const before = SESSIONS.length
   const clicked = clickButtonWith(home, '聊一聊')
+  // 现在是异步的：先让后台建会话，再拿出「开了哪一场」来断言。
+  await new Promise((r) => setTimeout(r, 30))
   const viewAfterClick = hookStore[0]
   const session = SESSIONS[before] ?? {}
   t(`「${doorLabel}」里点得动聊一聊`, clicked === true)
@@ -694,6 +696,7 @@ await (async () => {
   const beforeCard = SESSIONS.length
   const cardTree = renderRoot({ ...base('card'), 6: CARD })
   const cardClicked = clickButtonWith(cardTree, '聊一聊')
+  await new Promise((r) => setTimeout(r, 30))
   const cardSession = SESSIONS[beforeCard] ?? {}
   t('卡片页上「聊一聊」点得动', cardClicked === true)
   t('卡片页点完不切到访谈页', hookStore[0] !== 'interview', String(hookStore[0]))
@@ -723,6 +726,8 @@ await (async () => {
   const beforeOld = SESSIONS.length
   const oldTree = renderRoot2({ ...base('home') })
   const oldClicked = clickButtonWith(oldTree, '聊一聊')
+  // 先让后台那条路走完（异步），再看是不是把话交回给用户了。
+  await new Promise((r) => setTimeout(r, 30))
   t('老版本宿主上也点得动（不是点了没反应）', oldClicked === true)
   t('老版本宿主上不会假装开了会话', SESSIONS.length === beforeOld, JSON.stringify(SESSIONS.slice(-2)))
   // 点了之后要把「该复制什么」摆出来：状态存在某个槽里，重新画一遍看结果

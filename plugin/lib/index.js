@@ -1039,6 +1039,32 @@ function buildApi(ctx, workspace, config, options) {
         },
       }
     },
+    // 开一个新对话，并把第一句替用户发出去。
+    //
+    // 为什么放在后台：宿主把「建会话 + 发消息」这套能力挂在 sessionController 上，
+    // 后台一定拿得到；客户端那侧不一定（真机上 uiWorkspace 有时根本不在插件作用域里，
+    // 用户点完只会看到「这个版本不支持」）。所以正路从后台走，客户端只负责把会话切到眼前。
+    'session.open': async (body) => {
+      const controller = ctx.get?.('sessionController', false)
+      if (controller === null || controller === undefined || typeof controller.create !== 'function') {
+        return { ok: false, error: '这台机器没有开新对话的能力，把要说的那句话复制到新对话里也一样能用。' }
+      }
+      const preset = String(body?.preset ?? '').trim()
+      const text = String(body?.text ?? '')
+      try {
+        const created = await controller.create(preset === '' ? {} : { agentPreset: preset })
+        const id = String(created?.sessionId ?? '')
+        if (id === '') return { ok: false, error: '新对话没建起来，再点一次试试。' }
+        let sent = false
+        if (text !== '' && typeof controller.prompt === 'function') {
+          await controller.prompt({ sessionId: id, mode: 'queue', content: [{ type: 'text', text }] })
+          sent = true
+        }
+        return { ok: true, sessionId: id, agentPreset: String(created?.agentPreset ?? ''), sent }
+      } catch (error) {
+        return { ok: false, error: humanizeHostError(error) }
+      }
+    },
     'card.defaults.set': async (body) => {
       const ws = await root(body)
       const mode = String(body?.mode ?? '')

@@ -473,12 +473,14 @@ const hasRotate = (tree) => {
   return found
 }
 
-{
+await (async () => {
   // 首页点「聊一聊」：不再进插件里的访谈页，改成开一个新会话，
   // 输入框里摆好 skill 和一句意图（后端宿主负责真开，这里记调用）。
   const tree = renderRoot('首页（点聊一聊）', base('home', { 9: { id: 'mama', name: '妈妈' } }))
   const before = SESSIONS.length
   const clicked = clickByText(tree, '聊一聊')
+  // 现在是异步的：先让后台建会话，再断言「开了哪一场」。
+  await new Promise((r) => setTimeout(r, 30))
   const session = SESSIONS[before] ?? {}
   t('首页「聊一聊」点得动', clicked === true)
   t('点「聊一聊」不再切到插件里的访谈页', hookStore[0] !== 'interview', String(hookStore[0]))
@@ -488,12 +490,14 @@ const hasRotate = (tree) => {
   t('首页不带某个人进去问', !String(session.prompt ?? '').includes('妈妈'), JSON.stringify(session))
   const homeWords = textIn(expand(tree))
   t('界面上说清是在新对话里问', homeWords.includes('会在新对话里问'), homeWords.slice(0, 300))
-}
-{
+})();
+await (async () => {
   // 卡片页上补信息：新会话得知道「补哪一张」，不然第一句还得问我是谁。
   const tree = renderRoot('卡片详情（想补信息）', base('card', { 6: CARD_DETAIL }))
   const before = SESSIONS.length
   const clicked = clickByText(tree, '聊一聊')
+  // 现在是异步的：先让后台建会话，再断言「开了哪一场」。
+  await new Promise((r) => setTimeout(r, 30))
   const session = SESSIONS[before] ?? {}
   t('卡片页「聊一聊」点得动', clicked === true)
   t('卡片页点完不切到插件里的访谈页', hookStore[0] !== 'interview', String(hookStore[0]))
@@ -503,7 +507,7 @@ const hasRotate = (tree) => {
   const cardWords = textIn(expand(tree))
   t('卡片页说清会在新对话里问', cardWords.includes('会在新对话里问'), cardWords.slice(0, 300))
   t('卡片页的按钮上写着「新开一个对话」', cardWords.includes('聊一聊（新开一个对话）'), cardWords.slice(0, 300))
-}
+})();
 
 {
   const tree = renderRoot('首页（带着上一个人去整理材料）', base('home', { 9: { id: 'mama', name: '妈妈' } }))

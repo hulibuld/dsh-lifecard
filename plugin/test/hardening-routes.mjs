@@ -1437,5 +1437,38 @@ console.log('\n=== 26. 撤掉的名字按名字也拦；空材料不是全读；
   await fs.rm(ws13, { recursive: true, force: true })
 }
 
+console.log('\n=== 27. 后台替用户开新对话（session.open）===')
+
+{
+  const made = []
+  const sent = []
+  const controller = {
+    create: async (req) => {
+      made.push(req)
+      return { sessionId: 'sess-9', agentPreset: req?.agentPreset ?? 'standard' }
+    },
+    prompt: async (req) => { sent.push(req) },
+  }
+  const table2 = api.buildApi({ get: (name) => (name === 'sessionController' ? controller : undefined) }, async () => ws, {})
+  const ok = await table2['session.open']({ preset: 'lc-tavern', text: '/lifecard-interview\n帮我建一张新的人物卡' })
+  t('建会话时把预设带过去', made.length === 1 && made[0]?.agentPreset === 'lc-tavern', made)
+  t('建好之后把第一句发出去', sent.length === 1 && String(sent[0]?.content?.[0]?.text ?? '').includes('/lifecard-interview'), sent)
+  t('发消息是队列模式', sent[0]?.mode === 'queue', sent[0])
+  t('回执里带着会话号', ok.ok === true && ok.sessionId === 'sess-9', ok)
+  t('回执里说清实际用的是哪套预设', ok.agentPreset === 'lc-tavern', ok)
+  t('回执里说清第一句发出去了', ok.sent === true, ok)
+
+  const noText = await table2['session.open']({ preset: 'lc-real' })
+  t('不给第一句也照样只建会话', noText.ok === true && noText.sent === false, noText)
+
+  const boom = api.buildApi({ get: (name) => (name === 'sessionController' ? { create: async () => { throw new Error('会话服务没响应') }, prompt: async () => {} } : undefined) }, async () => ws, {})
+  const bad = await boom['session.open']({ preset: 'lc-real', text: 'x' })
+  t('建会话失败时说人话，不抛给前端', bad.ok === false && !String(bad.error).includes('    at '), bad)
+
+  const none = api.buildApi({ get: () => undefined }, async () => ws, {})
+  const missing = await none['session.open']({ preset: 'lc-real', text: 'x' })
+  t('这台机器没有会话服务时如实说', missing.ok === false && String(missing.error).includes('复制'), missing)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

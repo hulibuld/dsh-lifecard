@@ -98,13 +98,35 @@ const run = async (args) => api.__openInterviewSession(args)
   t('报错说的是人话，没有堆栈', String(r?.reason ?? '').includes('会话服务没响应') && !String(r?.reason ?? '').includes('    at '), String(r?.reason))
 }
 
+// 四b、后台建会话（真机走的就是这条）：后台返回 sessionId 就直接算开成。
+{
+  const posts = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    posts.push({ url: String(url), body: JSON.parse(String(init?.body ?? '{}')) })
+    if (String(url).endsWith('/session.open')) {
+      return { ok: true, json: async () => ({ ok: true, sessionId: 'srv-1', agentPreset: 'lc-real', sent: true }) }
+    }
+    return { ok: true, json: async () => ({ ok: true }) }
+  }
+  const opened = []
+  api.__setHostServices(null, { openSession: (id) => opened.push(id), startSession: () => { throw new Error('不该走摆草稿') } })
+  const r = await api.__openInterviewSession({ about: '钱俊锋', mode: 'real' })
+  globalThis.fetch = realFetch
+  const asked = posts.find((p) => p.url.endsWith('/session.open'))
+  t('后台那条路被用上了', asked !== undefined, JSON.stringify(posts.map((p) => p.url)))
+  t('交给后台的预设对得上这扇门', asked?.body?.preset === 'lc-real', JSON.stringify(asked?.body))
+  t('交给后台的第一句带着访谈那个 skill', String(asked?.body?.text ?? '').includes('/lifecard-interview'), JSON.stringify(asked?.body))
+  t('后台建好的会话被切到眼前', opened[0] === 'srv-1', JSON.stringify(opened))
+  t('这条路也说自己办成了', r?.ok === true, JSON.stringify(r))
+}
+
 // 五、老宿主（没有远程会话能力）：退回摆草稿，行为跟以前一样。
 {
   const drafts = []
   const legacy = { startSession: (workspaceId, options) => { drafts.push({ workspaceId, ...(options ?? {}) }); return Promise.resolve() } }
   api.__setHostServices(null, legacy)
-  const r = api.__openInterviewSession({ about: '李四', mode: 'real' })
-  t('老宿主上同步返回（不用等）', r !== null && typeof r === 'object' && typeof r.then !== 'function', typeof r)
+  const r = await api.__openInterviewSession({ about: '李四', mode: 'real' })
   t('老宿主上摆的是草稿', drafts.length === 1 && String(drafts[0]?.prompt ?? '').includes('/lifecard-interview'), JSON.stringify(drafts))
   t('老宿主上也带着预设', drafts[0]?.agentPreset === 'lc-real', JSON.stringify(drafts))
 }
@@ -112,7 +134,7 @@ const run = async (args) => api.__openInterviewSession(args)
 // 六、两样能力都没有：说清楚，别假装。
 {
   api.__setHostServices(null, null)
-  const r = api.__openInterviewSession({ about: '', mode: 'real' })
+  const r = await api.__openInterviewSession({ about: '', mode: 'real' })
   t('什么能力都没有时说自己办不到', r?.ok === false, JSON.stringify(r))
   t('并且把该复制的那句话一起交回来', String(r?.prompt ?? '').includes('/lifecard-interview'), JSON.stringify(r))
 }

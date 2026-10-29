@@ -872,7 +872,9 @@ function interviewPrompt({ about, mode, ask } = {}) {
   const name = String(about === undefined || about === null ? '' : about).trim()
   const lines = [
     '/lifecard-interview',
-    name === '' ? '帮我建一张新的人物卡' : `帮我把「${name}」这张卡补一补`,
+    // 一句话说清要做什么。补卡的时候带上「写过的别再问」——不然它会把
+    // 已经写好的部分从头再问一遍，用户得答第二遍。
+    name === '' ? '帮我建一张新的人物卡' : `帮我补一补「${name}」这张卡，已经写过的就别再问了`,
   ]
   // 虚构角色要说清是虚构的，不然它会照「记录一个真人」来问，
   // 连生日、住址这种只对真人有意义的东西也问出来。
@@ -892,19 +894,55 @@ function interviewPrompt({ about, mode, ask } = {}) {
 function openInterviewSession({ about, mode, ask } = {}) {
   const prompt = interviewPrompt({ about, mode, ask })
   const preset = DOOR_PRESET[mode === 'tavern' ? 'tavern' : mode === 'novel' ? 'novel' : 'real']
+  // 这条路要等网络，是异步的；下面几条退路有同步的，调用方两种都接。
+  return openInterviewSessionByServer(prompt, preset)
+}
 
-  // 正路：自己建会话（顺手指定预设），再直接把第一句发出去。
-  // 以前靠 uiWorkspace.startSession 往输入框里摆草稿，可是摆草稿要等那一屏的
-  // 输入框就绪，任何一环慢一点就静默跳过了——用户看到的就是「会话开了，框是空的」。
-  // 发出去就没有「等它就绪」这回事，而且 skill 那一下要按回车才生效，发出去才真的加载。
-  // 这条路是异步的；没有这两样能力的宿主走下面同步的退路，调用方两种都能接。
-  const remote = REMOTE_SESSION
-  if (remote !== null && typeof remote.create === 'function' && typeof remote.prompt === 'function') {
-    return openInterviewSessionVia(remote, prompt, preset)
+/**
+ * 正路：让后台建会话、把第一句发出去，客户端再把那个会话切到眼前。
+ *
+ * 后台一定拿得到宿主的会话服务（sessionController）；客户端那侧不一定——
+ * 真机上 uiWorkspace 有时根本不在插件的作用域里，只能看到「这个版本不支持」。
+ * 所以「建」这一步交给后台，「切到眼前」这一步才用客户端的 uiWorkspace。
+ */
+async function openInterviewSessionByServer(prompt, preset) {
+  let made = null
+  try {
+    made = await call('session.open', { preset, text: prompt })
+  } catch (e) {
+    made = null
+  }
+  const id = String(made?.sessionId ?? '')
+  if (made?.ok === true && id !== '') {
+    const focused = focusSession(id)
+    const applied = String(made?.agentPreset ?? '').trim()
+    const notes = []
+    if (applied !== '' && applied !== preset) {
+      notes.push(`这台机器没认「${preset}」这套预设（现在跑的是「${applied}」），去顶部切一下。`)
+    }
+    if (made?.sent !== true) notes.push('新对话建好了，但第一句没能自动发出去，进去后自己发一下。')
+    if (focused !== true) notes.push('新对话在左边的会话列表里，点开它——第一句我已经替你发出去了。')
+    return { ok: true, prompt, preset, sessionId: id, note: notes.length === 0 ? undefined : notes.join(' ') }
   }
 
-  // 退路：老宿主只有「摆草稿」这一种能力。
+  // 第二条：客户端自己也能建会话（有的宿主把远程能力也暴露给前端）。
+  const remote = pickRemoteSession()
+  if (remote !== null) return openInterviewSessionVia(remote, prompt, preset)
+
+  // 第三条：老宿主只有「摆草稿」这一种能力。
   return openInterviewSessionDraft(prompt, preset)
+}
+
+/** 把某个会话切到眼前。切不动就说没能切动（会话已经建好了，用户点一下也能进去）。 */
+function focusSession(sessionId) {
+  const ui = UI_WORKSPACE !== null ? UI_WORKSPACE : (HOST === null || HOST === undefined ? undefined : HOST.get?.('uiWorkspace', false))
+  if (ui === undefined || ui === null || typeof ui.openSession !== 'function') return false
+  try {
+    ui.openSession(sessionId)
+    return true
+  } catch (e) {
+    return false
+  }
 }
 
 /** 自己建会话再发第一句（异步）。 */
@@ -941,11 +979,40 @@ async function openInterviewSessionVia(remote, prompt, preset) {
   }
 }
 
+/** 找一个真的能用 startSession 的东西。宿主版本不同，服务可能挂在几个不同的地方。 */
+function pickUiWorkspace() {
+  const got = []
+  const push = (v) => { if (v !== undefined && v !== null) got.push(v) }
+  push(UI_WORKSPACE)
+  try { push(HOST?.get?.('uiWorkspace', false)) } catch (e) { /* 没有就算了 */ }
+  try { push(HOST?.uiWorkspace) } catch (e) { /* 没有就算了 */ }
+  for (const one of got) if (typeof one?.startSession === 'function') return one
+  return null
+}
+
+/** 找一个真的能建会话 / 发消息的东西。 */
+function pickRemoteSession() {
+  const got = []
+  const push = (v) => { if (v !== undefined && v !== null) got.push(v) }
+  push(REMOTE_SESSION)
+  try { push(HOST?.get?.('remote.session', false)) } catch (e) { /* 没有就算了 */ }
+  try { push(HOST?.remote?.session) } catch (e) { /* 没有就算了 */ }
+  for (const one of got) if (typeof one?.create === 'function' && typeof one?.prompt === 'function') return one
+  return null
+}
+
 /** 老宿主的退路：把话摆进新会话的输入框，用户自己按回车。 */
 function openInterviewSessionDraft(prompt, preset) {
-  const ui = UI_WORKSPACE !== null ? UI_WORKSPACE : (HOST === null || HOST === undefined ? undefined : HOST.get?.('uiWorkspace', false))
-  if (ui === undefined || ui === null || typeof ui.startSession !== 'function') {
-    return { ok: false, prompt, reason: '这个版本不支持直接开会话' }
+  const ui = pickUiWorkspace()
+  if (ui === null) {
+    // 真没法开的时候，把「查到了什么」一起说出去：不然用户只会看到一句
+    // 「这个版本不支持」，我也没法判断到底是哪一层缺东西。
+    const hasRemote = pickRemoteSession() !== null
+    return {
+      ok: false,
+      prompt,
+      reason: `这个版本没法从这里直接开对话（能建会话：${hasRemote === true ? '有' : '没有'}；能开新对话：没有）。把下面这句复制到新对话里也一样能用。`,
+    }
   }
   try {
     const started = ui.startSession(undefined, {
@@ -4053,7 +4120,7 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
         onClick: () => onStartInterview({
           about: String(data?.name ?? '').trim(),
           mode,
-          ask: '接着这张卡已经写好的部分问，空着的那几样多问一点，别从头再问一遍。',
+
         }),
       }, '聊一聊（新开一个对话）'),
       h(Btn, { tone: 'analyze', size: 'sm', icon: 'spark', onClick: onAnalyze }, '读材料'),
