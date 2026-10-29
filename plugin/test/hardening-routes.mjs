@@ -547,7 +547,9 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
 // 演得满意的那一场直接变成小说的正文。这条路上有两处最容易坏：
 // 一本正经地写进了错的书，或者模型什么都没写却报了成功。
 {
-  const prose = '他把伞往门里递了递，雨顺着伞骨往下淌。她没接，只是看着他的手。'
+  // 这一段会被两处用到：`tavern.toChapter` 取它当正文，`novel.chapter.review` 取它当读者的意见。
+  // 开头那句是专门用来钉「模型的话在最前面、数出来的在后面」的。
+  const prose = '第一句是读者的意见：她把伞推回来的时候，我没懂她要说什么。\n他把伞往门里递了递，雨顺着伞骨往下淌。'
   const proseLlm = {
     listProviders: async () => [{ provider: 'raccoon', models: [{ id: 'sn-deepseek-v4-1-flash-1017' }] }],
     listModels: async () => [],
@@ -595,6 +597,30 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   t('第二次变成第 2 章', Number(conv2.chapter) === 2, String(conv2.chapter))
   const ch1 = await table3['novel.chapter.get']({ id: bookId, index: 1 })
   t('第一章没被覆盖', String(ch1.body ?? '').includes('伞骨'))
+
+  // 「挑挑毛病」= 模型当读者 + 机器顺手数一遍套话。
+  // 只靠模型读，密度这种毛病它看不出来（它读的是「哪里卡住」，不是「瞳孔一缩用了几次」）。
+  {
+    const chapter = await table3['novel.chapter.save']({
+      id: bookId,
+      index: 5,
+      body: [
+        '此外，雨还在下。',
+        '这不是等人，而是等一个说法。',
+        '他瞳孔一缩。她也瞳孔一缩。',
+        '命运的齿轮开始转动。',
+      ].join('\n'),
+    })
+    t('先写一章留着挑毛病', chapter.ok === true, JSON.stringify(chapter).slice(0, 140))
+
+    const reviewed = await table3['novel.chapter.review']({ id: bookId, index: 5 })
+    t('挑毛病跑得通', reviewed.ok === true, JSON.stringify(reviewed).slice(0, 160))
+    t('模型的意见还在最前面', reviewed.ok === true && String(reviewed.review).startsWith('第一句是读者的意见'), String(reviewed.review).slice(0, 60))
+    t('后面接着一段数出来的', reviewed.ok === true && String(reviewed.review).includes('顺手数了一下'), String(reviewed.review).slice(-80))
+    t('数出来「此外」', reviewed.ok === true && String(reviewed.review).includes('此外'), String(reviewed.review).slice(-200))
+    t('数出来「命运的齿轮」', reviewed.ok === true && String(reviewed.review).includes('命运的齿轮'), String(reviewed.review).slice(-200))
+    t('扫描结果单独给了，别的界面也能用', reviewed.ok === true && reviewed.scan !== undefined && reviewed.scan.total >= 3, reviewed.ok === true ? reviewed.scan.total : reviewed.error)
+  }
 
   // 空会话不许变出一张空章
   // 没有开场白的卡才会开出「一句话都还没说」的会话

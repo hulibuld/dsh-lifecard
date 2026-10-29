@@ -18,6 +18,7 @@ import os from 'node:os'
 import * as core from './core.js'
 import * as codec from './codec.js'
 import * as store from './store.js'
+import * as prose from './prose.js'
 import * as prompts from './prompts.js'
 
 import * as score from './score.js'
@@ -3110,7 +3111,27 @@ function buildApi(ctx, workspace, config, options) {
       if (called.ok !== true) return { ok: false, error: `这次没审成：${called.error ?? '过一会儿再试一次'}` }
       const review = String(called.text ?? '').trim()
       if (review === '') return { ok: false, error: 'AI 这次没给出意见，再点一次试试。' }
-      return { ok: true, index, review, chars: bodyText.length, blind: true, model: String(body?.model ?? '') }
+
+      // 读者的意见靠模型读，套话靠数。
+      //
+      // 「不是…而是…」用了四次、「瞳孔一缩」出现三次——这种密度人眼看不出来，
+      // 数一遍就知道。所以这一段是**附带**给的：不改模型的意见，
+      // 也不替作者改句子，只说哪个说法出现了几次、举一句原文。
+      const scan = prose.scanProse(bodyText)
+      const scanned = prose.proseReportText(scan)
+      const combined = scanned === ''
+        ? review
+        : `${review}\n\n【顺手数了一下】（不是意见，是数出来的）\n${scanned}`
+
+      return {
+        ok: true,
+        index,
+        review: combined,
+        scan,
+        chars: bodyText.length,
+        blind: true,
+        model: String(body?.model ?? ''),
+      }
     },
 
     /** 读一章。 */
