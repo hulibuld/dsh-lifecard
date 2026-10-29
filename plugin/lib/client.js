@@ -858,6 +858,11 @@ const VIEWS = { doors: 'doors', novel: 'novel', book: 'book', game: 'game', care
 // 宿主那边给的是 `uiWorkspace.startSession(workspaceId?, options)`，options
 // 里的 prompt 落在新会话的输入框里，不会自动发送。
 let HOST = null
+// 开新会话最终要走的两样东西：宿主的远程会话控制器（建会话 + 发第一句）和
+// 客户端的 uiWorkspace（把新会话切到眼前）。两者都用 ctx.inject 等就绪，
+// 拿不到就退回草稿法（host 版本不同，能力不同，路不能断）。
+let REMOTE_SESSION = null
+let UI_WORKSPACE = null
 
 /** 三扇门各用哪一套预设。串了就会拿「记录一个真人」的问法去问虚构角色。 */
 const DOOR_PRESET = { real: 'lc-real', tavern: 'lc-tavern', novel: 'lc-novel' }
@@ -887,8 +892,58 @@ function interviewPrompt({ about, mode, ask } = {}) {
 function openInterviewSession({ about, mode, ask } = {}) {
   const prompt = interviewPrompt({ about, mode, ask })
   const preset = DOOR_PRESET[mode === 'tavern' ? 'tavern' : mode === 'novel' ? 'novel' : 'real']
-  const host = HOST
-  const ui = host === null || host === undefined ? undefined : host.get?.('uiWorkspace', false)
+
+  // 正路：自己建会话（顺手指定预设），再直接把第一句发出去。
+  // 以前靠 uiWorkspace.startSession 往输入框里摆草稿，可是摆草稿要等那一屏的
+  // 输入框就绪，任何一环慢一点就静默跳过了——用户看到的就是「会话开了，框是空的」。
+  // 发出去就没有「等它就绪」这回事，而且 skill 那一下要按回车才生效，发出去才真的加载。
+  // 这条路是异步的；没有这两样能力的宿主走下面同步的退路，调用方两种都能接。
+  const remote = REMOTE_SESSION
+  if (remote !== null && typeof remote.create === 'function' && typeof remote.prompt === 'function') {
+    return openInterviewSessionVia(remote, prompt, preset)
+  }
+
+  // 退路：老宿主只有「摆草稿」这一种能力。
+  return openInterviewSessionDraft(prompt, preset)
+}
+
+/** 自己建会话再发第一句（异步）。 */
+async function openInterviewSessionVia(remote, prompt, preset) {
+  {
+    try {
+      const created = await remote.create({ agentPreset: preset })
+      const id = String(created === undefined || created === null ? '' : created.sessionId ?? '')
+      if (id === '') return { ok: false, prompt, preset, reason: '新会话没建起来，再点一次试试' }
+      if (UI_WORKSPACE !== null && typeof UI_WORKSPACE.openSession === 'function') {
+        // 打不开也不要紧：会话已经建好、话也发出去了，它在会话列表里等着。
+        try { UI_WORKSPACE.openSession(id) } catch (e) { /* 忽略 */ }
+      }
+      await remote.prompt({ sessionId: id, mode: 'queue', content: [{ type: 'text', text: prompt }] })
+      const applied = String(created === undefined || created === null ? '' : created.agentPreset ?? '').trim()
+      if (applied !== '' && applied !== preset) {
+        return {
+          ok: true,
+          prompt,
+          preset,
+          sessionId: id,
+          note: `会话开好了，但这台机器没认「${preset}」这套预设（现在跑的是「${applied}」）。在顶部把预设切成它对的那一套再聊。`,
+        }
+      }
+      return { ok: true, prompt, preset, sessionId: id }
+    } catch (e) {
+      // 远程那条路没走通，别让用户白点一次：退回摆草稿，把理由一并说清。
+      const draft = openInterviewSessionDraft(prompt, preset)
+      if (draft.ok === true) {
+        return { ...draft, note: `新会话没直接开起来（${humanizeError(e)}），改成把那句话摆进输入框了，按回车就开始。` }
+      }
+      return { ok: false, prompt, preset, reason: humanizeError(e) }
+    }
+  }
+}
+
+/** 老宿主的退路：把话摆进新会话的输入框，用户自己按回车。 */
+function openInterviewSessionDraft(prompt, preset) {
+  const ui = UI_WORKSPACE !== null ? UI_WORKSPACE : (HOST === null || HOST === undefined ? undefined : HOST.get?.('uiWorkspace', false))
   if (ui === undefined || ui === null || typeof ui.startSession !== 'function') {
     return { ok: false, prompt, reason: '这个版本不支持直接开会话' }
   }
@@ -1274,13 +1329,25 @@ function LifeCardTab(props) {
   const [chatsNote, setChatsNote] = useState(null)
   const startInterview = useCallback((opts) => {
     const started = openInterviewSession(opts === undefined || opts === null ? {} : opts)
-    if (started.ok === true) {
-      setHandoff(null)
-      flash('已经在新对话里摆好了，按回车就开始问', 'ok')
+    const settle = (result) => {
+      const done = result === undefined || result === null ? { ok: false, prompt: '', reason: '没能开成新会话' } : result
+      if (done.ok === true) {
+        setHandoff(null)
+        // 预设没被认下来时它自己会带一句 note，那话比我编的「摆好了」有用。
+        flash(done.note !== undefined ? String(done.note) : '已经在新对话里开始问了', done.note === undefined ? 'ok' : 'warn')
+        return
+      }
+      // 不静默：把「为什么没开成」和「该复制什么」一起摆出来。
+      setHandoff(done)
+    }
+    // openInterviewSession 现在是异步的（要先建会话、再把第一句发出去），
+    // 但同步的返回（老宿主那条退路）也要照旧能用。
+    if (started !== undefined && started !== null && typeof started.then === 'function') {
+      setBusy('interview')
+      started.then((r) => { setBusy(''); settle(r) }).catch((e) => { setBusy(''); settle({ ok: false, prompt: '', reason: humanizeError(e) }) })
       return
     }
-    // 不静默：把「为什么没开成」和「该复制什么」一起摆出来。
-    setHandoff(started)
+    settle(started)
   }, [flash])
 
   /** 打开一本书，进到那一屏。 */
@@ -7129,6 +7196,20 @@ function apply(ctx) {
   // 留住宿主，供 openInterviewSession 开新会话用。
   // 必须在最前面：下面拿不到 betterSidebar 会提前 return，放后面就永远是 null。
   HOST = ctx
+  // 开新会话的两样能力都是可选的：有就记下来，没有就一直是 null（走退路）。
+  // 不写进 inject 导出数组——那会让缺服务的干净 profile 整个 apply 不执行。
+  try {
+    ctx.inject?.(['remote.session'], (scoped) => {
+      const got = scoped.get?.('remote.session', false)
+      if (got !== undefined && got !== null) REMOTE_SESSION = got
+    })
+  } catch (e) { /* 老宿主没有这个服务 */ }
+  try {
+    ctx.inject?.(['uiWorkspace'], (scoped) => {
+      const got = scoped.get?.('uiWorkspace', false)
+      if (got !== undefined && got !== null) UI_WORKSPACE = got
+    })
+  } catch (e) { /* 老宿主没有这个服务 */ }
   // 样式也算副作用：跟着插件一起上手、一起回收。
   ctx.effect(() => ensureStyle(document), 'lifecard: 样式')
 
@@ -7190,6 +7271,13 @@ const inject = ['slots']
 		exports.apply = apply;
 		exports.inject = inject;
 		exports.LifeCardTab = LifeCardTab;
+		// 测试专用口子：这两条路要等宿主服务就绪（ctx.inject）才分得清，
+		// 假宿主里造不出 inject，所以允许测试直接把两个服务塞进来。
+		exports.__openInterviewSession = openInterviewSession;
+		exports.__setHostServices = (remote, ui) => {
+			REMOTE_SESSION = remote === undefined ? null : remote;
+			UI_WORKSPACE = ui === undefined ? null : ui;
+		};
 		return module.exports;
 	}
 });
