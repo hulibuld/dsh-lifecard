@@ -13,6 +13,7 @@
  */
 import path from 'node:path'
 import os from 'node:os'
+import { readdir } from 'node:fs/promises'
 
 import * as core from './lib/core.js'
 import * as store from './lib/store.js'
@@ -367,6 +368,8 @@ export function registerTools(ctx, config) {
       '等用户说「可以 / 就这么写」，再带 approved: true 调这一次。',
       '每一段都必须附一句材料里的原句（quote），写之前会逐字比对；对不上整次不写。',
       '不给 approved: true 时不会写任何东西，只会告诉你还差哪一步。',
+      '已经有同名的卡时，默认只补空缺：原来写过的小节和字段一个字都不动，返回里会说补了哪几节。',
+      '只有用户明确要求整张重写时，才带 mode: "replace" 与 confirm_replace: true；缺一次就只回一句确认，不写。',
     ].join('\n'),
     {
       approved: { type: 'boolean', description: '用户是否已经明确同意写入。必须为 true 才会真的建卡。' },
@@ -378,6 +381,12 @@ export function registerTools(ctx, config) {
         type: 'array',
         description: '要写进卡的段落。每项 { title, body, quote }：title 用小节名（自述/性格/场景/口癖/外貌/不会说的话…），body 是要写进卡的话，quote 是材料里支撑它的原句。',
       },
+      mode: {
+        type: 'string',
+        enum: ['merge', 'replace'],
+        description: '同名已有卡时怎么办：merge（默认）只补空缺；replace 整张重写，必须同时带 confirm_replace: true。',
+      },
+      confirm_replace: { type: 'boolean', description: '整张重写时的第二次确认。用户第二次明确说要覆盖才传 true。' },
     },
     ['approved', 'material', 'name', 'sections'],
     async (args) => {
@@ -419,19 +428,66 @@ export function registerTools(ctx, config) {
         ].join('\n')
       }
 
-      const data = {
+      const id = core.safeId(name)
+      const incoming = {
         lifecard: core.DATA_VERSION,
-        id: core.safeId(name),
+        id,
         kind: 'fictional',
         name,
         world: String(args.world ?? '').trim() === '' ? 'reality' : String(args.world).trim(),
       }
       const relation = String(args.relation ?? '').trim()
-      if (relation !== '') data.relation = relation
-      const rel = store.cardRelPath(data.id, data.world)
-      const saved = await store.writeCard(root, rel, data, sections)
+      if (relation !== '') incoming.relation = relation
+      const rel = store.cardRelPath(id, incoming.world)
+      const mode = args.mode === 'replace' ? 'replace' : 'merge'
+
+      const existingRel = await findExisting(root, rel, id)
+      if (existingRel !== null) {
+        const already = await store.readCard(root, existingRel)
+        if (already.ok !== true) {
+          if (already.withdrawn === true || isWithdrawnAt(root, existingRel)) return withdrawnNote(existingRel, '卡')
+          return `已经有一张同名的卡（${existingRel}），可这会儿读不出来：${String(already.error ?? '读不出来')}。先把它弄好，再来写。`
+        }
+        if (mode === 'replace') {
+          if (args.confirm_replace !== true) {
+            return [
+              `已经有一张同名的卡：${existingRel}`,
+              '整张重写会连身份、关系、原来写过的小节一起换掉，换完就找不回来了。',
+              '确定要整张重写，就再调一次，带 mode: "replace" 和 confirm_replace: true。',
+              '只想往里补，就不用改参数——默认只补空缺，原来的字一个不动。',
+            ].join('\n')
+          }
+          const replaced = await store.writeCard(root, existingRel, incoming, sections)
+          if (replaced.ok !== true) return `没能写成：${String(replaced.error ?? '存盘失败')}`
+          return `整张换掉了：${replaced.path}\n${sections.length} 段，每段都对着材料里的原句核过。这次是按用户第二次确认整张覆盖写的。`
+        }
+        const mergedData = mergeData(already.data, incoming)
+        const mergedSections = mergeSections(already.sections, sections)
+        if (mergedSections.added.length === 0 && mergedData.filled.length === 0) {
+          return `这张卡已经有了，这次没有可补的：${existingRel}\n原有的内容一个字没动。\nmerged: true`
+        }
+        const saved = await store.writeCard(root, existingRel, mergedData.data, mergedSections.sections)
+        if (saved.ok !== true) return `没能写成：${String(saved.error ?? '存盘失败')}`
+        const bits = []
+        if (mergedSections.added.length > 0) bits.push(`补了 ${mergedSections.added.length} 节：${mergedSections.added.join('、')}`)
+        if (mergedData.filled.length > 0) bits.push(`补了 ${mergedData.filled.length} 项：${mergedData.filled.join('、')}`)
+        return [
+          `补好了（没有重写）：${saved.path}`,
+          ...bits,
+          '原来写过的内容一个字没动，身份也还是原来的。',
+          'merged: true',
+        ].join('\n')
+      }
+
+      // 只比路径会漏：id 是拼音、名字是中文时（people/rat.card.md 那种），
+      // 按名字再写会算出另一个路径，于是同一个人并排出现两张，点「放回来」就重了。
+      const heldCard = await store.withdrawnNameHit(root, rel, [id, name])
+      if (isWithdrawnAt(root, rel) || heldCard !== null) {
+        return withdrawnNote(heldCard?.path ?? rel, '卡')
+      }
+      const saved = await store.writeCard(root, rel, incoming, sections)
       if (saved.ok !== true) return `没能写成：${String(saved.error ?? '存盘失败')}`
-      return `写好了：${saved.path}\n${sections.length} 段，每段都对着材料里的原句核过。\n要接着补，就再调一次 lifecard_import_character（同名会覆盖，段落以这次为准）。`
+      return `写好了：${saved.path}\n${sections.length} 段，每段都对着材料里的原句核过。\n要接着补，就再调一次 lifecard_import_character（同名的卡默认只补空缺，已有的字不动）。`
     },
   )
 
@@ -441,6 +497,8 @@ export function registerTools(ctx, config) {
       '把材料里的一套设定整理成世界书。**只有用户明确同意之后才调用。**',
       '流程同 lifecard_import_character：先读材料、把候选条目（触发词 + 内容 + 依据原句）列给用户看，',
       '等用户点头，再带 approved: true 调这一次。每条都要附原句，逐字比对，对不上整次不写。',
+      '已经有同名的世界书时，默认只补空缺：新条目加进去，触发词对得上的并进已有条目，原来的条目一个字不动。',
+      '只有用户明确要求整份重写时，才带 mode: "replace" 与 confirm_replace: true；缺一次就只回一句确认，不写。',
     ].join('\n'),
     {
       approved: { type: 'boolean', description: '用户是否已经明确同意写入。必须为 true 才会真的建世界书。' },
@@ -451,6 +509,12 @@ export function registerTools(ctx, config) {
         type: 'array',
         description: '条目数组。每项 { keys, content, quote }：keys 是触发用的关键词（字符串或数组），content 是这条设定本身，quote 是材料里支撑它的原句。',
       },
+      mode: {
+        type: 'string',
+        enum: ['merge', 'replace'],
+        description: '同名已有世界书时怎么办：merge（默认）只补空缺、按触发词并条目；replace 整份重写，必须同时带 confirm_replace: true。',
+      },
+      confirm_replace: { type: 'boolean', description: '整份重写时的第二次确认。用户第二次明确说要覆盖才传 true。' },
     },
     ['approved', 'material', 'name', 'entries'],
     async (args) => {
@@ -495,7 +559,7 @@ export function registerTools(ctx, config) {
       }
 
       const id = core.safeId(name)
-      const data = {
+      const incoming = {
         lifecard: core.DATA_VERSION,
         id,
         kind: 'world',
@@ -503,9 +567,59 @@ export function registerTools(ctx, config) {
         genre: String(args.genre ?? '').trim(),
         entry_count: entries.length,
       }
-      const body = entries.map((e) => renderWorldEntry(e)).join('\n')
       const rel = path.posix.join('worlds', id, 'world.md')
-      const saved = await store.writeCard(root, rel, data, [{ title: '世界书条目', body }])
+      const mode = args.mode === 'replace' ? 'replace' : 'merge'
+
+      const existingRel = await findWorld(root, rel, name)
+      if (existingRel !== null) {
+        const already = await store.readCard(root, existingRel)
+        if (already.ok !== true) {
+          if (already.withdrawn === true || isWithdrawnAt(root, existingRel)) return withdrawnNote(existingRel, '世界书')
+          return `已经有一本同名的世界书（${existingRel}），可这会儿读不出来：${String(already.error ?? '读不出来')}。先把它弄好，再来写。`
+        }
+        if (mode === 'replace') {
+          if (args.confirm_replace !== true) {
+            return [
+              `已经有一本同名的世界书：${existingRel}`,
+              '整份重写会把原来的条目全换掉，换完就找不回来了。',
+              '确定要整份重写，就再调一次，带 mode: "replace" 和 confirm_replace: true。',
+              '只想往里加，就不用改参数——默认只补空缺，原来的条目一个不动。',
+            ].join('\n')
+          }
+          const body = entries.map((e) => renderWorldEntry(e)).join('\n')
+          const replaced = await store.writeCard(root, existingRel, incoming, [{ title: '世界书条目', body }])
+          if (replaced.ok !== true) return `没能写成：${String(replaced.error ?? '存盘失败')}`
+          return `整份换掉了：${replaced.path}\n${entries.length} 条，每条都对着材料里的原句核过。这次是按用户第二次确认整份覆盖写的。`
+        }
+        const oldBody = core.sectionBody(already.sections ?? [], '世界书条目')
+        const merged = mergeWorldBlocks(oldBody, entries)
+        const mergedData = mergeData(already.data, { ...incoming, entry_count: 0 })
+        mergedData.data.entry_count = merged.total
+        const hasSection = (already.sections ?? []).some((one) => one?.title === '世界书条目')
+        const sections = hasSection
+          ? (already.sections ?? []).map((one) => (one?.title === '世界书条目' ? { title: '世界书条目', body: merged.body } : one))
+          : [...(already.sections ?? []), { title: '世界书条目', body: merged.body }]
+        const saved = await store.writeCard(root, existingRel, mergedData.data, sections)
+        if (saved.ok !== true) return `没能写成：${String(saved.error ?? '存盘失败')}`
+        const bits = []
+        if (merged.added.length > 0) bits.push(`新加 ${merged.added.length} 条：${merged.added.join('、')}`)
+        if (merged.joined.length > 0) bits.push(`并进已有条目 ${merged.joined.length} 条：${merged.joined.join('、')}`)
+        if (mergedData.filled.length > 0) bits.push(`补了 ${mergedData.filled.length} 项：${mergedData.filled.join('、')}`)
+        if (bits.length === 0) bits.push('这次的条目都已经在里面了')
+        return [
+          `补好了（没有重写）：${saved.path}`,
+          ...bits,
+          '原来的条目一个字没动。',
+          'merged: true',
+        ].join('\n')
+      }
+
+      const heldWorld = await store.withdrawnNameHit(root, rel, [id, name])
+      if (isWithdrawnAt(root, rel) || heldWorld !== null) {
+        return withdrawnNote(heldWorld?.path ?? rel, '世界书')
+      }
+      const body = entries.map((e) => renderWorldEntry(e)).join('\n')
+      const saved = await store.writeCard(root, rel, incoming, [{ title: '世界书条目', body }])
       if (saved.ok !== true) return `没能写成：${String(saved.error ?? '存盘失败')}`
       return `写好了：${saved.path}\n${entries.length} 条，每条都对着材料里的原句核过。`
     },
@@ -547,5 +661,145 @@ function renderWorldEntry(entry) {
   lines.push(`  insertion_order: ${Number.isFinite(entry.insertion_order) ? entry.insertion_order : 100}`)
   lines.push('  content: |-')
   for (const line of String(entry.content ?? '').split(/\r?\n/)) lines.push(`    ${line}`)
+
   return lines.join('\n')
+}
+
+/** 这个名字现在是不是被一张已撤掉的卡占着（撤掉记录还在，文件可能还在也可能被彻底删了）。 */
+function isWithdrawnAt(root, rel) {
+  const redactions = store.readRedactionsSync(root)
+  return store.hitsRedactionByPath(redactions, rel) !== undefined
+}
+
+/** 占着名字时的说法：给出两条真能走通的路，别让人再撞一次。 */
+function withdrawnNote(rel, what) {
+  return [
+    `这个名字被一张已经撤掉的${what}占着：${rel}`,
+    `想去救它，就到首页「已经撤掉的」里恢复；不想要了，就在那儿彻底删掉，名字才空出来。`,
+  ].join('\n')
+}
+
+/** 这张卡是不是已经有了：先看算出来的位置，再按 id 或名字找。找到回相对路径，没有回 null。 */
+async function findExisting(root, rel, id) {
+  const direct = await store.findCardByRelOrId(root, rel)
+  if (direct !== null) return direct
+  return await store.findCardByRelOrId(root, id)
+}
+
+/** 这本世界书是不是已经有了：先看算出来的位置，再按名字在所有世界书里找。 */
+async function findWorld(root, rel, name) {
+  const direct = await store.readCard(root, rel)
+  if (direct.ok === true) return rel
+  let dirs = []
+  try {
+    dirs = await readdir(path.join(root, 'worlds'))
+  } catch {
+    return null
+  }
+  for (const dir of dirs) {
+    const candidate = path.posix.join('worlds', dir, 'world.md')
+    const got = await store.readCard(root, candidate)
+    if (got.ok === true && String(got.data?.name ?? '').trim() === name) return candidate
+  }
+  return null
+}
+
+/** 合并前置字段：只填空缺，绝不改已有的（身份、关系、归到哪本书都算已有）。 */
+function mergeData(existingData, incomingData) {
+  const data = { ...(existingData ?? {}) }
+  const filled = []
+  for (const [key, value] of Object.entries(incomingData ?? {})) {
+    const cur = data[key]
+    const empty = cur === undefined || cur === null || (typeof cur === 'string' && cur.trim() === '')
+    if (!empty || value === undefined || value === null) continue
+    if (typeof value === 'string' && value.trim() === '') continue
+    data[key] = value
+    filled.push(key)
+  }
+  return { data, filled }
+}
+
+/** 合并小节：已有正文一个字不动，只补空缺（还没有这一节，或那一节本来是空的）。 */
+function mergeSections(existingSections, incomingSections) {
+  const sections = (existingSections ?? []).map((one) => ({ title: one?.title, body: String(one?.body ?? '') }))
+  const at = new Map(sections.map((one, i) => [one.title, i]))
+  const added = []
+  for (const one of incomingSections ?? []) {
+    const title = String(one?.title ?? '').trim()
+    const body = String(one?.body ?? '').trim()
+    if (title === '' || body === '') continue
+    if (at.has(title)) {
+      const i = at.get(title)
+      if (String(sections[i].body ?? '').trim() === '') {
+        sections[i].body = body
+        added.push(title)
+      }
+      continue
+    }
+    sections.push({ title, body })
+    at.set(title, sections.length - 1)
+    added.push(title)
+  }
+  return { sections, added }
+}
+
+/** 把「世界书条目」小节切成一条块一行数组（`- ` 开头算新的一条），块里原有字段全留着。 */
+function splitWorldBlocks(body) {
+  const blocks = []
+  let cur = null
+  for (const line of String(body ?? '').split(/\r?\n/)) {
+    if (/^-\s/.test(line)) {
+      if (cur !== null) blocks.push(cur)
+      cur = [line]
+      continue
+    }
+    if (cur === null) continue
+    cur.push(line)
+  }
+  if (cur !== null) blocks.push(cur)
+  return blocks
+}
+
+/** 一条块的触发词。借 parseWorldEntries 认形状，author 手写的 uid/constant 等字段都还在。 */
+function blockKeys(lines) {
+  const parsed = core.parseWorldEntries([{ title: '世界书条目', body: lines.join('\n') }])
+  const keys = parsed?.[0]?.keys
+  return (Array.isArray(keys) ? keys : []).map((k) => String(k).trim()).filter((k) => k !== '')
+}
+
+/** 只改一条块里的 keys 那行，别的行一个字不碰。 */
+function blockWithKeys(lines, keys) {
+  const text = JSON.stringify(keys)
+  let done = false
+  const out = lines.map((line) => {
+    if (done || !/^\s*keys:/.test(line)) return line
+    done = true
+    return line.replace(/^(\s*)keys:.*$/, `$1keys: ${text}`)
+  })
+  if (!done) out.splice(1, 0, `  keys: ${text}`)
+  return out
+}
+
+/** 世界书合并：触发词对得上的并进已有条目（只把新触发词补进 keys），对不上的追加成新条目。 */
+function mergeWorldBlocks(existingBody, incomingEntries) {
+  const blocks = splitWorldBlocks(existingBody)
+  const added = []
+  const joined = []
+  for (const entry of incomingEntries ?? []) {
+    const keys = (entry?.keys ?? []).map((k) => String(k).trim()).filter((k) => k !== '')
+    const label = keys.join(' / ') || '常驻'
+    const hit = keys.length === 0 ? -1 : blocks.findIndex((lines) => blockKeys(lines).some((k) => keys.includes(k)))
+    if (hit === -1) {
+      const fresh = [`- keys: ${JSON.stringify(keys)}`, '  insertion_order: 100', '  content: |-']
+      for (const line of String(entry?.content ?? '').split(/\r?\n/)) fresh.push(`    ${line}`)
+      blocks.push(fresh)
+      added.push(label)
+      continue
+    }
+    const union = blockKeys(blocks[hit])
+    for (const k of keys) if (!union.includes(k)) union.push(k)
+    blocks[hit] = blockWithKeys(blocks[hit], union)
+    joined.push(label)
+  }
+  return { body: blocks.map((lines) => lines.join('\n')).join('\n'), added, joined, total: blocks.length }
 }

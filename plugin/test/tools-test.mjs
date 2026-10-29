@@ -3,7 +3,7 @@
 // 为什么值得单独测：这些工具将来是「LC 酒馆 / LC 小说 / LC 现实」三个预设
 // 唯一能读到用户档案的通道。它们坏掉不会让插件起不来——宿主会静默少几个
 // 工具——所以只能靠测试盯着。
-import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, mkdir, writeFile, readFile, rename } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -214,6 +214,232 @@ console.log('\n=== 8. 从材料提炼成卡 / 世界书：先列候选，用户�
   t('世界书进了列表', hit !== undefined, JSON.stringify(anyWorld.worlds.map((w) => w.name)))
   t('条目数对得上', hit !== undefined && Number(hit.entry_count) === 1, hit?.entry_count)
   void worldFile
+}
+
+console.log('\n=== 9. 同名已经有卡 / 世界书：默认只补空缺，整张重写得再说一次 ===')
+{
+  const diary = [
+    '十月的日记',
+    '',
+    '她每天早上五点起来熬粥，粥锅盖一掀，满屋子都是米香。',
+    '她不喜欢别人替她拿主意，家里的事从来都是她自己定。',
+  ].join('\n')
+  await writeFile(path.join(root, 'materials/2026-10-28-妈妈的日记.md'), diary, 'utf8')
+  const source = 'materials/2026-10-28-妈妈的日记.md'
+
+  // ① 妈妈本来就是手写的现实人物卡：AI 再整理一次，只许补空缺
+  const before = await store.readCard(root, 'people/mama.card.md')
+  const merged = await run('lifecard_import_character', {
+    approved: true,
+    material: source,
+    name: '妈妈',
+    relation: '母亲',
+    sections: [
+      { title: '口癖', body: '爱说「先吃饭再说」。', quote: '她不喜欢别人替她拿主意' },
+      { title: '外貌', body: '手上总有一层洗不掉的米香。', quote: '满屋子都是米香' },
+    ],
+  })
+  const afterMerge = await store.readCard(root, 'people/mama.card.md')
+  t('合并写不再提「同名会覆盖」', !merged.includes('同名会覆盖'), merged)
+  t('合并写说清是补空缺、没重写', merged.includes('补好了') && merged.includes('没有重写'), merged)
+  t('合并写带 merged: true', merged.includes('merged: true'), merged)
+  t('合并写说清补了哪几节', merged.includes('外貌'), merged)
+  t('同名真人卡的身份没被改', afterMerge.data?.kind === 'real', afterMerge.data?.kind)
+  t('原来的关系没被抹掉', afterMerge.data?.relation === '母亲', afterMerge.data?.relation)
+  t('原来写过的小节一个字没动', String(core.sectionBody(afterMerge.sections, '自述')).includes('厂里做事'), core.sectionBody(afterMerge.sections, '自述'))
+  t('已有内容的小节不被新内容顶掉', String(core.sectionBody(afterMerge.sections, '口癖')).includes('叹一口气'), core.sectionBody(afterMerge.sections, '口癖'))
+  t('原卡别的小节也都还在', String(core.sectionBody(afterMerge.sections, '不会说的话')).includes('我爱你') && String(core.sectionBody(afterMerge.sections, '开场白')).includes('饭在锅里'))
+  t('空缺的那一节补进去了', String(core.sectionBody(afterMerge.sections, '外貌')).includes('米香'), core.sectionBody(afterMerge.sections, '外貌'))
+  t('没多建一份', before.data?.id === afterMerge.data?.id && afterMerge.path === 'people/mama.card.md', afterMerge.path)
+
+  // ② 整张重写必须先问一次，问了还得用户再说一次才写
+  const ask = await run('lifecard_import_character', {
+    approved: true,
+    material: source,
+    name: '妈妈',
+    mode: 'replace',
+    sections: [{ title: '自述', body: '整张换过的新自述，只剩这一节。', quote: '她每天早上五点起来熬粥' }],
+  })
+  const afterAsk = await store.readCard(root, 'people/mama.card.md')
+  t('整张重写没二次确认就先问一句', ask.includes('已经有一张同名的卡') && ask.includes('确定'), ask)
+  t('问的那句说清怎么确认', ask.includes('confirm_replace'), ask)
+  t('没确认就真的一个字没写', afterAsk.data?.kind === 'real' && String(core.sectionBody(afterAsk.sections, '自述')).includes('厂里做事'), afterAsk.data?.kind)
+
+  const replaced = await run('lifecard_import_character', {
+    approved: true,
+    material: source,
+    name: '妈妈',
+    mode: 'replace',
+    confirm_replace: true,
+    sections: [{ title: '自述', body: '整张换过的新自述，只剩这一节。', quote: '她每天早上五点起来熬粥' }],
+  })
+  const afterReplace = await store.readCard(root, 'people/mama.card.md')
+  t('二次确认后才整张换', replaced.includes('整张换掉了'), replaced)
+  t('整张换之后内容确实是新的', String(core.sectionBody(afterReplace.sections, '自述')).includes('整张换过'), core.sectionBody(afterReplace.sections, '自述'))
+  t('整张换之后旧小节不再留着', String(core.sectionBody(afterReplace.sections, '口癖')) === '', core.sectionBody(afterReplace.sections, '口癖'))
+
+  // ③ 名字不同就互不打扰
+  const linBefore = await store.readCard(root, 'people/lin.card.md')
+  const other = await run('lifecard_import_character', {
+    approved: true,
+    material: source,
+    name: '阿岚',
+    sections: [{ title: '自述', body: '新搬来的邻居。', quote: '她每天早上五点起来熬粥' }],
+  })
+  const linAfter = await store.readCard(root, 'people/lin.card.md')
+  t('换个人写就新建一张', other.includes('people/阿岚.card.md') && (await store.readCard(root, 'people/阿岚.card.md')).ok === true, other)
+  t('别人的卡一个字没动', linAfter.text === linBefore.text)
+
+  // ④ 世界书同名：按触发词并条目，不整份盖
+  const worldMerge = await run('lifecard_import_world', {
+    approved: true,
+    material: 'materials/2026-10-27-某篇小说.md',
+    name: '潮汐镇',
+    entries: [
+      { keys: ['潮汐', '雾'], content: '潮水退下去，白雾从码头那头漫上来。', quote: '码头上的雾还没散' },
+    ],
+  })
+  const worldAfter = await store.readCard(root, 'worlds/w1/world.md')
+  const worldBody = String(core.sectionBody(worldAfter.sections, '世界书条目'))
+  const worldEntries = core.parseWorldEntries(worldAfter.sections)
+  t('世界书同名也不整份盖', worldMerge.includes('补好了') && worldMerge.includes('merged: true'), worldMerge)
+  t('世界书说清是并进已有条目', worldMerge.includes('并进已有条目'), worldMerge)
+  t('原来的条目内容留着', worldBody.includes('每天涨潮两次'), worldBody)
+  t('原条目上的字段也留着', worldBody.includes('constant: true'), worldBody)
+  t('新触发词并进了对得上的那条', worldEntries.some((e) => (e.keys ?? []).includes('雾') && (e.keys ?? []).includes('潮汐')), JSON.stringify(worldEntries.map((e) => e.keys)))
+  t('没多出一条重复的', worldEntries.length === 2, worldEntries.length)
+  t('条目数跟着更新', Number(worldAfter.data?.entry_count) === 2, worldAfter.data?.entry_count)
+
+  // ⑤ 撤掉过的名字不许被 AI 悄悄写回来（写回去也看不见，等于白写）
+  await run('lifecard_import_character', {
+    approved: true,
+    material: source,
+    name: '老周',
+    sections: [{ title: '自述', body: '在门口修自行车。', quote: '她不喜欢别人替她拿主意' }],
+  })
+  const zhouBefore = await store.readCard(root, 'people/老周.card.md')
+  await store.appendRedaction(root, { kind: 'withdraw', path: 'people/老周.card.md', reason: '测试用' })
+  t('撤掉之后列表里看不见', (await store.listAll(root)).cards.every((c) => c.id !== zhouBefore.data?.id))
+  const blockedWrite = await run('lifecard_import_character', {
+    approved: true,
+    material: source,
+    name: '老周',
+    sections: [{ title: '外貌', body: '手上全是机油。', quote: '满屋子都是米香' }],
+  })
+  t('撤掉的名字不许悄悄写回来', blockedWrite.includes('已经撤掉的卡') && blockedWrite.includes('彻底删掉'), blockedWrite)
+  const zhouRaw = await readFile(path.join(root, 'people/老周.card.md'), 'utf8')
+  t('被挡住时原文一个字没动', zhouRaw === zhouBefore.text)
+  const zhouText = (await store.listAll(root)).withdrawn.find((w) => w.path === 'people/老周.card.md')
+  t('撤掉的卡还在「已经撤掉的」里', zhouText !== undefined, JSON.stringify((await store.listAll(root)).withdrawn.map((w) => w.path)))
+  await store.purgeCard(root, 'people/老周.card.md')
+  const reviving = await run('lifecard_import_character', {
+    approved: true,
+    material: source,
+    name: '老周',
+    sections: [{ title: '外貌', body: '手上全是机油。', quote: '满屋子都是米香' }],
+  })
+  t('彻底删掉之后名字就空出来了', reviving.includes('写好了') && (await store.readCard(root, 'people/老周.card.md')).ok === true, reviving)
+
+  const port = await run('lifecard_import_world', {
+    approved: true,
+    material: source,
+    name: '雾港',
+    entries: [{ keys: ['雾港'], content: '雾港的船夜里不点灯。', quote: '码头上的雾还没散' }],
+  })
+  void port
+  await store.appendRedaction(root, { kind: 'withdraw', path: 'worlds/雾港/world.md', reason: '测试用' })
+  const portAgain = await run('lifecard_import_world', {
+    approved: true,
+    material: 'materials/2026-10-27-某篇小说.md',
+    name: '雾港',
+    entries: [{ keys: ['雾港', '夜里'], content: '雾港的船夜里不点灯，也没人敢靠近。', quote: '码头上的雾还没散' }],
+  })
+  t('撤掉的世界书也不许悄悄重写', portAgain.includes('已经撤掉的世界书'), portAgain)
+
+  // ⑥ 工具说明本身就得告诉模型「默认只补空缺」
+  t('人物工具说明写了默认只补空缺', registered.get('lifecard_import_character').description.includes('只补空缺'))
+  t('世界书工具说明写了默认只补空缺', registered.get('lifecard_import_world').description.includes('只补空缺'))
+  t('两个工具的说明都不再写覆盖', !registered.get('lifecard_import_character').description.includes('同名会覆盖') && !registered.get('lifecard_import_world').description.includes('同名会覆盖'))
+}
+
+
+// ── 撤掉的名字要按「名字」也拦得住 ──────────────────────────────
+// 用户库里就有这种卡：文件是 people/rat.card.md，名字是「老鼠」。只比算出来的
+// 路径时，删掉一张「阿伦」之后再按名字写，会算出 people/阿伦.card.md ——
+// 首页和「已经撤掉的」里各一个阿伦，点「放回来」就变成两张同名卡。
+{
+  const source = 'materials/2026-10-27-某篇小说.md'
+  await store.writeCard(root, 'people/alun.card.md', {
+    lifecard: '0.1', id: 'alun', name: '阿伦', kind: 'real', world: 'reality',
+  }, [{ title: '自述', body: '阿伦在码头替人记账。' }])
+  await store.appendRedaction(root, { kind: 'withdraw', path: 'people/alun.card.md', reason: '用户删除' })
+  await store.moveCardToRedacted(root, 'people/alun.card.md')
+  const named = (await store.listWithdrawn(root)).find((one) => one.path === 'people/alun.card.md')
+  t('撤掉的中文名卡在「已经撤掉的」里', named !== undefined && named.name === '阿伦', JSON.stringify(named))
+
+  const blocked = await run('lifecard_import_character', {
+    approved: true,
+    material: source,
+    name: '阿伦',
+    sections: [{ title: '外貌', body: '手上全是机油。', quote: '码头上的雾还没散' }],
+  })
+  t('按中文名字写卡也被拦住（不是只认路径）', blocked.includes('已经撤掉的卡') && blocked.includes('占着'), blocked)
+  t('被拦住时没有另建一张同名卡', (await store.readCard(root, 'people/阿伦.card.md')).ok !== true)
+
+  await store.purgeCard(root, 'people/alun.card.md')
+  const free = await run('lifecard_import_character', {
+    approved: true,
+    material: source,
+    name: '阿伦',
+    sections: [{ title: '外貌', body: '手上全是机油。', quote: '码头上的雾还没散' }],
+  })
+  t('彻底删掉之后同一个名字能写', free.includes('写好了') && (await store.readCard(root, 'people/阿伦.card.md')).ok === true, free)
+
+  // 别的目录里同名不算占着：某本世界书下面撤掉一张「阿岩」，不该挡住 people/
+  await store.writeCard(root, 'worlds/w1/cards/阿岩.card.md', {
+    lifecard: '0.1', id: 'ayan-w1', name: '阿岩', kind: 'fictional', world: 'w1',
+  }, [{ title: '自述', body: '这个世界里的阿岩。' }])
+  await store.appendRedaction(root, { kind: 'withdraw', path: 'worlds/w1/cards/阿岩.card.md', reason: '测试用' })
+  await store.moveCardToRedacted(root, 'worlds/w1/cards/阿岩.card.md')
+  const elsewhere = await run('lifecard_import_character', {
+    approved: true,
+    material: source,
+    name: '阿岩',
+    sections: [{ title: '外貌', body: '手上全是机油。', quote: '码头上的雾还没散' }],
+  })
+  t('别的目录里同名不互相拦', elsewhere.includes('写好了') && (await store.readCard(root, 'people/阿岩.card.md')).ok === true, elsewhere)
+
+  // 世界书同理：文件是 worlds/tide-notes/world.md，名字是「潮汐手记」
+  await store.writeCard(root, 'worlds/tide-notes/world.md', {
+    lifecard: '0.1', id: 'tide-notes', name: '潮汐手记', kind: 'world', world: 'reality', genre: '幻想',
+  }, [{ title: '世界书条目', body: '- keys: ["潮汐"]\n  content: 潮水一天两次。' }])
+  await store.appendRedaction(root, { kind: 'withdraw', path: 'worlds/tide-notes/world.md', reason: '用户删除' })
+  // 世界书不是 .card.md，moveCardToRedacted 不收它；按真实删除的结果摆一次：
+  // 原位没有文件，回收目录里留着那一份。
+  await mkdir(path.join(root, '.lifecard/redacted/worlds/tide-notes'), { recursive: true })
+  await rename(
+    path.join(root, 'worlds/tide-notes/world.md'),
+    path.join(root, '.lifecard/redacted/worlds/tide-notes/world.md'),
+  )
+  const worldBlocked = await run('lifecard_import_world', {
+    approved: true,
+    material: source,
+    name: '潮汐手记',
+    entries: [{ keys: ['潮汐'], content: '潮水退下去会露出旧码头。', quote: '旧码头的木桩露出来' }],
+  })
+  t('世界书按名字也被拦住', worldBlocked.includes('已经撤掉的世界书') && worldBlocked.includes('占着'), worldBlocked)
+  t('被拦住时没有另建一本同名世界书', (await store.readCard(root, 'worlds/潮汐手记/world.md')).ok !== true)
+  // 世界书走的是另一条删除路线（它不在「已经撤掉的」那张卡表里），
+  // 这里按那条路线的收尾方式记一笔「彻底删掉」，名字就该空出来。
+  await store.appendRedaction(root, { kind: 'purge', path: 'worlds/tide-notes/world.md', reason: '测试用' })
+  await rm(path.join(root, '.lifecard/redacted/worlds/tide-notes'), { recursive: true, force: true })
+  const worldFree = await run('lifecard_import_world', {
+    approved: true,
+    material: source,
+    name: '潮汐手记',
+    entries: [{ keys: ['潮汐'], content: '潮水退下去会露出旧码头。', quote: '旧码头的木桩露出来' }],
+  })
+  t('彻底删掉之后这本世界书能重写', worldFree.includes('写好了') && (await store.readCard(root, 'worlds/潮汐手记/world.md')).ok === true, worldFree)
 }
 
 await rm(root, { recursive: true, force: true })

@@ -10,7 +10,7 @@
  *   - 快照存全文，不存 diff。
  */
 
-import { promises as fs } from 'node:fs'
+import { promises as fs, readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 import * as core from './core.js'
@@ -381,7 +381,11 @@ export async function listDrafts(root) {
 
 /**
  * 读全部墓碑。`redactions.jsonl` 只追加、不可删除。
- * @returns {Promise<Array<{at: string, path?: string, id?: string, sha256?: string, reason?: string}>>}
+ *
+ * 有两种记录：撤回（缺省，或 `kind: 'withdraw'`）和恢复（`kind: 'restore'`）。
+ * 恢复不改写旧记录，只往后追加一条——文件是只追加的账，改旧行就等于改历史。
+ *
+ * @returns {Promise<Array<{at: string, kind?: string, path?: string, id?: string, sha256?: string, reason?: string}>>}
  */
 export async function readRedactions(root) {
   const file = path.join(root, 'redactions.jsonl')
@@ -412,17 +416,27 @@ export async function appendRedaction(root, entry) {
 }
 
 /**
- * 某个文件路径 + 内容是否命中墓碑。
+ * 某个文件路径 + 内容**最后**命中的那条墓碑。
+ *
+ * 「最后」是这里唯一要紧的事：一张卡先被删、又被恢复，账上就有两条记录，
+ * 该看的是后一条。以前取的是第一条命中，于是恢复永远不生效——删过的卡
+ * 一旦救回来，列表里还是看不见，再点删除又报「已撤回」。
  *
  * 一条墓碑至少要有一个**可比较的键**（path 或 sha256）才算数。
  * 之前没有这个下限：只写了 anchor 的残条会让三个 continue 全不触发，
  * 于是对任何文件都返回命中——`redactions.jsonl` 里手抖写进一条
  * `{anchor:"…", reason:"…"}`，全库的卡都会变成「已被撤回」。
  * anchor 只能当附加条件，不能单独承担撤回。
+ *
+ * @param {Array<object>} redactions
+ * @param {string} relPath
+ * @param {string} [content] - 文件正文；没读到就不传，纯路径的墓碑照样能命中
  */
-function hitsRedaction(redactions, relPath, content) {
+function lastRedaction(redactions, relPath, content) {
   const hash = content === undefined ? undefined : sha256(content)
+  let last
   for (const r of redactions) {
+    if (r === null || typeof r !== 'object') continue
     const hasPath = typeof r.path === 'string' && r.path !== ''
     const hasHash = typeof r.sha256 === 'string' && r.sha256 !== ''
     // 两个键都没有：这条墓碑说不出撤回的是什么，不能命中任何东西。
@@ -430,9 +444,63 @@ function hitsRedaction(redactions, relPath, content) {
     if (hasPath && relPath !== undefined && r.path !== relPath) continue
     if (hasHash && hash !== undefined && r.sha256 !== hash) continue
     if (hasHash && hash === undefined) continue
-    return r
+    last = r
   }
-  return undefined
+  return last
+}
+
+/**
+ * 只看路径的最后一条墓碑，不算内容指纹。
+ *
+ * 只在「文件明明在、但读不出来」时用。这时候算不出内容指纹，带指纹的墓碑
+ * 一条都对不上，结果是这张既被撤回、又读不出的卡既不在列表里、也不在
+ * 「已撤回」里——用户看到的是文件凭空消失，连彻底删掉都做不到。
+ * 代价是：文件后来被改过也不管。但文件都读不出来了，这个差别没有意义。
+ */
+function lastRedactionByPath(redactions, relPath) {
+  let last
+  for (const r of redactions) {
+    if (r === null || typeof r !== 'object') continue
+    if (typeof r.path !== 'string' || r.path === '' || r.path !== relPath) continue
+    last = r
+  }
+  return last
+}
+
+/**
+ * 最后一条墓碑是不是「现在还撤着」。
+ *
+ * 缺省 kind 的老记录也算撤回（墓碑机制刚上线时没有 kind 字段）。
+ * `restore`（恢复）和 `purge`（彻底删掉）都表示这张卡不再「撤着」：
+ * 恢复是回来了，彻底删是连文件都不在了，两者都不该继续占着名字。
+ */
+function isWithdrawnRecord(record) {
+  if (record === undefined) return false
+  return record.kind === undefined || record.kind === 'withdraw'
+}
+
+export function hitsRedaction(redactions, relPath, content) {
+  const last = lastRedaction(redactions, relPath, content)
+  if (!isWithdrawnRecord(last)) return undefined
+  return last
+}
+
+/** 只看路径的命中判断：文件已经不在原位（读不出内容）时用。 */
+export function hitsRedactionByPath(redactions, relPath) {
+  const last = lastRedactionByPath(redactions, relPath)
+  if (!isWithdrawnRecord(last)) return undefined
+  return last
+}
+
+/**
+ * 「这张卡现在撤着」的统一说法。
+ *
+ * 两条分支都从这里取（文件已经被搬进回收目录 / 文件还在原位只是账上撤了），
+ * 说法必须一字不差：用户看到的是同一件事，两处各写一遍早晚会漂开，
+ * 界面也会跟着一种说法、另一种不认。
+ */
+export function withdrawnNotice(gone) {
+  return `这条记录已经被撤掉了（${gone?.reason ?? '未说明原因'}），现在不在列表里。想找回来可以恢复，它还在磁盘上。`
 }
 
 /**
@@ -491,6 +559,94 @@ export function sha256(text) {
   return createHash('sha256').update(String(text), 'utf8').digest('hex')
 }
 
+// ── 收起来的卡（回收目录） ────────────────────────────────────────
+
+/**
+ * 撤掉的卡不放原地，而是原样搬到 `.lifecard/redacted/<原相对路径>`。
+ *
+ * 只写墓碑、把文件留在 `people/` 有个说不通的后果：名字还被占着，
+ * 用户照着提示去列表里找，列表里却没有——删不掉，也重建不了同名的卡。
+ * 搬到回收目录以后，原位真的空出来了；想反悔照样能搬回去。
+ */
+const REDACTED_DIR = '.lifecard/redacted'
+
+/** 同步读墓碑。persona 注入那条同步路径也要过墓碑，不能只给它异步版本。 */
+export function readRedactionsSync(root) {
+  let text = ''
+  try {
+    text = readFileSync(path.join(root, 'redactions.jsonl'), 'utf8')
+  } catch {
+    return []
+  }
+  const out = []
+  for (const line of text.split('\n')) {
+    const t = line.trim()
+    if (t === '') continue
+    try {
+      out.push(JSON.parse(t))
+    } catch {
+      // 坏行跳过，和异步版本一致
+    }
+  }
+  return out
+}
+
+/** 回收目录里某个原位路径下现存的候选文件名（新的在前）。 */
+async function redactedCandidates(root, rel) {
+  const dirRel = path.posix.dirname(rel)
+  const dirAbs = path.join(root, REDACTED_DIR, dirRel === '.' ? '' : dirRel)
+  const base = path.posix.basename(rel)
+  let names
+  try {
+    names = await fs.readdir(dirAbs)
+  } catch {
+    return []
+  }
+  return names
+    .filter((name) => name === base || (name.startsWith(base + '.') && /\.card\.md\./i.test(name)))
+    .sort()
+    .reverse()
+}
+
+/**
+ * 把一张卡搬进回收目录，返回搬过去的位置。
+ *
+ * 同名冲突（同一张卡删过两次、或先恢复又删）不覆盖旧份：加时间戳后缀，
+ * 两份都留着，彻底删的时候一起清。
+ */
+export async function moveCardToRedacted(root, relPath) {
+  const rel = String(relPath ?? '')
+  if (!rel.endsWith('.card.md')) return { ok: false, error: '这个位置不是一张卡。' }
+  const at = await resolveIn(root, rel)
+  if (!at.ok) return { ok: false, error: at.error }
+  const exists = await fs.stat(at.abs).then((s) => s.isFile()).catch(() => false)
+  if (!exists) return { ok: false, error: '磁盘上找不到这张卡。' }
+  const dirRel = path.posix.dirname(rel)
+  const dirAbs = path.join(root, REDACTED_DIR, dirRel === '.' ? '' : dirRel)
+  await fs.mkdir(dirAbs, { recursive: true })
+  const base = path.posix.basename(rel)
+  let name = base
+  const taken = await fs.access(path.join(dirAbs, name)).then(() => true).catch(() => false)
+  if (taken) name = `${base}.${new Date().toISOString().replace(/[:.]/g, '-')}`
+  const target = path.join(dirAbs, name)
+  await fs.rename(at.abs, target)
+  return {
+    ok: true,
+    path: rel,
+    redacted: path.posix.join(REDACTED_DIR, dirRel === '.' ? '' : dirRel, name),
+  }
+}
+
+/** 读出回收目录里某张卡最靠前的残份正文；没有就是 undefined。 */
+async function readRedactedText(root, rel) {
+  const candidates = await redactedCandidates(root, rel)
+  if (candidates.length === 0) return undefined
+  const dirRel = path.posix.dirname(rel)
+  return fs
+    .readFile(path.join(root, REDACTED_DIR, dirRel === '.' ? '' : dirRel, candidates[0]), 'utf8')
+    .catch(() => undefined)
+}
+
 // ── 卡片读写 ──────────────────────────────────────────────────────
 
 /**
@@ -505,7 +661,13 @@ export function cardRelPath(id, world) {
 
 /**
  * 读一张卡（已过墓碑过滤）。
- * @returns {Promise<{ok: boolean, path?: string, text?: string, data?: object, sections?: object[], error?: string}>}
+ *
+ * 撤掉的卡一定带 `withdrawn: true`——不管文件是已经被搬进回收目录（原位
+ * ENOENT），还是还在原位、只是账上记着撤掉（老式记录、手工改过文件）。
+ * 这两条以前一条带、一条不带，上层拿这个字段判断「要不要给恢复入口」时
+ * 就只认其中一种，另一种卡在界面上既看不见也删不掉。
+ *
+ * @returns {Promise<{ok: boolean, path: string, withdrawn?: boolean, text?: string, data?: object, sections?: object[], error?: string}>}
  */
 export async function readCard(root, relPath) {
   const at = await resolveIn(root, relPath)
@@ -518,7 +680,16 @@ export async function readCard(root, relPath) {
     // 「没有这个文件」和「有，但读不出来」是两件事。以前一律翻成「文件不存在」，
     // 上层于是把权限问题、同步盘没挂上当「还没有这张卡」——`card.save` 的兜底
     // 会退化成空小节，`applyProposal` 会另建一张同名的卡。
-    if (error?.code === 'ENOENT') return { ok: false, path: relPath, error: '文件不存在' }
+    if (error?.code === 'ENOENT') {
+      // 撤掉的卡已经搬去回收目录，原位没了。这时报「文件不存在」等于告诉用户
+      // 这张卡凭空消失了——账上明明还记着它被撤掉。
+      const redactions = await readRedactions(root)
+      const gone = hitsRedactionByPath(redactions, relPath)
+      if (gone !== undefined) {
+        return { ok: false, path: relPath, withdrawn: true, error: withdrawnNotice(gone) }
+      }
+      return { ok: false, path: relPath, error: '文件不存在' }
+    }
     return {
       ok: false,
       path: relPath,
@@ -529,7 +700,11 @@ export async function readCard(root, relPath) {
   const redactions = await readRedactions(root)
   const hit = hitsRedaction(redactions, relPath, text)
   if (hit !== undefined) {
-    return { ok: false, path: relPath, error: `这条记录已被撤回（${hit.reason ?? '未说明原因'}），不再显示` }
+    // 措辞要给出路。「不再显示」到此为止，用户就没法知道它其实还在磁盘上、
+    // 还能恢复——删掉的卡于是变成既看不见也找不回的僵局。
+    // 界面统一说「撤掉的」：失败路径上冒出「撤回」这种书面的词，用户会以为
+    // 是两个不一样的状态。
+    return { ok: false, path: relPath, withdrawn: true, error: withdrawnNotice(hit) }
   }
   const parsed = core.parseCard(text)
   // 解析失败要说失败。以前无论 parse 成不成一律 ok:true，于是格式坏掉的卡
@@ -692,7 +867,12 @@ export async function restoreSnapshot(root, relPath, stamp) {
 
 /**
  * 扫描整个工作区，列出所有卡（已过墓碑过滤）。
- * @returns {Promise<{cards: object[], worlds: object[], systems: object[], relations: object[], errors: object[]}>}
+ *
+ * `withdrawn` 是「被撤回、但文件还在磁盘上」的那些卡。它们不算 cards——
+ * 用户删掉的东西不该混进正常列表；但也不能像以前那样直接吞掉：列表上
+ * 一个字都看不见，用户就永远不知道它们还在，恢复和彻底删除都无从下手。
+ *
+ * @returns {Promise<{cards: object[], worlds: object[], systems: object[], relations: object[], errors: object[], withdrawn: object[]}>}
  */
 export async function listAll(root) {
   const redactions = await readRedactions(root)
@@ -702,6 +882,7 @@ export async function listAll(root) {
   const relations = []
   const errors = []
   const materials = []
+  const withdrawn = []
 
   const walk = async (relDir) => {
     const abs = path.join(root, relDir)
@@ -713,6 +894,8 @@ export async function listAll(root) {
     }
     for (const entry of entries) {
       if (entry.name.startsWith('.')) continue
+      // 覆盖写留下的 `.bak-<时间>`、写到一半的 `.tmp-…` 都是残骸，不是内容。
+      if (isBackupName(entry.name)) continue
       const rel = path.posix.join(relDir.replace(/\\/g, '/'), entry.name)
       if (entry.isDirectory()) {
         await walk(rel)
@@ -722,7 +905,14 @@ export async function listAll(root) {
       if (lower.endsWith('.card.md')) {
         const r = await readCard(root, rel)
         if (!r.ok) {
-          if (r.error !== undefined && !r.error.startsWith('这条记录已被撤回')) errors.push({ path: rel, error: r.error })
+          // 先看它是不是撤回过的：读不出来（权限、同步盘没挂上）的撤回卡
+          // 也得出现在 withdrawn 里，否则「既看不见又删不掉」的死结照旧。
+          const gone = await withdrawnEntry(root, redactions, rel)
+          if (gone !== null) {
+            withdrawn.push(gone)
+            continue
+          }
+          if (r.error !== undefined) errors.push({ path: rel, error: r.error })
           continue
         }
         const cov = core.coverage(r.data, r.sections)
@@ -778,7 +968,327 @@ export async function listAll(root) {
   await walk('relations')
   await walk('materials')
 
-  return { cards, worlds, systems, relations, errors, materials, redactions }
+  // 撤掉的卡现在搬去了回收目录，光扫原位不够。统一用 listWithdrawn 收口：
+  // 老式的（文件还在原地、只写了墓碑）和新式的（文件在回收目录）都在同一张表里。
+  return { cards, worlds, systems, relations, errors, materials, withdrawn: await listWithdrawn(root), redactions }
+}
+
+/**
+ * 拼一条「已经撤掉的」列表项：`{path, id, name, withdrawn_at}`。
+ *
+ * 名字和编号尽量从原文里取；原文读不出来就用文件名顶着——这一行
+ * 至少得让用户认得出是哪张卡，否则「能看见」等于没看见。
+ */
+function withdrawnItem(rel, text, last) {
+  let id = ''
+  let name = ''
+  if (typeof text === 'string') {
+    const parsed = core.parseCard(text)
+    if (parsed.ok === true) {
+      id = String(parsed.data?.id ?? '')
+      name = String(parsed.data?.name ?? parsed.data?.nickname ?? '')
+    }
+  }
+  const base = path.posix.basename(rel).replace(/\.card\.md$/i, '')
+  return {
+    path: rel,
+    id: id === '' ? base : id,
+    name: name === '' ? base : name,
+    withdrawn_at: typeof last?.at === 'string' ? last.at : undefined,
+  }
+}
+
+/**
+ * 原位还留着文件的老式撤掉卡：`{path, id, name, withdrawn_at}`。
+ *
+ * 当前不处于撤回态（最后一条是恢复/彻底删、或者内容已经换过而墓碑对不上）返回 null。
+ */
+async function withdrawnEntry(root, redactions, rel) {
+  const at = await resolveIn(root, rel)
+  if (!at.ok) return null
+  let text
+  try {
+    text = await fs.readFile(at.abs, 'utf8')
+  } catch {
+    text = undefined
+  }
+  const last = text === undefined
+    ? lastRedactionByPath(redactions, rel)
+    : lastRedaction(redactions, rel, text)
+  if (!isWithdrawnRecord(last)) return null
+  return withdrawnItem(rel, text, last)
+}
+
+/**
+ * 回收目录里的残份：`{path, id, name, withdrawn_at}`。
+ *
+ * 撤掉的卡已经搬走，所以「已撤掉」这一列既要从回收目录里找，也要照顾到
+ * 老版本的账——那时候只写墓碑、文件留在原地。两条路都走，谁都别漏。
+ */
+async function redactedEntry(root, redactions, rel, names) {
+  const dirRel = path.posix.dirname(rel)
+  const dirAbs = path.join(root, REDACTED_DIR, dirRel === '.' ? '' : dirRel)
+  const text = await fs.readFile(path.join(dirAbs, names[0]), 'utf8').catch(() => undefined)
+  const last = text === undefined
+    ? lastRedactionByPath(redactions, rel)
+    : lastRedaction(redactions, rel, text)
+  // 账上说已经恢复/彻底删了：回收目录里这一份是没清干净的残渣，不算「正在撤着」。
+  if (last !== undefined && !isWithdrawnRecord(last)) return null
+  let at = typeof last?.at === 'string' ? last.at : undefined
+  if (at === undefined) {
+    const stat = await fs.stat(path.join(dirAbs, names[0])).catch(() => null)
+    at = stat === null ? undefined : stat.mtime.toISOString()
+  }
+  const item = withdrawnItem(rel, text, last)
+  item.withdrawn_at = at
+  return item
+}
+
+/**
+ * 列出当前仍处于撤回态的 `.card.md`。
+ *
+ * 这条路存在的理由：`card.delete` 以前只写墓碑、不删文件，可界面和路由
+ * 没有任何地方能把「已撤掉」的那批列出来，于是删掉的卡既不在列表里、
+ * 也打不开、再点删除还报错——彻底删不掉，也恢复不了。列出来，两个动作
+ * 才有地方发生。
+ *
+ * 只扫卡会出现的三个地方（people / self / worlds），和 listAll 一致；
+ * 回收目录里同名多次的只算一条（最近那份），不然删三回就列三行。
+ */
+export async function listWithdrawn(root) {
+  const redactions = await readRedactions(root)
+  const out = []
+  const seen = new Set()
+  const face = (rel) => path.posix.dirname(rel) === '.' ? '' : path.posix.dirname(rel)
+  const walk = async (relDir) => {
+    let entries
+    try {
+      entries = await fs.readdir(path.join(root, relDir), { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue
+      const rel = path.posix.join(relDir.replace(/\\/g, '/'), entry.name)
+      if (entry.isDirectory()) {
+        await walk(rel)
+        continue
+      }
+      if (!entry.name.toLowerCase().endsWith('.card.md')) continue
+      const gone = await withdrawnEntry(root, redactions, rel)
+      if (gone !== null && !seen.has(rel)) {
+        seen.add(rel)
+        out.push(gone)
+      }
+    }
+  }
+  await walk('people')
+  await walk('self')
+  await walk('worlds')
+  // 回收目录：按目录树走一遍，同一个原位路径的多个残份归成一条。
+  const walkTrash = async (relDir) => {
+    let entries
+    try {
+      entries = await fs.readdir(path.join(root, REDACTED_DIR, relDir), { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const joined = relDir === '' ? entry.name : path.posix.join(relDir, entry.name)
+      if (entry.isDirectory()) {
+        await walkTrash(joined)
+        continue
+      }
+      const m = /^(.*\.card\.md)(?:\..+)?$/i.exec(entry.name)
+      if (m === null) continue
+      const rel = path.posix.join(face(joined), m[1])
+      if (seen.has(rel)) continue
+      const names = await redactedCandidates(root, rel)
+      if (names.length === 0) continue
+      const gone = await redactedEntry(root, redactions, rel, names)
+      if (gone !== null) {
+        seen.add(rel)
+        out.push(gone)
+      }
+    }
+  }
+  await walkTrash('')
+  // 最近删的排前面：用户要恢复的多半是刚才手滑那一下。
+  return out.sort((a, b) => String(b.withdrawn_at ?? '').localeCompare(String(a.withdrawn_at ?? '')))
+}
+
+/**
+ * 把撤掉的卡恢复回来：追加一条 `{kind:'restore', path}`，不动旧记录。
+ *
+ * 为什么是追加而不是删掉那条墓碑：`redactions.jsonl` 是只追加的账本，
+ * 手改历史行会让「什么时候撤掉、什么时候又反悔」这件事无从追溯。
+ *
+ * 文件在回收目录里就搬回原位；老式的账（文件还在原地、只写了墓碑）照样能恢复。
+ */
+/**
+ * 「同一个地方」怎么算：卡按目录算（people/、某本世界书下的 cards/）。
+ * 世界书是 `worlds/<id>/world.md`，id 由书名算出——按名字建会落到另一个目录，
+ * 可它确实会和已有的那本重名，所以冲突范围是整棵 worlds/。
+ */
+function conflictDir(relPath) {
+  const rel = String(relPath ?? '').replace(/\\/g, '/')
+  const dir = path.posix.dirname(rel)
+  if (path.posix.basename(rel) === 'world.md' && dir !== 'worlds' && dir !== '.') {
+    return path.posix.dirname(dir)
+  }
+  return dir
+}
+
+/**
+ * 同目录里有没有一张「名字或 id 一样」的撤掉的卡。
+ *
+ * 只比算出来的路径会漏：用户库里 `people/rat.card.md` 的 id 是拼音、名字是
+ * 中文（「老鼠」），删掉以后按名字再建会算出另一个路径，两张同名的卡就并排
+ * 出现在首页和「已经撤掉的」里，点「放回来」变成两张。所以按 name 与 id 各比一次。
+ * 只在同一个目录里比：别的目录（比如另一本世界书下面）同名不算冲突。
+ */
+export async function withdrawnNameHit(root, relPath, want) {
+  const rel = String(relPath ?? '').replace(/\\/g, '/')
+  const dir = conflictDir(rel)
+  const wanted = (Array.isArray(want) ? want : [want])
+    .map((v) => String(v ?? '').trim())
+    .filter((v) => v !== '')
+  if (wanted.length === 0) return null
+  for (const one of await listWithdrawn(root)) {
+    if (conflictDir(String(one.path ?? '')) !== dir) continue
+    const id = String(one.id ?? '').trim()
+    const name = String(one.name ?? '').trim()
+    if (wanted.includes(id) || wanted.includes(name)) return one
+  }
+  // 世界书不在那张清单里（「已经撤掉的」只收卡），所以按账上记的路径再找一次。
+  return await withdrawnWorldHit(root, await readRedactions(root), dir, wanted)
+}
+
+/** 账上撤掉的路径里，所有世界书（`worlds/<id>/world.md`）的相对路径。 */
+function worldPathsFromRedactions(redactions) {
+  const out = []
+  for (const entry of redactions) {
+    if (entry === null || typeof entry !== 'object') continue
+    const rel = String(entry.path ?? '').replace(/\\/g, '/')
+    if (rel !== '' && rel.toLowerCase().endsWith('world.md') && !out.includes(rel)) out.push(rel)
+  }
+  return out
+}
+
+/** 一本撤掉的世界书叫什么：先看回收目录里那一份，再看原位还留着的那一份。 */
+async function withdrawnWorldName(root, rel) {
+  const base = path.posix.basename(rel)
+  const dirAbs = path.join(root, REDACTED_DIR, path.posix.dirname(rel))
+  let names = []
+  try {
+    names = await fs.readdir(dirAbs)
+  } catch {
+    names = []
+  }
+  const tries = names
+    .filter((one) => one === base || one.startsWith(base + '.'))
+    .sort()
+    .reverse()
+    .map((one) => path.join(dirAbs, one))
+  tries.push(path.join(root, rel))
+  for (const abs of tries) {
+    try {
+      const got = core.parseCard(await fs.readFile(abs, 'utf8'))
+      const name = String(got?.data?.name ?? '').trim()
+      if (name !== '') return name
+    } catch {
+      // 读不出来就换下一份
+    }
+  }
+  return null
+}
+
+/** 同一个地方有没有一本「名字或 id 一样」的撤掉的世界书。 */
+async function withdrawnWorldHit(root, redactions, dir, wanted) {
+  if (dir !== 'worlds') return null
+  for (const rel of worldPathsFromRedactions(redactions)) {
+    if (conflictDir(rel) !== dir) continue
+    const hit = hitsRedactionByPath(redactions, rel)
+    if (hit === undefined) continue
+    const id = path.posix.basename(path.posix.dirname(rel))
+    const name = (await withdrawnWorldName(root, rel)) ?? id
+    if (wanted.includes(id) || wanted.includes(name)) {
+      return { path: rel, id, name: String(name), withdrawn_at: hit.at }
+    }
+  }
+  return null
+}
+
+export async function restoreCard(root, relPath) {
+  const rel = String(relPath ?? '')
+  if (!rel.endsWith('.card.md')) return { ok: false, error: '这个位置不是一张卡。' }
+  const at = await resolveIn(root, rel)
+  if (!at.ok) return { ok: false, error: at.error }
+  const exists = await fs.stat(at.abs).then((s) => s.isFile()).catch(() => false)
+  // 回收目录里有残份就够了：搬回去只要 rename，不读内容也能搬。
+  // 以前先看「读得出原文吗」，于是一张列在「已经撤掉的」里、但文件读不出来的卡
+  // 点「放回来」会说「磁盘上找不到这张卡」——两句话互相矛盾。
+  const candidates = exists ? [] : await redactedCandidates(root, rel)
+  const redactions = await readRedactions(root)
+  const text = exists ? await fs.readFile(at.abs, 'utf8').catch(() => undefined) : await readRedactedText(root, rel)
+  if (!exists && candidates.length === 0 && text === undefined) {
+    return { ok: false, error: '磁盘上找不到这张卡，恢复不了。它可能已经被彻底删掉了。' }
+  }
+  const last = text === undefined ? lastRedactionByPath(redactions, rel) : lastRedaction(redactions, rel, text)
+  // 没有账的残份（早先版本留下的）也算撤着：能列进「已经撤掉的」，就得能放回来。
+  const noRecord = last === undefined && candidates.length > 0
+  if (!isWithdrawnRecord(last) && !noRecord) {
+    // 没被撤掉的卡不该凭空多一条「恢复」记录：那会让下一次删除更难解释。
+    return { ok: false, error: '这张卡现在没有被撤掉，不用恢复。' }
+  }
+  if (!exists) {
+    const dirRel = path.posix.dirname(rel)
+    const dirAbs = path.join(root, REDACTED_DIR, dirRel === '.' ? '' : dirRel)
+    await fs.mkdir(path.dirname(at.abs), { recursive: true })
+    await fs.rename(path.join(dirAbs, candidates[0]), at.abs)
+  }
+  await appendRedaction(root, { kind: 'restore', path: rel, reason: '用户恢复' })
+  return { ok: true, path: rel, note: '已经恢复回来了，列表里又能看到它。' }
+}
+
+/**
+ * 彻底删掉一张撤掉的卡：真删磁盘文件（原位没有就清回收目录）。
+ *
+ * 只允许在**已经撤掉**的状态下做。多一道这个条件，是因为「彻底删」不可撤销：
+ * 用户手滑点在列表里一张活卡上，就没法再反悔了。先撤掉（可恢复）、
+ * 再从「已撤掉」里彻底删（用户已经看过一遍、确认过），是两步不同的决定。
+ *
+ * 删完追加一条 `{kind:'purge', path}`：不然名字永远被一条旧墓碑占着，
+ * 用户清掉卡以后还是建不了同名的。
+ */
+export async function purgeCard(root, relPath) {
+  const rel = String(relPath ?? '')
+  if (!rel.endsWith('.card.md')) return { ok: false, error: '只能彻底删掉卡片文件，别的文件不行。' }
+  const at = await resolveIn(root, rel)
+  if (!at.ok) return { ok: false, error: at.error }
+  const exists = await fs.stat(at.abs).then((s) => s.isFile()).catch(() => false)
+  const candidates = await redactedCandidates(root, rel)
+  if (!exists && candidates.length === 0) {
+    return { ok: false, error: '磁盘上已经没有这个文件了，不用再删。' }
+  }
+  const redactions = await readRedactions(root)
+  const text = exists ? await fs.readFile(at.abs, 'utf8').catch(() => undefined) : await readRedactedText(root, rel)
+  const last = text === undefined ? lastRedactionByPath(redactions, rel) : lastRedaction(redactions, rel, text)
+  // 没有账的残份也允许清掉：否则它会永远挂在「已经撤掉的」里，点名删都删不掉。
+  const noRecord = last === undefined && candidates.length > 0
+  if (!isWithdrawnRecord(last) && !noRecord) {
+    return { ok: false, error: '这张卡还在列表里。要彻底删掉，先从列表里删一次，再从「已经撤掉的」里彻底删。' }
+  }
+  if (exists) await fs.rm(at.abs, { force: true })
+  const dirRel = path.posix.dirname(rel)
+  const dirAbs = path.join(root, REDACTED_DIR, dirRel === '.' ? '' : dirRel)
+  for (const name of candidates) await fs.rm(path.join(dirAbs, name), { force: true })
+  // 历史版本也一起删。界面上三处都说「磁盘上的原文一起删，删了就真没了」，
+  // 只删当前那份的话，旧版全文还躺在快照目录里，会跟着文件夹同步/备份跑到别处。
+  // 目录名的扁平规则跟 readSnapshot 等地方保持一致，别另拼一套。
+  await fs.rm(path.join(root, '.lifecard/snapshots', rel.replace(/[\\/]/g, '__')), { recursive: true, force: true })
+  await appendRedaction(root, { kind: 'purge', path: rel, reason: '彻底删掉' })
+  return { ok: true, path: rel, note: '已经彻底删掉了，磁盘上不留这个文件了。' }
 }
 
 /**
@@ -878,6 +1388,11 @@ export async function deleteMaterial(root, rel) {
  * 子目录也要读：listAll 会递归列出子目录里的材料，这里不递归的话
  * 「列表里看得到、分析时用不到」，两边对不上。
  */
+/** 这份文件是不是覆盖/写入时留下的残骸（`x.md.bak-1234`、`.x.md.tmp-123`）。 */
+export function isBackupName(name) {
+  return /\.(bak|tmp)-/i.test(String(name ?? ''))
+}
+
 export async function readMaterials(root) {
   const out = {}
   const redactions = await readRedactions(root)
@@ -890,6 +1405,8 @@ export async function readMaterials(root) {
     }
     for (const entry of entries) {
       if (entry.name.startsWith('.')) continue
+      // 和列表同一口径：备份与临时残骸不是材料，别让旧版和现版一起进模型。
+      if (isBackupName(entry.name)) continue
       const rel = path.posix.join(relDir.replace(/\\/g, '/'), entry.name)
       if (entry.isDirectory()) {
         await walk(rel)
@@ -1050,7 +1567,28 @@ export async function saveProposal(root, aboutId, proposal, materials) {
     rejected: gate.rejected,
   }
   await fs.writeFile(abs(jsonRel), JSON.stringify(record, null, 2) + '\n', 'utf8')
-  return { ok: true, md: mdRel, json: jsonRel, accepted: gate.accepted.length, rejected: gate.rejected.length, gate }
+  const why = rejectedReasons(gate.rejected)
+  return {
+    ok: true,
+    md: mdRel,
+    json: jsonRel,
+    accepted: gate.accepted.length,
+    rejected: gate.rejected.length,
+    // 两种原因分开报：界面按这两个数分别说话，不再把「重复」说成「AI 编的」。
+    rejectedDuplicate: why.duplicate,
+    rejectedQuote: why.quote,
+    gate,
+  }
+}
+
+/**
+ * 被丢掉的那些条，为什么被丢：引文对不上，还是和前面那条重复？
+ * 界面以前一律说「找不到原话」，可现在是两种原因——照旧说就成了骗人。
+ */
+export function rejectedReasons(rejected) {
+  const list = Array.isArray(rejected) ? rejected : []
+  const duplicate = list.filter((one) => String(one?.reason ?? '').includes('重复')).length
+  return { duplicate, quote: list.length - duplicate }
 }
 
 /** 渲染成勾选清单。**默认全部不勾**——勾选是人的动作。 */
@@ -1107,8 +1645,11 @@ export function renderProposalMarkdown({ aboutId, date, gate, proposal }) {
   if (gate.rejected.length > 0) {
     lines.push('## 已丢弃')
     lines.push('')
-    lines.push('下面这些**没有通过引文校验**（材料里找不到逐字对应），所以没进清单。')
-    lines.push('它们很可能是模型补出来的东西——这正是不让 AI 直接写卡的原因。')
+    // 丢弃的原因现在有两种：引文对不上，或者和同一字段里另一条重复。
+    // 只写「没通过引文校验」，用户看到一条明明能在材料里找到的句子被丢掉，
+    // 会以为是程序坏了。
+    lines.push('下面这些没进清单：**引文在材料里找不到逐字对应**的，或者**和同一字段里另一条重复**的。')
+    lines.push('前者很可能是模型补出来的东西——这正是不让 AI 直接写卡的原因；后者留着只会让卡里同一件事说两遍。')
     lines.push('')
     for (const r of gate.rejected) {
       const what = describeValue(r.item)
@@ -1327,6 +1868,9 @@ export async function listProposals(root) {
         generated_at: record.generated_at,
         accepted: Array.isArray(record.accepted) ? record.accepted.length : 0,
         rejected: Array.isArray(record.rejected) ? record.rejected.length : 0,
+        // 列表上那一行也要分得清「重复」和「引文对不上」。
+        rejectedDuplicate: rejectedReasons(record.rejected).duplicate,
+        rejectedQuote: rejectedReasons(record.rejected).quote,
         // 已经写进卡的条数：界面据此把「整份都采纳完了」的建议从待办里摘掉。
         adopted: (Array.isArray(record.accepted) ? record.accepted : [])
           .filter((i) => done.has(itemFingerprint(i))).length,
@@ -1366,6 +1910,15 @@ export async function applyProposal(root, jsonRel, options = {}) {
     const name = String(about.name ?? aboutId).trim() === '' ? aboutId : String(about.name).trim()
     const kind = ['real', 'fictional', 'hybrid', 'self'].includes(String(about.kind)) ? String(about.kind) : 'real'
     target = cardRelPath(aboutId, about.world)
+    // 这个位置有一张被撤掉的卡：账上还记着它，名字也还占着。
+    // 直接写会把它「复活」成一张只有提案内容的新卡，用户会觉得删了又自己回来了。
+    // 按名字也要比：删掉的卡 id 可能是拼音（people/rat.card.md），只比路径会
+    // 被当成「这个名字没人用」，于是采纳提案就把它悄悄复活成一张新卡。
+    const blocked = hitsRedactionByPath(await readRedactions(root), target)
+    const blockedBy = blocked !== undefined ? blocked : await withdrawnNameHit(root, target, [aboutId, name])
+    if (blockedBy !== undefined && blockedBy !== null) {
+      return { ok: false, error: '这张卡你删过一次。想重建就先到首页「已经撤掉的」里把它清掉。' }
+    }
     const made = await writeCard(root, target, {
       lifecard: core.DATA_VERSION,
       id: aboutId,
@@ -1683,12 +2236,21 @@ export default {
   rememberMemoryPeople,
   memoryStatusOf,
   readRedactions,
+  readRedactionsSync,
   appendRedaction,
+  hitsRedaction,
+  hitsRedactionByPath,
   sha256,
+  moveCardToRedacted,
   cardRelPath,
   readCard,
   writeCard,
   listAll,
+  isBackupName,
+  listWithdrawn,
+  withdrawnNameHit,
+  restoreCard,
+  purgeCard,
   appendMaterial,
   deleteMaterial,
   readMaterials,

@@ -152,7 +152,7 @@ console.log('=== 3. 墓碑：残缺记录 / 材料过滤 ===')
   const cur = await store.readCard(root, 'people/mama.card.md')
   await store.appendRedaction(root, { path: 'people/mama.card.md', sha256: store.sha256(cur.text), reason: '她要求删除' })
   const gone = await store.readCard(root, 'people/mama.card.md')
-  t('完整的墓碑仍然生效', gone.ok === false && String(gone.error).includes('撤回'), gone.error)
+  t('完整的墓碑仍然生效', gone.ok === false && String(gone.error).includes('撤掉'), gone.error)
   // 清掉这条，后面的组要用这张卡
   await fs.writeFile(path.join(root, 'redactions.jsonl'), '', 'utf8')
 }
@@ -493,6 +493,170 @@ console.log('=== 12. 快照写不下就不覆盖；格式坏的卡要报错 ==='
   t('卡名对', made.data?.name === '林小雨', made.data?.name)
   t('身份是虚构角色，没建成真人', made.data?.kind === 'fictional', made.data?.kind)
   t('正文真的写进去了', (made.sections ?? []).some((x) => String(x.body).includes('爱笑')), made.sections)
+}
+
+// ── 13. 撤掉的卡：要能看见、能恢复、能彻底删 ───────────────────────
+// 以前删除只写一条记录、文件留在磁盘，可之后 readCard 一律拒绝它：
+// 列表看不见、打不开、再点删除还报错——既删不掉也救不回。三条实机卡
+// （shili / rat / 禹洲）就卡在这个状态。这一组把「撤掉之后」的每条路走一遍。
+console.log('=== 13. 撤掉的卡：看得见、恢复得回、彻底删得掉 ===')
+{
+  const withdraw = async (rel) => {
+    const card = await store.readCard(root, rel)
+    if (card.ok !== true) throw new Error(`先要有这张卡：${card.error}`)
+    await store.appendRedaction(root, { path: rel, sha256: store.sha256(card.text), reason: '用户删除' })
+  }
+
+  await store.writeCard(root, 'people/gone.card.md', {
+    lifecard: '0.1', id: 'gone', kind: 'real', world: 'reality', name: '消失的人',
+  }, [{ title: '自述', body: '一个会被删掉的人。' }], { force: true })
+  await withdraw('people/gone.card.md')
+
+  const after = await store.readCard(root, 'people/gone.card.md')
+  t('撤掉之后读不出来', after.ok === false, after)
+  t('撤掉后的提示指了一条回来的路', String(after.error).includes('恢复'), after.error)
+
+  const box = await store.listWithdrawn(root)
+  const row = box.find((x) => x.path === 'people/gone.card.md')
+  t('撤掉之后出现在「已经撤掉的」里', row !== undefined, box)
+  t('那一条带着名字', row?.name === '消失的人', row)
+  t('那一条带着时间', typeof row?.withdrawn_at === 'string' && row.withdrawn_at !== '', row)
+
+  const all1 = await store.listAll(root)
+  t('撤掉的卡不在正常列表里', all1.cards.every((c) => c.path !== 'people/gone.card.md'), all1.cards.map((c) => c.path))
+  t('listAll 同时给出「已经撤掉的」', (all1.withdrawn ?? []).some((x) => x.path === 'people/gone.card.md'), all1.withdrawn)
+
+  // 恢复：文件本来就没动，追加一条「恢复」就能重新看见。
+  const back = await store.restoreCard(root, 'people/gone.card.md')
+  t('能恢复', back.ok === true, back)
+  const revived = await store.readCard(root, 'people/gone.card.md')
+  t('恢复后读得回来', revived.ok === true && revived.data?.name === '消失的人', revived.error ?? revived.data?.name)
+  t('恢复后不在「已经撤掉的」里', (await store.listWithdrawn(root)).every((x) => x.path !== 'people/gone.card.md'))
+  // 没被撤掉的卡不该被「恢复」出第二条记录。
+  const twice = await store.restoreCard(root, 'people/gone.card.md')
+  t('没撤掉的卡恢复会被拒绝', twice.ok === false && String(twice.error).includes('没有被撤掉'), twice)
+
+  // 同一条路径删了又恢复、再删再恢复——以最后一次记录为准。
+  await withdraw('people/gone.card.md')
+  t('再删一次又不显示了', (await store.readCard(root, 'people/gone.card.md')).ok === false)
+  const back2 = await store.restoreCard(root, 'people/gone.card.md')
+  const again = await store.readCard(root, 'people/gone.card.md')
+  t('再恢复又能读回来（以最后一次为准）', back2.ok === true && again.ok === true, { back2, error: again.error })
+  await withdraw('people/gone.card.md')
+  t('最后一次是删，就还是撤掉的状态', (await store.readCard(root, 'people/gone.card.md')).ok === false
+    && (await store.listWithdrawn(root)).some((x) => x.path === 'people/gone.card.md'))
+  await store.restoreCard(root, 'people/gone.card.md')
+
+  // 彻底删：只允许对已经撤掉的卡做，别的手滑点不到活卡。
+  await store.writeCard(root, 'people/alive.card.md', {
+    lifecard: '0.1', id: 'alive', kind: 'real', world: 'reality', name: '还在的人',
+  }, [{ title: '自述', body: '没被删的人。' }], { force: true })
+  const purgeAlive = await store.purgeCard(root, 'people/alive.card.md')
+  t('活卡不许彻底删', purgeAlive.ok === false, purgeAlive)
+  t('活卡的文件还在', await fs.access(path.join(root, 'people/alive.card.md')).then(() => true).catch(() => false))
+  const purgeOther = await store.purgeCard(root, 'materials/x.md')
+  t('只能彻底删卡片文件', purgeOther.ok === false, purgeOther)
+
+  await withdraw('people/gone.card.md')
+  const purged = await store.purgeCard(root, 'people/gone.card.md')
+  t('撤掉的卡能彻底删', purged.ok === true, purged)
+  t('彻底删是真删了文件', (await fs.stat(path.join(root, 'people/gone.card.md')).catch(() => null)) === null)
+  t('彻底删后「已经撤掉的」里也没有了', (await store.listWithdrawn(root)).every((x) => x.path !== 'people/gone.card.md'))
+
+  // 读不出来的文件也得列出来，否则「看不见 + 打不开」的死结照旧。
+  await store.writeCard(root, 'people/locked.card.md', {
+    lifecard: '0.1', id: 'locked', kind: 'real', world: 'reality', name: '锁住的人',
+  }, [{ title: '自述', body: '文件读不出来的人。' }], { force: true })
+  const lockedAbs = path.join(root, 'people/locked.card.md')
+  const lockedText = await fs.readFile(lockedAbs, 'utf8')
+  await fs.chmod(lockedAbs, 0o000)
+  const lockedRead = await store.readCard(root, 'people/locked.card.md')
+  t('读不出的文件说读不出来', lockedRead.ok === false && String(lockedRead.error).includes('读不出来'), lockedRead.error)
+  await store.appendRedaction(root, { path: 'people/locked.card.md', sha256: store.sha256(lockedText), reason: '用户删除' })
+  const box3 = await store.listWithdrawn(root)
+  const lockedRow = box3.find((x) => x.path === 'people/locked.card.md')
+  t('读不出的文件也列在「已经撤掉的」里', lockedRow !== undefined, box3)
+  t('读不出时用文件名顶上，还认得出是哪张', lockedRow?.name === 'locked', lockedRow)
+  await fs.chmod(lockedAbs, 0o644)
+  await store.restoreCard(root, 'people/locked.card.md')
+}
+
+// ── 14. 提案去重：同一条事实不许出现两遍 ───────────────────────────
+// verifyProposal 以前只看引文。同一份提案里把一句话写两遍（换个标点、
+// 或者先短说再长说），两条都会过闸门、被勾选、一起写进卡——用户整理
+// 一次材料，卡里就多一段重复的正文。
+console.log('=== 14. 提案去重：同一条事实不许出现两遍 ===')
+{
+  const mats = { 'materials/x.md': '他喜欢下棋。她爱做饭，家里人都知道。' }
+  const ev = { material: 'materials/x.md', quote: '他喜欢下棋' }
+  const gate = (items) => core.verifyProposal({ items }, mats)
+  const sec = (field, value) => ({ field, value, source_level: '自述', evidence: ev })
+
+  const exact = gate([sec('自述', '他喜欢下棋'), sec('自述', '他喜欢下棋')])
+  t('同一字段完全相同只收一条', exact.accepted.length === 1, exact)
+  t('丢掉的那条说「和前面那条重复」', exact.rejected[0]?.reason === '和前面那条重复', exact)
+
+  // 只差标点和空格，是同一句话。
+  const punct = gate([sec('自述', '他喜欢下棋。'), sec('自述', '他 喜欢下棋')])
+  t('差标点空格也算重复', punct.accepted.length === 1, punct)
+
+  // 包含式：先说短的后说长的 → 短的被长的吸收，只留长的。
+  const grow = gate([sec('自述', '他喜欢下棋'), sec('自述', '他喜欢下棋。每天下午都要下一盘。')])
+  t('包含式重复只留一条', grow.accepted.length === 1, grow)
+  t('留下的是长的那条', String(grow.accepted[0]?.value).includes('每天下午'), grow.accepted[0])
+  t('短的那条进了丢弃清单', grow.rejected.some((r) => String(r.reason).includes('重复')), grow)
+
+  // 反过来：长的先到，后到的短句被并掉。
+  const shrink = gate([sec('场景', '他喜欢下棋。每天下午都要下一盘。'), sec('场景', '他喜欢下棋')])
+  t('长句在前时短句不再收', shrink.accepted.length === 1 && String(shrink.accepted[0]?.value).includes('每天下午'), shrink)
+
+  // 不同字段出现同样的话不是重复：每个字段各说各的。
+  const cross = gate([sec('自述', '他喜欢下棋'), sec('场景', '他喜欢下棋')])
+  t('不同字段同样的文字不算重复', cross.accepted.length === 2, cross)
+
+  // 结构字段不做包含式：'家' 是 '家人' 的子串，但它们是两个 tag。
+  const tags = gate([sec('tags', '家人'), sec('tags', '家')])
+  t('结构字段的包含关系不当重复', tags.accepted.length === 2, tags)
+
+  // 端到端：存成提案，再采纳，卡里这句话只出现一次。
+  const saved = await store.saveProposal(root, 'dup', {
+    about: { id: 'dup' },
+    items: [sec('自述', '他喜欢下棋'), sec('自述', '他喜欢下棋。')],
+  }, mats)
+  t('存下来的提案只收一条', saved.accepted === 1, saved)
+  const rec = await store.readProposal(root, saved.json)
+  t('提案里记下了为什么丢掉', (rec.record?.rejected ?? []).some((r) => String(r.reason).includes('重复')), rec.record?.rejected)
+
+  await store.writeCard(root, 'people/dup.card.md', {
+    lifecard: '0.1', id: 'dup', kind: 'real', world: 'reality', name: '重复先生',
+  }, [], { force: true })
+  const applied = await store.applyProposal(root, saved.json, { checked: [0] })
+  t('采纳成功', applied.ok === true, applied)
+  const dupCard = await store.readCard(root, 'people/dup.card.md')
+  const body = String(core.sectionBody(dupCard.sections, '自述') ?? '')
+  t('采纳后卡里这句话只出现一次', (body.match(/他喜欢下棋/g) ?? []).length === 1, body)
+}
+
+// ── 覆盖材料留下的备份不是材料 ──
+// 覆盖一份材料时旧版会存成 `名字.md.bak-<时间戳>`。以前读材料和列表都把它
+// 当正式材料：全读的时候旧版和现版一起进模型，AI 拿着两份相互矛盾的原话
+// 去「逐字校验」，用户看到的结论就开始飘。
+{
+  const before = Object.keys(await store.readMaterials(root)).length
+  await fs.writeFile(path.join(root, 'materials', '覆盖试验.md'), '新版：她十九岁进厂。', 'utf8')
+  await fs.writeFile(path.join(root, 'materials', '覆盖试验.md.bak-20261029'), '旧版：她十八岁进厂。', 'utf8')
+  await fs.writeFile(path.join(root, 'materials', '覆盖试验.md.tmp-9'), '半截', 'utf8')
+  const after = await store.readMaterials(root)
+  const names = Object.keys(after)
+  t('备份文件不进材料', !names.some((one) => /\.(bak|tmp)-/.test(one)), names)
+  t('正式的这份还在', names.some((one) => one.includes('覆盖试验')), names)
+  t('只多出这一份，没多出备份', names.length === before + 1, { before, after: names.length })
+  const listed = await store.listAll(root)
+  const matNames = (listed.materials ?? []).map((one) => String(one.path ?? one.name ?? ''))
+  t('列表里同样不出现备份', !matNames.some((one) => /\.(bak|tmp)-/.test(one)), matNames)
+  await fs.rm(path.join(root, 'materials', '覆盖试验.md'), { force: true })
+  await fs.rm(path.join(root, 'materials', '覆盖试验.md.bak-20261029'), { force: true })
+  await fs.rm(path.join(root, 'materials', '覆盖试验.md.tmp-9'), { force: true })
 }
 
 await fs.rm(root, { recursive: true, force: true }).catch(() => {})

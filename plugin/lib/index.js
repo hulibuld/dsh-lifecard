@@ -829,6 +829,9 @@ function buildApi(ctx, workspace, config, options) {
         relations: all.relations,
         materials: all.materials,
         errors: all.errors,
+        // 撤回箱：删掉的卡文件还在磁盘上，得有个地方列出来，用户才能恢复
+        // 或者彻底删掉。以前什么都没有，删掉的卡等于掉进黑洞。
+        withdrawn: all.withdrawn ?? [],
         proposals,
       }
     },
@@ -904,12 +907,42 @@ function buildApi(ctx, workspace, config, options) {
         const safe = await insideWorkspace(ws, body.path)
         if (safe.ok !== true) return { ok: false, error: safe.error }
         rel = safe.rel
+        // 显式给了位置也一样：这个位置上有一张撤掉的卡，就没法「另存一张」盖过去。
+        // 不然换个入口就能把删掉的卡复活成一份新内容。
+        const there = await fs.stat(path.join(ws, rel)).then((st) => st.isFile()).catch(() => false)
+        if (!there) {
+          // 挡住这张新卡的是账上那张撤掉的卡，所以也带 withdrawn。
+          // 光比路径不够：id 是拼音、名字是中文时（people/rat.card.md 那种），
+          // 按名字再建会算出另一个路径，于是同一个人并排出现两张。
+          const gone = store.hitsRedactionByPath(await store.readRedactions(ws), rel) !== undefined
+            || (await store.withdrawnNameHit(ws, rel, [data.id, data.name])) !== null
+          if (gone) {
+            return { ok: false, withdrawn: true, error: '这个名字被一张已经删掉的卡占着。先去首页「已经撤掉的」里把它清掉，或者换个名字。' }
+          }
+        }
       } else {
         rel = store.cardRelPath(id, data.world)
         // 没给路径＝这是一张新卡。同名文件已经在了就不再写：
         // 以前会直接覆盖，用户点「新建」写了个已有的名字，那人原来那张卡
         // 连同快照之外的一切（关系史、口癖）就没了声息地被换成了空白。
-        const exists = await fs.stat(path.join(ws, rel)).then((st) => st.isFile()).catch(() => false)
+        const abs = path.join(ws, rel)
+        const exists = await fs.stat(abs).then((st) => st.isFile()).catch(() => false)
+        if (!exists) {
+          // 文件搬去回收目录以后，原位确实空了，可名字还被一张撤掉的卡占着。
+          // 只判文件在不在的话，删掉的卡会被当成「没人用这个名字」默默重建回来。
+          const redactions = await store.readRedactions(ws)
+          // 同目录里同名的也算占着：删掉一张叫「妈妈」的卡（文件是 people/mama.card.md），
+          // 再按名字建会算出 people/妈妈.card.md，两张「妈妈」就并排出现了。
+          const gone = store.hitsRedactionByPath(redactions, rel) !== undefined
+            || (await store.withdrawnNameHit(ws, rel, [id, data.name])) !== null
+          if (gone) {
+            return {
+              ok: false,
+              withdrawn: true,
+              error: '这个名字被一张已经删掉的卡占着。先去首页「已经撤掉的」里把它清掉，或者换个名字。',
+            }
+          }
+        }
         if (exists && body?.overwrite !== true) {
           return {
             ok: false,
@@ -1063,21 +1096,44 @@ function buildApi(ctx, workspace, config, options) {
       return store.readSnapshot(ws, rel, body?.stamp)
     },
 
-    /** 把某个历史版本恢复成当前内容。恢复前会再留一份新快照，所以这一步本身也能撤销。 */
+    /**
+     * 恢复一张卡。两种意思，看有没有给版本号：
+     *  - 给了 `stamp`：退回那一版历史（老行为，不动）。
+     *  - 没给：把撤回过的卡救回列表（追加一条恢复记录）。
+     *
+     * 合并成一条路由，是因为界面上就一个「恢复」动作，用户不区分这两种。
+     */
     'card.restore': async (body) => {
       const ws = await root(body)
       const safe = await insideWorkspace(ws, body?.path)
       if (safe.ok !== true) return { ok: false, error: safe.error }
       const rel = safe.rel
       if (!rel.endsWith('.card.md')) return { ok: false, error: '这个位置不是一张卡。' }
-      const old = await store.readSnapshot(ws, rel, body?.stamp)
+      const stamp = body?.stamp
+      if (stamp === undefined || stamp === null || stamp === '') {
+        return store.restoreCard(ws, rel)
+      }
+      // 卡还撤着的时候退回旧版本，会把文件写回原位、而它仍然不在列表里——
+      // 那就又造出一个「看得见文件、看不见卡」的死结。先放回来，再谈版本。
+      if (store.hitsRedactionByPath(await store.readRedactions(ws), rel) !== undefined) {
+        // 跟 readCard 的两条「已撤掉」分支一个形：带 withdrawn，上层只看这个字段
+        // 就知道该给「恢复」的门，不用去猜是哪种撤法。
+        return { ok: false, withdrawn: true, error: '这张卡现在是撤掉的状态。先把它放回列表，再退回旧版本。' }
+      }
+      const old = await store.readSnapshot(ws, rel, stamp)
       if (old.ok !== true) return old
       const written = await store.writeCard(ws, rel, old.data, old.sections, { force: true })
       if (written.ok !== true) return written
       return { ok: true, path: rel, validation: written.validation, note: '已经退回这一版。刚才那一版也还在历史里。' }
     },
 
-    /** 删除一张卡（写墓碑，不真删文件——真删就不可审计了）。 */
+    /**
+     * 撤掉一张卡：文件搬进回收目录，再写一条墓碑。
+     *
+     * 以前只写墓碑、文件留在原地。看起来更「可审计」，实际是个死结：
+     * 名字还占着（`card.save` 只判文件在不在），可列表里又看不见，
+     * 用户照着提示去找也找不到，删掉的卡于是就那么赖着。
+     */
     'card.delete': async (body) => {
       const ws = await root(body)
       const safe = await insideWorkspace(ws, body?.path)
@@ -1086,8 +1142,84 @@ function buildApi(ctx, workspace, config, options) {
       if (!rel.endsWith('.card.md')) return { ok: false, error: '这个位置不是一张卡。' }
       const card = await store.readCard(ws, rel)
       if (!card.ok) return card
-      await store.appendRedaction(ws, { path: rel, sha256: store.sha256(card.text), reason: String(body?.reason ?? '用户删除') })
-      return { ok: true, path: rel, note: '已经删掉了：它不会再出现在列表、导出和 AI 的眼里。磁盘上的原文我们还留着，方便你反悔。' }
+      const moved = await store.moveCardToRedacted(ws, rel)
+      if (moved.ok !== true) return moved
+      try {
+        await store.appendRedaction(ws, { path: rel, sha256: store.sha256(card.text), reason: String(body?.reason ?? '用户删除') })
+      } catch (err) {
+        // 账没记上就把文件放回去：不然这张卡既不在列表里，也没人知道它被删过。
+        const putBack = await fs.rename(path.join(ws, moved.redacted), path.join(ws, rel)).then(() => true).catch(() => false)
+        if (!putBack) {
+          // 搬回去也失败了：残份留在回收目录里、账上又没有它。别再让这种残份
+          // 变成「摘不掉的一行」——restoreCard / purgeCard 对「有残份、没账」
+          // 的情况放行，用户可以照常放回来或彻底删掉。
+          return { ok: false, error: '这次删除没记下来，卡也没能放回原处。它现在在「已经撤掉的」里，可以放回来，也可以彻底删掉。' }
+        }
+        return { ok: false, error: '这次删除没记下来，卡已经放回原处了，再试一次。' }
+      }
+      await clearPinsFor(ws, rel, card.data)
+      // 返回值要把「还能找回来」说出来。只写「已经删掉了」，用户手滑之后
+      // 就不知道该去哪儿反悔，删掉的卡于是永远躺在回收目录里没人认领。
+      return {
+        ok: true,
+        path: rel,
+        note: '已经删掉了：它不会再出现在列表、导出和 AI 的眼里。已经放到「已经撤掉的」里了，想反悔可以在那儿恢复；要从磁盘上彻底删掉，也是在那儿删。',
+        withdrawn: true,
+      }
+    },
+
+    /**
+     * 收走一张刚建的空卡（访谈开局建错了用）。
+     *
+     * 和「删除」分开是因为它不该留墓碑：这张卡从来没进过用户的列表，
+     * 只是建错了一下。写墓碑会占住名字，紧接着按同一个名字再建就撞墙。
+     * 只对「正文全空、刚建不久」的卡开放，免得变成删活卡的后门。
+     */
+    'card.discard': async (body) => {
+      const ws = await root(body)
+      const safe = await insideWorkspace(ws, body?.path)
+      if (safe.ok !== true) return { ok: false, error: safe.error }
+      const rel = safe.rel
+      if (!rel.endsWith('.card.md')) return { ok: false, error: '这个位置不是一张卡。' }
+      const card = await store.readCard(ws, rel)
+      if (!card.ok) return card
+      const written = (card.sections ?? []).map((one) => String(one?.body ?? '').trim()).join('')
+      if (written !== '') {
+        return { ok: false, error: '这张卡里已经写了内容，不能当成空卡收走。要删就在列表里删。' }
+      }
+      const stat = await fs.stat(path.join(ws, rel)).catch(() => null)
+      const age = stat === null ? Number.POSITIVE_INFINITY : Date.now() - stat.mtimeMs
+      if (!(age <= 10 * 60 * 1000)) {
+        return { ok: false, error: '这张卡已经放了一会儿了，不能当成刚建的空卡收走。要删就在列表里删。' }
+      }
+      // 搬走之后必须记一笔「收走」：不记账的残份会被列进「已经撤掉的」，
+      // 而「放回来」「彻底删掉」都以账为准，于是那一行两个动作都失败，
+      // 用户看着一条摘不掉的幽灵。
+      // 记「彻底删掉」而不是「撤掉」，是因为 discard 的本意是别让这张建错的
+      // 空卡占住名字——撤掉态会占名字，清掉态不会，同名立刻能再建。
+      const moved = await store.moveCardToRedacted(ws, rel)
+      if (moved.ok !== true) return moved
+      try {
+        await store.appendRedaction(ws, { kind: 'purge', path: rel, reason: '建错了的空卡' })
+      } catch {
+        // 记不上就搬回原处，别留一条谁也处理不了的残份。
+        await fs.rename(path.join(ws, moved.redacted), path.join(ws, rel)).catch(() => {})
+        return { ok: false, error: '这张空卡没能收走，卡还在原处，再试一次。' }
+      }
+      return moved
+    },
+
+    /**
+     * 彻底删掉一张撤回过的卡：真删磁盘文件。
+     *
+     * 只允许对**已撤回**的卡做。这一步不可撤销，所以设一道前提：先在列表里
+     * 删过一次（那一步可恢复）、用户确实看过「已撤回」里那一行，才谈得上彻底删。
+     */
+    'card.purge': async (body) => {
+      const ws = await root(body)
+      const safe = await insideWorkspace(ws, body?.path)
+      if (safe.ok !== true) return { ok: false, error: safe.error }
+      return store.purgeCard(ws, safe.rel)
     },
 
     /** 导入酒馆卡（PNG / JSON / CHARX）。body.files 是 [{name, base64}]。 */
@@ -2073,9 +2205,42 @@ function buildApi(ctx, workspace, config, options) {
       const materials = await store.readMaterials(ws)
       const names = Object.keys(materials)
       if (names.length === 0) return { ok: false, error: '还没有材料。先加一段文字，或者做一次访谈，AI 才有东西可读。' }
-      const chosen = Array.isArray(body?.materials) && body.materials.length > 0
-        ? Object.fromEntries(Object.entries(materials).filter(([k]) => body.materials.includes(k) || body.materials.includes(path.basename(k))))
-        : materials
+      // 三种意思必须分得开：不传 / null = 全读；给数组 = 只读这些；空数组 = 一份都不读。
+      // 以前空数组也被当成「全读」，用户明明一份都没勾，AI 却把整个材料库读了一遍。
+      const want = body?.materials
+      let chosen = materials
+      if (Array.isArray(want)) {
+        if (want.length === 0) {
+          return { ok: false, error: '这次没选任何材料。至少要选一份，或者把要读的材料挑出来。' }
+        }
+        const picked = {}
+        const missing = []
+        for (const one of want) {
+          const key = String(one ?? '').trim()
+          if (key === '') {
+            missing.push('（空的一条）')
+            continue
+          }
+          if (Object.hasOwn(materials, key)) {
+            picked[key] = materials[key]
+            continue
+          }
+          // 界面上有时只传文件名，或者多带了一层目录；能唯一对上一份就认。
+          const base = path.posix.basename(key)
+          const same = Object.keys(materials).filter((k) => k.endsWith('/' + key) || path.posix.basename(k) === base)
+          if (same.length === 1) {
+            picked[same[0]] = materials[same[0]]
+            continue
+          }
+          missing.push(key)
+        }
+        if (missing.length > 0) {
+          return { ok: false, error: `这几份材料找不到了：${missing.join('、')}。可能刚被删掉或者改了名，刷新一下再挑一次。` }
+        }
+        chosen = picked
+      } else if (want !== undefined && want !== null) {
+        return { ok: false, error: '没看懂要读哪几份材料。要么不传（全都读），要么给一份材料清单。' }
+      }
       if (Object.keys(chosen).length === 0) return { ok: false, error: '选中的材料都不存在' }
       const aboutName = String(body?.name ?? aboutId)
       // 「想要什么样的人」可以临时覆盖工作区里存的那份（比如试一下别的口味）。
@@ -3600,9 +3765,18 @@ function readCachedSync(abs) {
 function cardPathSync(root, id) {
   const want = String(id ?? '').trim()
   if (want === '') return ''
+  // 这一段是同步路径（system prompt 每次组装都要跑），所以用同步读的墓碑。
+  // 不过墓碑的话，删掉的卡只要文件还在，就照样被注入进 system prompt——
+  // 用户明明删了，模型却还在演那个人。
+  const redactions = store.readRedactionsSync(root)
+  const relOf = (abs) => path.relative(root, abs).split(path.sep).join('/')
+  const gone = (abs, text) => store.hitsRedaction(redactions, relOf(abs), text) !== undefined
   const direct = path.join(root, 'people', `${want}.card.md`)
   try {
-    if (statSync(direct).isFile()) return direct
+    if (statSync(direct).isFile()) {
+      const text = readCachedSync(direct)
+      if (text !== null && !gone(direct, text)) return direct
+    }
   } catch {
     /* 名字不是文件名，退回去扫目录 */
   }
@@ -3612,6 +3786,7 @@ function cardPathSync(root, id) {
       const abs = path.join(root, 'people', name)
       const text = readCachedSync(abs)
       if (text === null) continue
+      if (gone(abs, text)) continue
       const parsed = core.parseCard(text)
       if (parsed.ok === true && String(parsed.data?.id ?? '') === want) return abs
     }
@@ -3619,6 +3794,29 @@ function cardPathSync(root, id) {
     /* 没有 people 目录就当没挑卡 */
   }
   return ''
+}
+
+/**
+ * 一张卡被撤掉以后，把三扇门（现实 / 酒馆 / 写小说）里指向它的那项清空。
+ *
+ * 不清的后果不是「少了一个人的设定」这么轻：那把门还记着一个不存在的名字，
+ * 每次都白读一遍、拼出一段空的，用户看到的是「明明挑着人，模型却不知道自己演谁」。
+ */
+async function clearPinsFor(ws, rel, data) {
+  const state = await store.readConfigState(ws)
+  if (state.ok !== true) return
+  const pins = { real: '', tavern: '', novel: '', ...(state.config?.default_cards ?? {}) }
+  const id = String(data?.id ?? '')
+  const stem = path.posix.basename(rel).replace(/\.card\.md$/i, '')
+  let changed = false
+  for (const mode of ['real', 'tavern', 'novel']) {
+    const picked = String(pins[mode] ?? '')
+    if (picked !== '' && (picked === id || picked === rel || picked === stem)) {
+      pins[mode] = ''
+      changed = true
+    }
+  }
+  if (changed) await store.writeConfig(ws, { default_cards: pins })
 }
 
 /** 当前是哪张卡：配置里 default_cards[mode]。 */

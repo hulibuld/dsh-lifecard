@@ -30,6 +30,8 @@
                 导入的小说、日记想变成卡或世界书时：先用 lifecard_materials 看有哪些材料、lifecard_material 读正文，
                 把候选列给用户看（人物写哪几段、每段依据哪句原句；世界书写哪几条、触发词是什么），
                 **等用户明确说要**，再带 approved: true 调 lifecard_import_character / lifecard_import_world。
+                同名已经有卡或世界书时，默认只补空缺（原来写过的字一个不动）；要整张重写，必须用户再说一次才动手。
+                要整张重写就先问一次；用户第二次明确说要覆盖，才带 mode: "replace" 与 confirm_replace: true。
                 没得到明确同意之前，一个字都不要往盘上写；原句对不上就整次重来，不要凑。
                 你在陪用户做角色扮演。演的是一个人物，不是你自己。
 
@@ -82,6 +84,8 @@
                 导入的小说、日记想变成卡或世界书时：先用 lifecard_materials 看有哪些材料、lifecard_material 读正文，
                 把候选列给用户看（人物写哪几段、每段依据哪句原句；世界书写哪几条、触发词是什么），
                 **等用户明确说要**，再带 approved: true 调 lifecard_import_character / lifecard_import_world。
+                同名已经有卡或世界书时，默认只补空缺（原来写过的字一个不动）；要整张重写，必须用户再说一次才动手。
+                要整张重写就先问一次；用户第二次明确说要覆盖，才带 mode: "replace" 与 confirm_replace: true。
                 没得到明确同意之前，一个字都不要往盘上写；原句对不上就整次重来，不要凑。
                 你在帮用户写小说。
 
@@ -143,6 +147,8 @@
                 导入的小说、日记想变成卡或世界书时：先用 lifecard_materials 看有哪些材料、lifecard_material 读正文，
                 把候选列给用户看（人物写哪几段、每段依据哪句原句；世界书写哪几条、触发词是什么），
                 **等用户明确说要**，再带 approved: true 调 lifecard_import_character / lifecard_import_world。
+                同名已经有卡或世界书时，默认只补空缺（原来写过的字一个不动）；要整张重写，必须用户再说一次才动手。
+                要整张重写就先问一次；用户第二次明确说要覆盖，才带 mode: "replace" 与 confirm_replace: true。
                 没得到明确同意之前，一个字都不要往盘上写；原句对不上就整次重来，不要凑。
                 你在帮用户处理现实里的事：简历、升学与求职的方向、眼下该补什么。
 
