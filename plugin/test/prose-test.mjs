@@ -86,6 +86,21 @@ console.log('\n== 报告：没有就不占地方 ==')
   t('举的原文不超过一行（截断过长的）', sample.hits.every((h) => h.sample.length <= 40), sample.hits.map((h) => h.sample.length))
 }
 
+console.log('\n== 形容词脱钩：物件上的词挂到了抽象东西上 ==')
+{
+  const scan = prose.scanProse('他做事很平，一段一段往下推。这个判断很沉。')
+  const labels = scan.hits.filter((h) => h.kind === 'detached').map((h) => h.label).join('|')
+  t('「做事很平」被数出来', labels.includes('做事很平'), labels)
+  t('「判断很沉」被数出来', labels.includes('判断很沉'), labels)
+  t('报告里出现一次就说，不等密度', prose.proseReportText(scan).includes('物件上的词'), prose.proseReportText(scan))
+
+  const fine = prose.scanProse('这条路很平，车开上去不颠。这辆车坐得真稳。')
+  t('挂在具体东西上就不报', fine.total === 0 && fine.hits.length === 0, fine.hits)
+
+  const natural = prose.scanProse('他说话很轻，怕吵醒里屋的人。')
+  t('「说话很轻」这种还原得出来的不报', natural.total === 0 && natural.hits.length === 0, natural.hits)
+}
+
 console.log('\n== 排序：先把话说等于没说的排前面 ==')
 {
   const scan = prose.scanProse('于是天亮了然而他还在。此外，他走了。瞳孔一缩。不禁笑了。不禁又笑了。')

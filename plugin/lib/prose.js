@@ -72,7 +72,21 @@ const BIG_WORDS = [
   ['交织在一起', '写两件事怎么缠上的'],
 ]
 
-/** 五、糊词：一个两个是语气，一堆就是没想清楚。 */
+/** 五、形容词脱钩：把一个挂在物件上的词，摘下来挂到抽象的东西上（「他做事很平」）。 */
+const DETACHED = [
+  [
+    /(?:做法|判断|方案|稿子|这话|这句话|逻辑|节奏|关系|思路|风格|口气|语气)(?:很|挺|太|够|有点|特别|十分|非常)?(?:稳|平|沉|轻|重)/g,
+    '「稳」是车和地基的属性，「平」是地的属性。写清他做了什么，别把物件上的词摘下来挂到做法上',
+    '先看',
+  ],
+  [
+    /(?:做事|做人|办事|下笔|分析|推理)(?:很|挺|太|够|有点|特别)?(?:稳|平|沉|轻|重)/g,
+    '同上：把它翻成他到底在做什么动作',
+    '先看',
+  ],
+]
+
+/** 六、糊词：一个两个是语气，一堆就是没想清楚。 */
 const FUZZY = ['似乎', '也许', '大概', '仿佛', '好像', '隐约', '莫名', '某种', '一丝', '些许']
 
 /** 每 500 字允许几个糊词（超过就算「太多」）。 */
@@ -154,6 +168,26 @@ export function scanProse(text) {
     })
   }
 
+  for (const [pattern, advice, order] of DETACHED) {
+    const found = []
+    pattern.lastIndex = 0
+    let match = pattern.exec(source)
+    while (match !== null) {
+      found.push({ index: match.index, text: match[0] })
+      if (found.length >= 20) break
+      match = pattern.exec(source)
+    }
+    if (found.length === 0) continue
+    hits.push({
+      kind: 'detached',
+      label: `「${found[0].text}」这类说法`,
+      count: found.length,
+      advice,
+      sample: excerpt(source, found[0].index, found[0].text.length),
+      order,
+    })
+  }
+
   for (const [word, advice] of BIG_WORDS) {
     const count = countOf(source, word)
     if (count === 0) continue
@@ -208,7 +242,7 @@ export function proseReportText(scan) {
     // 只出现一次、篇幅又短：算不上密度问题，别拿一条孤例占版面。
     // 但一章里出现一次「命运的齿轮」也值得说，所以门槛按篇幅走。
     // 套话与大词出现一次就该看见；句式与身体模板要成密度才说，否则一句一个不算毛病。
-    if (hit.kind !== 'filler' && hit.kind !== 'big' && hit.count < 2 && data.chars < 800) continue
+    if (hit.kind !== 'filler' && hit.kind !== 'big' && hit.kind !== 'detached' && hit.count < 2 && data.chars < 800) continue
     lines.push(`- ${hit.label}用了 ${hit.count} 次，例如「${hit.sample}」——${hit.advice}`)
   }
   if (data.fuzzy.tooMany === true) {

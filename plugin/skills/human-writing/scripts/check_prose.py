@@ -210,6 +210,42 @@ ROAD_SIGN_PATTERNS = (
     ),
 )
 
+# 形容词脱钩：形容人的词挂到了人和人的做法上。写在 SKILL.md「形容词脱钩」一节。
+# 只查「抽象主语 + 程度副词 + 物理属性形容词」这一种碰撞，正常用法（地很平、车很稳）不命中。
+# 收得紧是故意的：宁可多报几句正常话，也别放过「他做事很平」。
+ABSTRACT_SUBJECTS = (
+    "他这个人", "她这个人", "这个人", "那人", "这人",
+    "他做事", "她做事", "做事", "做法", "处事",
+    "他的判断", "她的判断", "判断", "方案", "稿子", "文字", "句子",
+    "这句话", "这话", "这种说法", "说法", "逻辑", "思路", "节奏",
+    "关系", "内容", "观点", "态度", "能力", "水平", "表现", "推进",
+)
+
+PHYSICAL_ADJECTIVES = (
+    "稳", "平", "沉", "轻", "重", "强", "硬", "软", "钝", "脆", "顺", "实", "厚", "薄",
+)
+
+DEGREE_ADVERBS = (
+    "很", "挺", "真", "太", "比较", "特别", "相当", "还算", "非常", "极其", "蛮", "怪",
+)
+
+# 「只有态度、没有对象」的固定短句。写在 SKILL.md「删掉之后什么都没少的句子」一节。
+# 只作提醒，不进失败项：虚构对白里这类短句是正常的对话节奏，由人判断。
+EMPTY_ATTITUDE = (
+    "这句话稳",
+    "这话我留着",
+    "这句话我记着",
+    "这句话我不接",
+    "我记下了",
+    "行，我认",
+    "行我认",
+    "比之前的都重",
+    "比之前的都轻",
+    "比之前的都强",
+    "我不拦",
+    "你这句话我记着",
+)
+
 SOFT_MARKERS = (
     "真正",
     "本质上",
@@ -549,6 +585,53 @@ def main() -> int:
         warnings.append(
             f"长破折号 {len(dash_runs)} 处，限额 {dash_allowance} 处，第 {lines} 行。"
             "确认每处都是补语、插说或真的停顿，不是拿它替翻案腔断句。"
+        )
+
+    empty_hits = []
+    for phrase in EMPTY_ATTITUDE:
+        for match in re.finditer(re.escape(phrase), prose):
+            empty_hits.append((match.start(), phrase))
+    if empty_hits:
+        empty_hits.sort()
+        lines = count_flagged_lines(
+            text, [line_number(text, position) for position, _ in empty_hits]
+        )
+        shown = "、".join(sorted({f"“{phrase}”" for _, phrase in empty_hits}))
+        warnings.append(
+            f"只有态度没有对象的短句 {len(empty_hits)} 处，第 {lines} 行：{shown}。"
+            "单独抄给一个不在场的人看，他知不知道在说什么？删掉它下一句还接得上，就删。"
+            "要留就落到一件具体的事上。对白里这类短句是节奏，不用改。"
+        )
+
+    decoupled = []
+    degree_alt = "|".join(DEGREE_ADVERBS)
+    adjective_alt = "|".join(PHYSICAL_ADJECTIVES)
+    for subject in ABSTRACT_SUBJECTS:
+        pattern = re.compile(
+            re.escape(subject) + r"\s*(?:" + degree_alt + r")\s*(?:" + adjective_alt + r")"
+        )
+        for match in pattern.finditer(prose):
+            decoupled.append((match.start(), match.group(0)))
+    if decoupled:
+        decoupled.sort()
+        # 主体有重叠（「做事很平」是「他做事很平」的一部分），只留最长的那一处
+        deduped = []
+        for start, piece in decoupled:
+            end = start + len(piece)
+            if deduped and start < deduped[-1][0] + len(deduped[-1][1]):
+                if end - start > len(deduped[-1][1]):
+                    deduped[-1] = (start, piece)
+                continue
+            deduped.append((start, piece))
+        decoupled = deduped
+        lines = count_flagged_lines(
+            text, [line_number(text, position) for position, _ in decoupled]
+        )
+        shown = "、".join(f"“{piece}”" for _, piece in decoupled[:6])
+        failures.append(
+            f"形容词脱钩 {len(decoupled)} 处，第 {lines} 行：{shown}。"
+            "这些形容词属于能用手的实物（车才稳、地才平、箱子才沉），挂在人、做法、判断和方案上就错了。"
+            "改法：说清它本来指哪个动作，或者直接删掉这个评价。这一项故意收得紧，宁可多报也别放过。"
         )
 
     if DASH_AFTER_COMMA.search(prose):
