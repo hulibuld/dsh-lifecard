@@ -1,6 +1,6 @@
 {
   "name": "dsh-lifecard",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Life Cards — 把你认识的人和虚构角色写成档案。在对话里问出来，或导入酒馆角色卡；数据是你自己文件夹里的一组 Markdown 文件。",
   "type": "module",
   "icon": "icon.svg",
@@ -26,6 +26,7 @@
     "lib/codec.js",
     "lib/store.js",
     "lib/prompts.js",
+    "lib/prose.js",
     "lib/score.js",
     "lib/memory.js",
     "skills/**/SKILL.md",

@@ -144,6 +144,37 @@ function humanizeIssue(issue) {
   return `「${fieldLabel(field)}」这一项写法不太对，点「改这张卡」能就地改。`
 }
 
+/**
+ * 这一份材料是不是真的能读。
+ *
+ * 存材料时会先写临时文件再改名。改名那一步如果被什么打断（程序崩了、
+ * 磁盘满了），就会留下 `.妈妈.md.bak-1234` 这种残骸。它一直被当成材料摆在
+ * 列表里：用户看到两份「妈妈」，点开其中一份是空的，还以为自己写丢了。
+ * 备份和点开头的临时文件都不该出现在材料列表里。
+ */
+function isRealMaterial(m) {
+  const name = String(m?.name ?? '').trim()
+  if (name === '') return false
+  if (name.startsWith('.')) return false
+  return !/\.(bak|tmp)-/.test(name)
+}
+
+/**
+ * 读不了的那几个文件，用名字点出来（最多三个）。
+ *
+ * 只报一个数字（「有 4 个文件读不了」）等于没说：用户不知道是那几张重要的，
+ * 还是早就想删的草稿，只能一个抽屉一个抽屉去翻。名字后面多的用「还有 N 个」收。
+ */
+function unreadableNames(errors) {
+  const names = (Array.isArray(errors) ? errors : [])
+    .map((e) => String(cardNameFromPath(e?.path ?? '')))
+    .filter((n) => n !== '' && n !== '一张卡')
+  const uniq = [...new Set(names)]
+  if (uniq.length === 0) return ''
+  const head = uniq.slice(0, 3).map((n) => `「${n}」`).join('、')
+  return uniq.length > 3 ? `${head}，还有 ${uniq.length - 3} 个` : head
+}
+
 /** `people/妈妈.card.md` → `妈妈`。界面上不摆文件路径。 */
 function cardNameFromPath(rel) {
   const base = String(rel ?? '').split('/').pop() ?? ''
@@ -566,6 +597,9 @@ const CSS = `
 
 /* 关系选项：一片一片能点的词，比下拉框好点——一屏就能看见父亲母亲爷爷都在 */
 .lc-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+/* 上一题留下的选项：只是给人回看的，不要长得像能点的按钮 */
+.lc-opt-past { opacity: .72; cursor: default; }
+.lc-opt-past:hover { background: inherit; }
 .lc-chip {
   padding: 5px 11px; border-radius: 999px; border: 1px solid var(--lc-line-strong);
   background: var(--lc-panel); color: inherit; font-family: inherit; font-size: 14.5px;
@@ -808,6 +842,192 @@ const SECTIONS_REL = [
 // ── 主界面 ────────────────────────────────────────────────────────
 
 const VIEWS = { doors: 'doors', novel: 'novel', book: 'book', game: 'game', career: 'career', tavern: 'tavern', tavernChat: 'tavernChat', home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs' }
+
+// ── 开一个新会话去问 ──────────────────────────────────────────────
+//
+// 以前「聊着建」「接着聊」进的是插件自己的访谈页：插件里演一套问法，问答
+// 再由插件拆成卡里的字段。同一套问法在外面（/lifecard-interview 那个 skill）
+// 还有一份，两边慢慢就会走样——这边补了新的问法，那边不知道；用户在哪边问，
+// 得到的东西也不一样。
+//
+// 现在只留一条路：开一个新会话，把 skill 和一句意图摆进它的输入框，用户按
+// 回车才开始问。插件不替用户说话，也不再自己演示一遍。访谈页的代码还留着
+// 当参考（还有它自己的测试），但已经没有入口进得去——入口就是下面这个
+// openInterviewSession。
+//
+// 宿主那边给的是 `uiWorkspace.startSession(workspaceId?, options)`，options
+// 里的 prompt 落在新会话的输入框里，不会自动发送。
+let HOST = null
+// 开新会话最终要走的两样东西：宿主的远程会话控制器（建会话 + 发第一句）和
+// 客户端的 uiWorkspace（把新会话切到眼前）。两者都用 ctx.inject 等就绪，
+// 拿不到就退回草稿法（host 版本不同，能力不同，路不能断）。
+let REMOTE_SESSION = null
+let UI_WORKSPACE = null
+
+/** 三扇门各用哪一套预设。串了就会拿「记录一个真人」的问法去问虚构角色。 */
+const DOOR_PRESET = { real: 'lc-real', tavern: 'lc-tavern', novel: 'lc-novel' }
+
+/** 摆进新会话输入框的那段话。 */
+function interviewPrompt({ about, mode, ask } = {}) {
+  const name = String(about === undefined || about === null ? '' : about).trim()
+  const lines = [
+    '/lifecard-interview',
+    // 一句话说清要做什么。补卡的时候带上「写过的别再问」——不然它会把
+    // 已经写好的部分从头再问一遍，用户得答第二遍。
+    name === '' ? '帮我建一张新的人物卡' : `帮我补一补「${name}」这张卡，已经写过的就别再问了`,
+  ]
+  // 虚构角色要说清是虚构的，不然它会照「记录一个真人」来问，
+  // 连生日、住址这种只对真人有意义的东西也问出来。
+  if (mode === 'tavern') lines.push('这是酒馆里要演的一个虚构角色。')
+  if (mode === 'novel') lines.push('这是小说里的一个虚构角色。')
+  const extra = String(ask === undefined || ask === null ? '' : ask).trim()
+  if (extra !== '') lines.push(extra)
+  return lines.join('\n')
+}
+
+/**
+ * 开一个新会话，输入框里摆好 skill 和一句意图。
+ *
+ * 拿不到 uiWorkspace（老版本宿主，或者它被禁用了）时不静默失败：把那段话
+ * 原样交回去，界面上让用户自己复制到新对话里。功能可以降级，路不能断。
+ */
+function openInterviewSession({ about, mode, ask } = {}) {
+  const prompt = interviewPrompt({ about, mode, ask })
+  const preset = DOOR_PRESET[mode === 'tavern' ? 'tavern' : mode === 'novel' ? 'novel' : 'real']
+  // 这条路要等网络，是异步的；下面几条退路有同步的，调用方两种都接。
+  return openInterviewSessionByServer(prompt, preset)
+}
+
+/**
+ * 正路：让后台建会话、把第一句发出去，客户端再把那个会话切到眼前。
+ *
+ * 后台一定拿得到宿主的会话服务（sessionController）；客户端那侧不一定——
+ * 真机上 uiWorkspace 有时根本不在插件的作用域里，只能看到「这个版本不支持」。
+ * 所以「建」这一步交给后台，「切到眼前」这一步才用客户端的 uiWorkspace。
+ */
+async function openInterviewSessionByServer(prompt, preset) {
+  let made = null
+  try {
+    made = await call('session.open', { preset, text: prompt })
+  } catch (e) {
+    made = null
+  }
+  const id = String(made?.sessionId ?? '')
+  if (made?.ok === true && id !== '') {
+    const focused = focusSession(id)
+    const applied = String(made?.agentPreset ?? '').trim()
+    const notes = []
+    if (applied !== '' && applied !== preset) {
+      notes.push(`这台机器没认「${preset}」这套预设（现在跑的是「${applied}」），去顶部切一下。`)
+    }
+    if (made?.sent !== true) notes.push('新对话建好了，但第一句没能自动发出去，进去后自己发一下。')
+    if (focused !== true) notes.push('新对话在左边的会话列表里，点开它——第一句我已经替你发出去了。')
+    return { ok: true, prompt, preset, sessionId: id, note: notes.length === 0 ? undefined : notes.join(' ') }
+  }
+
+  // 第二条：客户端自己也能建会话（有的宿主把远程能力也暴露给前端）。
+  const remote = pickRemoteSession()
+  if (remote !== null) return openInterviewSessionVia(remote, prompt, preset)
+
+  // 第三条：老宿主只有「摆草稿」这一种能力。
+  return openInterviewSessionDraft(prompt, preset)
+}
+
+/** 把某个会话切到眼前。切不动就说没能切动（会话已经建好了，用户点一下也能进去）。 */
+function focusSession(sessionId) {
+  const ui = UI_WORKSPACE !== null ? UI_WORKSPACE : (HOST === null || HOST === undefined ? undefined : HOST.get?.('uiWorkspace', false))
+  if (ui === undefined || ui === null || typeof ui.openSession !== 'function') return false
+  try {
+    ui.openSession(sessionId)
+    return true
+  } catch (e) {
+    return false
+  }
+}
+
+/** 自己建会话再发第一句（异步）。 */
+async function openInterviewSessionVia(remote, prompt, preset) {
+  {
+    try {
+      const created = await remote.create({ agentPreset: preset })
+      const id = String(created === undefined || created === null ? '' : created.sessionId ?? '')
+      if (id === '') return { ok: false, prompt, preset, reason: '新会话没建起来，再点一次试试' }
+      if (UI_WORKSPACE !== null && typeof UI_WORKSPACE.openSession === 'function') {
+        // 打不开也不要紧：会话已经建好、话也发出去了，它在会话列表里等着。
+        try { UI_WORKSPACE.openSession(id) } catch (e) { /* 忽略 */ }
+      }
+      await remote.prompt({ sessionId: id, mode: 'queue', content: [{ type: 'text', text: prompt }] })
+      const applied = String(created === undefined || created === null ? '' : created.agentPreset ?? '').trim()
+      if (applied !== '' && applied !== preset) {
+        return {
+          ok: true,
+          prompt,
+          preset,
+          sessionId: id,
+          note: `会话开好了，但这台机器没认「${preset}」这套预设（现在跑的是「${applied}」）。在顶部把预设切成它对的那一套再聊。`,
+        }
+      }
+      return { ok: true, prompt, preset, sessionId: id }
+    } catch (e) {
+      // 远程那条路没走通，别让用户白点一次：退回摆草稿，把理由一并说清。
+      const draft = openInterviewSessionDraft(prompt, preset)
+      if (draft.ok === true) {
+        return { ...draft, note: `新会话没直接开起来（${humanizeError(e)}），改成把那句话摆进输入框了，按回车就开始。` }
+      }
+      return { ok: false, prompt, preset, reason: humanizeError(e) }
+    }
+  }
+}
+
+/** 找一个真的能用 startSession 的东西。宿主版本不同，服务可能挂在几个不同的地方。 */
+function pickUiWorkspace() {
+  const got = []
+  const push = (v) => { if (v !== undefined && v !== null) got.push(v) }
+  push(UI_WORKSPACE)
+  try { push(HOST?.get?.('uiWorkspace', false)) } catch (e) { /* 没有就算了 */ }
+  try { push(HOST?.uiWorkspace) } catch (e) { /* 没有就算了 */ }
+  for (const one of got) if (typeof one?.startSession === 'function') return one
+  return null
+}
+
+/** 找一个真的能建会话 / 发消息的东西。 */
+function pickRemoteSession() {
+  const got = []
+  const push = (v) => { if (v !== undefined && v !== null) got.push(v) }
+  push(REMOTE_SESSION)
+  try { push(HOST?.get?.('remote.session', false)) } catch (e) { /* 没有就算了 */ }
+  try { push(HOST?.remote?.session) } catch (e) { /* 没有就算了 */ }
+  for (const one of got) if (typeof one?.create === 'function' && typeof one?.prompt === 'function') return one
+  return null
+}
+
+/** 老宿主的退路：把话摆进新会话的输入框，用户自己按回车。 */
+function openInterviewSessionDraft(prompt, preset) {
+  const ui = pickUiWorkspace()
+  if (ui === null) {
+    // 真没法开的时候，把「查到了什么」一起说出去：不然用户只会看到一句
+    // 「这个版本不支持」，我也没法判断到底是哪一层缺东西。
+    const hasRemote = pickRemoteSession() !== null
+    return {
+      ok: false,
+      prompt,
+      reason: `这个版本没法从这里直接开对话（能建会话：${hasRemote === true ? '有' : '没有'}；能开新对话：没有）。把下面这句复制到新对话里也一样能用。`,
+    }
+  }
+  try {
+    const started = ui.startSession(undefined, {
+      prompt,
+      agentPreset: preset,
+      whenDraftExists: 'replace',
+      clearPreviousDraft: false,
+    })
+    // 有的实现给的是 promise：开不出来也别让界面一直等着。
+    if (started !== undefined && started !== null && typeof started.catch === 'function') started.catch(() => {})
+    return { ok: true, prompt, preset }
+  } catch (e) {
+    return { ok: false, prompt, reason: humanizeError(e) }
+  }
+}
 
 /**
  * tab 组件。接收宿主给的 props（ctx / store / scope / tab / visible）。
@@ -1153,10 +1373,49 @@ function LifeCardTab(props) {
     if (view !== VIEWS.tavern && view !== VIEWS.tavernChat) return
     let gone = false
     call('tavern.list', {})
-      .then((r) => { if (!gone && r?.ok === true && Array.isArray(r.items)) setChats(r.items) })
-      .catch(() => { /* 取不到就空着，不影响开新的一场 */ })
+      .then((r) => {
+        if (gone) return
+        // 读不出来的场次以前是「安静消失」：列表看着少了几场，用户只会以为
+        // 自己记错了。后台早就把读不出来的份数报回来了（bad），这里要说出来。
+        if (r?.ok !== true) {
+          setChatsNote(String(r?.error ?? '').trim() === '' ? '说过的场次没读出来' : String(r.error))
+          return
+        }
+        if (Array.isArray(r.items)) setChats(r.items)
+        const bad = Number(r.bad ?? 0)
+        setChatsNote(bad > 0 ? `有 ${bad} 场读不出来，可能文件坏了。别的场次不受影响。` : null)
+      })
+      .catch(() => { if (!gone) setChatsNote('说过的场次没读出来') })
     return () => { gone = true }
   }, [view])
+
+  // 开不了新会话的时候，把那句话留在界面上让用户自己复制（见 openInterviewSession）。
+  // 这几个 hook 追加在最后：hook 的顺序就是测试里各屏 presets 的槽位，插在中间
+  // 会把后面每一个槽都错开一格。
+  const [handoff, setHandoff] = useState(null)
+  const [chatsNote, setChatsNote] = useState(null)
+  const startInterview = useCallback((opts) => {
+    const started = openInterviewSession(opts === undefined || opts === null ? {} : opts)
+    const settle = (result) => {
+      const done = result === undefined || result === null ? { ok: false, prompt: '', reason: '没能开成新会话' } : result
+      if (done.ok === true) {
+        setHandoff(null)
+        // 预设没被认下来时它自己会带一句 note，那话比我编的「摆好了」有用。
+        flash(done.note !== undefined ? String(done.note) : '已经在新对话里开始问了', done.note === undefined ? 'ok' : 'warn')
+        return
+      }
+      // 不静默：把「为什么没开成」和「该复制什么」一起摆出来。
+      setHandoff(done)
+    }
+    // openInterviewSession 现在是异步的（要先建会话、再把第一句发出去），
+    // 但同步的返回（老宿主那条退路）也要照旧能用。
+    if (started !== undefined && started !== null && typeof started.then === 'function') {
+      setBusy('interview')
+      started.then((r) => { setBusy(''); settle(r) }).catch((e) => { setBusy(''); settle({ ok: false, prompt: '', reason: humanizeError(e) }) })
+      return
+    }
+    settle(started)
+  }, [flash])
 
   /** 打开一本书，进到那一屏。 */
   const openBook = (book) => {
@@ -1177,6 +1436,28 @@ function LifeCardTab(props) {
     } catch (e) { setError(humanizeError(e)) }
   }
 
+  /**
+   * 从书架上拿掉一整本书。
+   *
+   * `novel.delete` 后台一直都有，界面从来没接过——书写歪了、试写了一本不想留的，
+   * 用户只能在文件管理器里翻目录，而界面上那本书永远挂在书架上。
+   * 确认要说清「章也一起没」：这一下是连目录一起删，不是收起来。
+   */
+  const deleteBook = async (book) => {
+    const title = String(book?.title ?? book?.id ?? '').trim()
+    const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
+      ? window.confirm(`把《${title}》这本书拿掉？\n\n已经写好的章也一起删，删了就真没了。\n只想先别看它的话，留着不动就行——书架上多一本不碍事。`)
+      : true
+    if (ok !== true) return
+    try {
+      const r = await call('novel.delete', { id: String(book?.id ?? '') })
+      if (r?.ok !== true) { setError(r?.error ?? '这本书没能删掉'); return }
+      const fresh = await call('novel.books', {})
+      if (fresh?.ok === true && Array.isArray(fresh.books)) setBooks(fresh.books)
+      flash(`拿掉了《${title}》`)
+    } catch (e) { setError(humanizeError(e)) }
+  }
+
   const pickDoor = (next) => {
     setDoor(next)
     setError(null)
@@ -1191,20 +1472,61 @@ function LifeCardTab(props) {
   /**
    * 删一张卡。
    *
-   * 先问一句：删卡是不可逆的（后台只写墓碑，界面上收不回来）。
-   * 问的时候要说清「哪些东西会跟着没」——关系史、口癖这些都在卡里，
-   * 而材料是另一份文件，不会跟着删。
+   * 先问一句，并且要说清「删了以后它去哪了」：不是烧掉，是从列表里撤下去，
+   * 原文还留在磁盘上——首页下面「已经撤掉的」里能找回来，也能彻底删掉。
+   * 以前这里写的是「界面上收不回来」，那句话现在是错的，别改回去。
+   * 材料是另一份文件，不跟着删。
    */
   const deleteCard = async (card) => {
     const name = String(card?.name ?? '').trim() === '' ? '这张卡' : `「${card.name}」`
     const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
-      ? window.confirm(`确定删掉${name}吗？\n\n卡里写的东西（关系史、口癖、能力…）一起删掉，界面上收不回来。\n材料是另一份文件，不受影响。`)
+      ? window.confirm(`确定删掉${name}吗？\n\n删掉之后，列表和 AI 都看不见它了；想反悔，去下面「已经撤掉的」里点「放回来」。\n材料是另一份文件，不受影响。`)
       : true
     if (ok !== true) return
     try {
       const r = await call('card.delete', { path: card?.path, reason: '用户在列表里删掉' })
       if (r?.ok !== true) { setError(r?.error ?? '没删掉'); return }
-      flash(`删掉了${name}`, 'ok')
+      flash(`删掉了${name}。要反悔就去下面「已经撤掉的」里点「放回来」`, 'ok')
+      await refresh()
+    } catch (e) { setError(humanizeError(e)) }
+  }
+
+  /** 撤掉的那张卡的称呼：卡上没名字就按文件名给一个，界面上不摆路径。 */
+  const withdrawnName = (item) => (String(item?.name ?? '').trim() === '' ? cardNameFromPath(item?.path) : String(item.name))
+
+  /**
+   * 把一张撤掉的卡放回来。
+   *
+   * 原文一直在磁盘上，所以这一步不发「重建」，只是让它重新出现在列表里。
+   * 不弹确认：这是往回走的那一步，点错了再删一次就行。
+   */
+  const restoreCard = async (card) => {
+    if (card?.path === undefined) return
+    try {
+      const r = await call('card.restore', { path: card.path })
+      if (r?.ok !== true) { setError(r?.error ?? '没能放回来'); return }
+      flash(`「${withdrawnName(card)}」放回来了`, 'ok')
+      await refresh()
+    } catch (e) { setError(humanizeError(e)) }
+  }
+
+  /**
+   * 彻底删掉一张撤掉的卡：原文一起删，删了没法反悔。
+   *
+   * 和「删掉」是两件不同的事，所以文案不能只写「确定删除」——
+   * 用户得知道这一次是连磁盘上的原文都没了。
+   */
+  const purgeCard = async (card) => {
+    if (card?.path === undefined) return
+    const name = `「${withdrawnName(card)}」`
+    const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
+      ? window.confirm(`确定把${name}彻底删掉吗？\n\n磁盘上的原文一起删，删了就真没了。\n（只是想让它先别出现？点「放回来」就行，不用删。）`)
+      : true
+    if (ok !== true) return
+    try {
+      const r = await call('card.purge', { path: card.path })
+      if (r?.ok !== true) { setError(r?.error ?? '没删掉'); return }
+      flash(`彻底删掉了${name}`, 'ok')
       await refresh()
     } catch (e) { setError(humanizeError(e)) }
   }
@@ -1399,8 +1721,12 @@ function LifeCardTab(props) {
           state, listing, preset: interviewFor, onRecorded: refresh, flash, mode,
           onDone: () => { setInterviewFor(null); setMaterialFor(null); setView(VIEWS.home); refresh() },
           onAnalyze: (about) => {
-            const list = Array.isArray(about?.materials) ? about.materials.filter((x) => typeof x === 'string' && x !== '') : []
-            setMaterialFor(list.length > 0 ? list : null)
+            // 这一场一路记下来的材料。空清单要照着「一份不读」传下去：
+            // 折成 null 就是「全读」，用户刚聊完一个虚构角色，一点「开始读」
+            // 就把别人的材料一起读了。null 只留给「没指定」——那时候才全读。
+            const raw = about?.materials
+            const list = Array.isArray(raw) ? raw.filter((x) => typeof x === 'string' && x !== '') : null
+            setMaterialFor(list)
             setInterviewFor(about ?? null)
             setView(VIEWS.analyze)
           },
@@ -1410,6 +1736,8 @@ function LifeCardTab(props) {
         // about 是个字符串，这个人还没建卡也能分析——分析结果会进提案，
         // 采纳时才建卡。
         return h(MemoryView, {
+          mode,
+          onStartInterview: startInterview,
           onBack: () => { setInterviewFor(null); setMaterialFor(null); setView(VIEWS.home) },
           onDone: (about) => {
             // 只认那份刚写出来的材料。不带 path 的话分析页不勾任何材料，
@@ -1440,7 +1768,7 @@ function LifeCardTab(props) {
         // 直接退回首页，用户点了没反应，还以为坏了。现在把清单单独摊开。
         return activeCard === null
           ? proposal === null
-            ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook })
+            ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
             : h('div', { className: 'lc-pad lc-stack' },
                 proposal.about === undefined || String(proposal.about).trim() === ''
                   ? null
@@ -1481,7 +1809,9 @@ function LifeCardTab(props) {
                 } catch (e) { setError(humanizeError(e)) }
               },
               onDeleted: async () => { setActiveCard(null); setView(VIEWS.home); await refresh() },
-              onInterview: (preset) => { setInterviewFor(preset); setView(VIEWS.interview) },
+              // 补卡不再进插件里的访谈页，改成开一个新会话（见 openInterviewSession）。
+              mode,
+              onStartInterview: startInterview,
               onAnalyze: () => { setInterviewFor({ id: activeCard.data?.id, name: activeCard.data?.name }); setView(VIEWS.analyze) },
             })
       case VIEWS.newCard:
@@ -1500,7 +1830,7 @@ function LifeCardTab(props) {
         })
       case VIEWS.world:
         return activeWorld === null
-          ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook })
+          ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
           : h(WorldView, {
               world: activeWorld,
               listing,
@@ -1525,7 +1855,7 @@ function LifeCardTab(props) {
       case VIEWS.jobs:
         return h(JobsView, { onBack: () => setView(VIEWS.home), flash })
       default:
-        return h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook })
+        return h(HomeView, { state, listing, mode, onStartInterview: startInterview, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
     }
   }
 
@@ -1540,6 +1870,31 @@ function LifeCardTab(props) {
               h('div', { style: { whiteSpace: 'pre-wrap' } }, humanizeError(error)),
               h('div', { style: { marginTop: 6 } }, h(Btn, { size: 'sm', onClick: () => setError(null) }, '知道了'))))
         : null,
+      // 开不了新会话时（老版本宿主）退化成这样：话摆在这儿，用户自己复制过去。
+      // 不静默失败——点了没反应，比说清「这一步要你手动搬一下」更让人困惑。
+      handoff === null || handoff.ok === true ? null : h('div', { style: { padding: '10px 12px 0' }, 'data-interview-handoff': '1' },
+        h(Note, { tone: 'warn', icon: 'warning' },
+          h('div', null, '这个版本不支持直接开会话，把下面这句复制到新对话里：'),
+          h('textarea', {
+            readOnly: true,
+            rows: 3,
+            spellCheck: false,
+            className: 'lc-input',
+            value: String(handoff.prompt ?? ''),
+            style: { marginTop: 8, width: '100%', resize: 'vertical', boxSizing: 'border-box' },
+            onFocus: (e) => {
+              try { e?.target?.select?.() } catch (err) { /* 选不中也还能手动复制 */ }
+            },
+          }),
+          h('div', { className: 'lc-row', style: { marginTop: 8 } },
+            h(Btn, {
+              size: 'sm',
+              icon: 'check',
+              onClick: () => {
+                try { globalThis?.navigator?.clipboard?.writeText?.(String(handoff.prompt ?? '')) } catch (err) { /* 复制不了就手动选 */ }
+              },
+            }, '复制'),
+            h(Btn, { size: 'sm', onClick: () => setHandoff(null) }, '知道了')))),
       body(),
     ),
   )
@@ -1622,7 +1977,7 @@ const DOORS = [
     id: 'real', icon: 'people', tone: 'interview',
     title: '真实人物记录',
     desc: '身边的人：他做过什么、怎么说话、你们之间发生过什么。',
-    bullets: ['聊着建，把他说的话记下来', '贴材料，让 AI 读出能核实的内容', '找工作：贴招聘说明、练面试'],
+    bullets: ['聊一聊，它会问你几个具体的问题', '贴材料，让 AI 读出能核实的内容', '找工作：贴招聘说明、练面试'],
     modules: ['人物卡', '访谈记录', '材料与建议', '简历与规划'],
   },
   {
@@ -1818,11 +2173,12 @@ function DoorsView({ onPick, state, features, hidden, onHide, onShow }) {
         ),
       )),
     ),
-    workspace === '' ? null : h('div', { className: 'lc-meta', style: { flex: '0 0 auto', paddingTop: 10 } }, '档案就在你选的那个文件夹里'),
+    workspace === '' ? null : h('div', { className: 'lc-meta', style: { flex: '0 0 auto', paddingTop: 10 } },
+      '档案就在你选的那个文件夹里。想让它开口说话，聊天前先在顶部把预设切成「LC 酒馆 / LC 小说 / LC 现实」——那张卡接在预设后面，不切预设带不进去。'),
   )
 }
 
-function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial, chats, onOpenChat, onForkCard, onDeleteCard, onEditCard, books, onOpenBook, onCreateBook, pinId, onPickPin }) {
+function HomeView({ state, listing, mode, onStartInterview, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial, chats, onOpenChat, onForkCard, onDeleteCard, onRestoreCard, onPurgeCard, onEditCard, books, onOpenBook, onCreateBook, onDeleteBook, chatsNote, pinId, onPickPin }) {
   // 这扇门是不是「真实人物记录」。写小说、酒馆那两扇门里不该出现
   // 「贴一份招聘说明」「从记忆里认人」这类动作——那是记录真人才用得上的。
   const isReal = mode !== 'novel' && mode !== 'tavern'
@@ -1831,6 +2187,10 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
   const fictionActionTone = mode === 'tavern' ? 'analyze' : 'import'
   const [q, setQ] = useState('')
   const cards = listing?.cards ?? []
+  // 「已经撤掉的」：删过的卡还留在磁盘上，列表接口单独把它们带回来。
+  // 没有这一栏的时候，删掉的卡在界面上就彻底消失了——想反悔没入口，
+  // 想清理也找不到那条路，用户只能去翻文件夹。
+  const withdrawn = Array.isArray(listing?.withdrawn) ? listing.withdrawn : []
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase()
     if (needle === '') return cards
@@ -1851,7 +2211,10 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
     const isFiction = hit !== undefined && hit.kind === 'fictional'
     return isFiction === (mode !== 'real')
   })
-  const materials = listing?.materials ?? []
+  // 备份文件和临时文件不是材料：存材料时是先写临时文件再改名，改名那一步
+  // 被打断就会留下 `.妈妈.md.bak-1234`。它一直被当成一份材料摆在列表里，
+  // 用户看到两份「妈妈」、点开其中一份是空的，还以为自己写丢了。
+  const materials = (listing?.materials ?? []).filter(isRealMaterial)
   // 搜索也要筛材料：搜一个人的名字，上面卡筛掉了、下面材料还整整齐齐列着，
   // 看着像「搜到了这一份」，其实根本没筛。
   const shownMaterials = useMemo(() => {
@@ -1892,6 +2255,24 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
   const [showRealForRole, setShowRealForRole] = useState(false)
   // 正在问「要不要复制一份来演」的那张卡
   const [forkAsk, setForkAsk] = useState(null)
+  // 「已经撤掉的」默认收起来：它不该跟正常的卡抢位置，但入口必须看得见。
+  const [showWithdrawn, setShowWithdrawn] = useState(false)
+  // 搜索也要筛这一栏。只筛上面的卡、下面还整整齐齐列着撤掉的卡，
+  // 看着像「搜到了」，其实没筛——上面材料那栏踩过同一个坑。
+  const shownWithdrawn = useMemo(() => {
+    const needle = q.trim().toLowerCase()
+    if (needle === '') return withdrawn
+    return withdrawn.filter((w) => `${w.name ?? ''} ${w.id ?? ''}`.toLowerCase().includes(needle))
+  }, [withdrawn, q])
+  const withdrawnBlock = shownWithdrawn.length === 0
+    ? null
+    : h(WithdrawnSection, {
+        items: shownWithdrawn,
+        open: showWithdrawn,
+        onToggle: () => setShowWithdrawn(!showWithdrawn),
+        onRestore: onRestoreCard,
+        onPurge: onPurgeCard,
+      })
 
   // 第一次进来时那段介绍。只出现一次，点过「知道了」就不再出现。
   // 刻意只有四五行：介绍写长了没人读，读的人也只想知道「这玩意儿干吗的、从哪儿下手」。
@@ -1916,7 +2297,7 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
   // 「还没有档案」这句只在真的什么都没有时说。以前只看卡和世界书，
   // 于是刚把一段文字存成材料、还没建卡的人回首页会看到一片空白，
   // 以为刚才没存上，又贴一遍——材料就多出一份重复的。
-  if (cards.length === 0 && allWorlds.length === 0 && materials.length === 0 && proposals.length === 0) {
+  if (cards.length === 0 && withdrawn.length === 0 && allWorlds.length === 0 && materials.length === 0 && proposals.length === 0) {
     // 同一个空库，三扇门该给三条不同的路：写小说的人不需要「访谈」，
     // 记录真人的人也不需要「先写一章」。
     return h('div', { className: 'lc-pad lc-stack' },
@@ -1926,17 +2307,19 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
         h('h3', null, isReal ? '还没有档案' : '还什么都没有'),
         h('div', { className: 'lc-meta' }, '选一个开始的方式，随时可以换别的：'),
       ),
-      // 三扇门第一块都给「聊着建」：那是这个插件最好上手的入口。
-      // 差别只在说什么话——建真人问的是「他是我的什么人」，
-      // 建角色问的是「TA 一张嘴什么感觉」。
+      // 三扇门第一块都是「聊一聊」：那是这个插件最好上手的入口。
+      //
+      // 点了之后开的不是插件里的访谈页，而是一个新会话——问法那一套东西
+      // 在 /lifecard-interview 那个 skill 里，只有一份；这边再演一遍，
+      // 两边早晚会不是同一个东西。
       h(Action, {
         tone: fictionActionTone,
         icon: 'chat',
-        title: isReal ? '陪我聊聊，边聊边建' : (mode === 'tavern' ? '聊着立一个能演的角色' : '聊着立一个小说角色'),
+        title: '聊一聊（新开一个对话）',
         desc: isReal
-          ? '它会问几个具体的问题。答不上来就跳过，一句也不想说也行。'
-          : '先问 TA 怎么说话、什么情况下会变脸，比填空白表快。',
-        onClick: () => onNavigate(VIEWS.interview),
+          ? '会在新对话里问，答完 AI 自己写进卡里。答不上来就跳过，一句也不想说也行。'
+          : '会在新对话里问，答完 AI 自己写进卡里。先问 TA 怎么说话、什么情况下会变脸，比填空白表快。',
+        onClick: () => onStartInterview({ about: '', mode }),
       }),
       h(Action, {
         tone: 'import', icon: 'import',
@@ -1960,6 +2343,17 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
           : '小说片段、人物小传、你写的设定都行。读出来的东西先给你看，你点了才写进卡。',
         onClick: () => onNavigate(VIEWS.import),
       }),
+      // 空库的时候也有话要说：说过的场次读不出来、有文件读不了，
+      // 这些跟「有没有卡」无关，不能因为还没建档就当没这回事。
+      mode === 'tavern' && String(chatsNote ?? '').trim() !== ''
+        ? h(Note, { tone: 'warn', icon: 'warning' }, String(chatsNote))
+        : null,
+      (listing?.errors ?? []).length > 0
+        ? h(Note, { tone: 'warn', icon: 'warning' },
+            `有 ${listing.errors.length} 个文件读不了${unreadableNames(listing.errors) === '' ? '' : `（${unreadableNames(listing.errors)}）`}，没影响别的。`)
+        : null,
+      // 卡全删光的时候这一屏尤其重要：不给这一段，「还没有档案」就是死结。
+      withdrawnBlock,
     )
   }
 
@@ -1971,7 +2365,7 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
     ),
 
     h('div', { className: 'lc-row', style: { marginTop: 2 } },
-      h(Btn, { tone: isReal ? 'interview' : fictionActionTone, size: 'sm', icon: 'chat', onClick: () => onNavigate(VIEWS.interview) }, isReal ? '聊着建' : '聊着立一个人'),
+      h(Btn, { tone: isReal ? 'interview' : fictionActionTone, size: 'sm', icon: 'chat', onClick: () => onStartInterview({ about: '', mode }) }, '聊一聊（新开一个对话）'),
       h(Btn, { tone: 'import', size: 'sm', icon: 'import', onClick: () => onNavigate(VIEWS.import) }, '导入'),
       isReal
         ? h(Btn, { tone: 'analyze', size: 'sm', icon: 'person', onClick: () => onNavigate(VIEWS.memory), title: '从你写过的记忆里认出身边的人' }, '从记忆里认人')
@@ -1989,6 +2383,8 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
         ? h(Btn, { tone: 'analyze', size: 'sm', icon: 'spark', onClick: () => onNavigate(VIEWS.analyze) }, isReal ? `整理 ${materials.length} 份材料` : `读那 ${materials.length} 段材料`)
         : null,
     ),
+    // 按钮上一句「新开一个对话」，总会有人以为点完还在这里问。
+    h('div', { className: 'lc-meta' }, '会在新对话里问，答完 AI 自己写进卡里'),
 
     // 一眼看到「这里有多少东西」：以前首页只有标题和一排按钮，一大片空。
     // 数字本身就是内容，也让人知道还有多少没用起来。
@@ -2028,15 +2424,18 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
           (books ?? []).length === 0
             ? h('div', { className: 'lc-meta', style: { lineHeight: 1.7 } },
                 '还没有书。新建一本，让 AI 先想大纲，再一章一章写。')
-            : h('div', { className: 'lc-stack' }, (books ?? []).map((b) => h('button', {
+            : h('div', { className: 'lc-stack' }, (books ?? []).map((b) => h('div', {
                 key: b.id,
                 className: 'lc-card-item',
-                type: 'button',
-                onClick: () => onOpenBook?.(b),
-                style: { textAlign: 'left', font: 'inherit', color: 'inherit', width: '100%' },
+                style: { cursor: 'default' },
               },
                 h('div', { className: 'lc-avatar', style: { background: 'var(--lc-import-soft)', color: 'var(--lc-import)' } }, h(Icon, { name: 'book', size: 14 })),
-                h('div', { className: 'lc-grow', style: { minWidth: 0 } },
+                h('button', {
+                  className: 'lc-btn ghost',
+                  type: 'button',
+                  onClick: () => onOpenBook?.(b),
+                  style: { flex: 1, minWidth: 0, textAlign: 'left', font: 'inherit', color: 'inherit', background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' },
+                },
                   h('div', { className: 'lc-ellipsis', style: { fontWeight: 650 } }, String(b.title ?? b.id)),
                   h('div', { className: 'lc-meta' },
                     [`${b.chapters ?? 0} 章`, `${Math.max(1, Math.round((b.words ?? 0) / 1000))} 千字`]
@@ -2044,6 +2443,10 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
                       .join(' · ')),
                   String(b.idea ?? '').trim() === '' ? null : h('div', { className: 'lc-meta lc-ellipsis' }, String(b.idea)),
                 ),
+                // 书写歪了、试写一本不想留的：以前界面里没有任何出口，书永远挂在书架上。
+                onDeleteBook === undefined
+                  ? null
+                  : h(Btn, { size: 'sm', ghost: true, icon: 'trash', onClick: () => onDeleteBook(b), title: `不要《${String(b.title ?? b.id)}》了` }, '不要这本了'),
               ))),
           h('div', { className: 'lc-row', style: { marginTop: 8 } },
             h(Btn, { size: 'sm', tone: 'import', icon: 'plus', onClick: () => onCreateBook?.() }, '新建一本书'),
@@ -2149,6 +2552,8 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
         )
       : null,
 
+    withdrawnBlock,
+
     // 材料单独一栏。以前材料只在「更多工具」里报个数字，用户从记忆里提出来
     // 一堆东西之后回首页找不到——不知道存哪了，也没法看、没法删。
     !isReal || shownMaterials.length === 0
@@ -2169,7 +2574,7 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
           ))),
         ),
 
-    q.trim() !== '' && filtered.length === 0 && worlds.length === 0 && shownMaterials.length === 0
+    q.trim() !== '' && filtered.length === 0 && worlds.length === 0 && shownMaterials.length === 0 && shownWithdrawn.length === 0
       ? h('div', { className: 'lc-meta', style: { textAlign: 'center', padding: 12 } }, '没找到。换个词试试？')
       : null,
 
@@ -2199,7 +2604,7 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
               h('div', { className: 'lc-meta' },
                 `${p.accepted} 条可以采用`,
                 (p.adopted ?? 0) > 0 ? ` · 已经写进去 ${p.adopted} 条` : '',
-                p.rejected > 0 ? ` · ${p.rejected} 条没能核实，已丢掉` : '',
+                rejectedWords(p) === '' ? '' : ` · ${rejectedWords(p)}`,
                 ' · ', shortDate(p.generated_at)),
             ),
           ))),
@@ -2212,7 +2617,13 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
       : null,
 
     (listing?.errors ?? []).length > 0
-      ? h(Note, { tone: 'warn', icon: 'warning' }, `有 ${listing.errors.length} 个文件读不了，没影响别的。`)
+      ? h(Note, { tone: 'warn', icon: 'warning' },
+          `有 ${listing.errors.length} 个文件读不了${unreadableNames(listing.errors) === '' ? '' : `（${unreadableNames(listing.errors)}）`}，没影响别的。`)
+      : null,
+
+    // 说过的场次里读不出来的那几场，得说出来：它们以前是安静消失的。
+    mode === 'tavern' && String(chatsNote ?? '').trim() !== ''
+      ? h(Note, { tone: 'warn', icon: 'warning' }, String(chatsNote))
       : null,
 
     // ── 收起来的「更多」──
@@ -2241,6 +2652,72 @@ function HomeView({ state, listing, mode, onOpen, onOpenWorld, onNavigate, onPro
           ),
         )
       : null,
+  )
+}
+
+/**
+ * 「已经撤掉的」这一块。
+ *
+ * 删过的卡并没有从磁盘上消失，只是不再出现在列表、导出和 AI 眼里。
+ * 以前界面上完全没有这一栏，于是两种情况都没路走：
+ * 删错了想找回来，找不到；想彻底清掉，也找不到。
+ *
+ * 这里把三条路一次摆出来：
+ * - 看得见：标题里带张数，展开就是一条一行；
+ * - 放回来：重新回到上面的列表，什么都不用重写；
+ * - 彻底删掉：连磁盘上的原文一起删，删了就真没了，所以要点一次确认。
+ *
+ * 文案只说人话：不写路径、不写文件后缀、不写接口名。
+ */
+function WithdrawnSection({ items, open, onToggle, onRestore, onPurge }) {
+  const rows = Array.isArray(items) ? items : []
+  if (rows.length === 0) return null
+  return h('div', { 'data-withdrawn-section': '' },
+    h('button', {
+      className: 'lc-btn ghost sm',
+      type: 'button',
+      'data-withdrawn-toggle': '',
+      'aria-expanded': open === true,
+      onClick: onToggle,
+      style: { width: '100%', justifyContent: 'flex-start' },
+    },
+      h('span', { style: { display: 'inline-flex', transform: open === true ? 'rotate(90deg)' : 'none', transition: 'transform .12s' } }, h(Icon, { name: 'chevron', size: 12 })),
+      h('span', null, `已经撤掉的 · ${rows.length}`),
+      h('span', { className: 'lc-meta', style: { marginLeft: 4 } }, '（看不见，但原文还在）'),
+      h('span', { style: { flex: '1 1 auto' } }),
+      h('span', { className: 'lc-meta' }, open === true ? '收起' : '展开'),
+    ),
+    open !== true
+      ? null
+      : h('div', { className: 'lc-stack', style: { marginTop: 8 } },
+          h('div', { className: 'lc-meta', style: { lineHeight: 1.7 } },
+            '「放回来」会让它回到上面的列表；「彻底删掉」会把磁盘上的原文一起删掉，删了就真没了。'),
+          rows.map((item) => {
+            const name = String(item?.name ?? '').trim() === '' ? cardNameFromPath(item?.path) : String(item.name)
+            return h('div', {
+              key: item?.path ?? name,
+              className: 'lc-card-item',
+              'data-withdrawn-row': item?.path ?? '',
+              style: { cursor: 'default' },
+            },
+              h('div', { className: 'lc-grow lc-ellipsis', style: { fontWeight: 600, minWidth: 0 } }, name),
+              h('button', {
+                type: 'button',
+                className: 'lc-btn sm',
+                'data-withdrawn-restore': item?.path ?? '',
+                title: `把「${name}」放回来`,
+                onClick: () => onRestore?.(item),
+              }, h(Icon, { name: 'back', size: 13 }), h('span', null, '放回来')),
+              h('button', {
+                type: 'button',
+                className: 'lc-btn sm',
+                'data-withdrawn-purge': item?.path ?? '',
+                title: `把「${name}」彻底删掉`,
+                onClick: () => onPurge?.(item),
+              }, h(Icon, { name: 'trash', size: 13 }), h('span', null, '彻底删掉')),
+            )
+          }),
+        ),
   )
 }
 
@@ -2594,6 +3071,28 @@ function GameView({ bookId, onBack, flash }) {
     } catch (e) { setErr(humanizeError(e)) }
   }
 
+  /**
+   * 删掉某一局存档。
+   *
+   * `game.delete` 后台一直都有，界面没接过——玩过几局之后，「之前玩到一半的」
+   * 会一直往下堆，试一下就走的那几局也删不掉。
+   */
+  const removePlay = async (row) => {
+    const said = String(row?.scene ?? '').trim() === '' ? '那一局' : String(row.scene)
+    const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
+      ? window.confirm(`把「${said}」这一局删掉？\n\n走了 ${Number(row?.turns ?? 0)} 步，删了就真没了，接不回来。\n已经写成某一章的内容不受影响，那些章还在。`)
+      : true
+    if (ok !== true) return
+    setErr(null)
+    try {
+      const r = await call('game.delete', { book: bookId, id: String(row?.id ?? '') })
+      if (r?.ok !== true) { setErr(r?.error ?? '这一局没删掉'); return }
+      if (play !== null && play.id === row?.id) setPlay(null)
+      await loadPlays()
+      flash?.('删掉了那一局')
+    } catch (e) { setErr(humanizeError(e)) }
+  }
+
   useEffect(() => {
     let gone = false
     loadPlays()
@@ -2644,10 +3143,11 @@ function GameView({ bookId, onBack, flash }) {
         ? null
         : h('div', { className: 'lc-stack', style: { gap: 6, marginTop: 10 } },
             h('div', { className: 'lc-fhint' }, `之前玩到一半的 · ${plays.length}`),
-            plays.map((row) => h(Btn, {
-              key: row.id, block: true, size: 'sm', icon: 'history',
-              onClick: () => open(row),
-            }, `${String(row.scene ?? '').trim() === '' ? '那一局' : String(row.scene)} · 走了 ${Number(row.turns ?? 0)} 步`)),
+            plays.map((row) => h('div', { key: row.id, className: 'lc-row', style: { gap: 6 } },
+              h(Btn, { block: true, size: 'sm', icon: 'history', onClick: () => open(row) },
+                `${String(row.scene ?? '').trim() === '' ? '那一局' : String(row.scene)} · 走了 ${Number(row.turns ?? 0)} 步`),
+              h(Btn, { size: 'sm', ghost: true, icon: 'trash', title: '删掉这一局', onClick: () => removePlay(row) }, '删掉这一局'),
+            )),
           ),
       err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
     )
@@ -2736,16 +3236,31 @@ function CareerView({ onBack, flash }) {
   const [err, setErr] = useState(null)
   const [dirty, setDirty] = useState(false)
 
+  /** 把读回来的东西摆到界面上。读不出来就照实说，别让它只停在转圈上。 */
+  const applyRead = (r) => {
+    if (r?.ok !== true) { setErr(r?.error ?? '你的简历这一份读不出来'); return }
+    setProfile(buildCareerForm(r.profileSections ?? {}))
+    setGoal(String(r.plan?.goal ?? ''))
+    setHorizon(String(r.plan?.horizon ?? '1年'))
+  }
+
+  /**
+   * 读一次自己的简历。首次进来和「再试一次」走的是同一段。
+   *
+   * 以前「再试一次」只写了 `call('career.get', {})`，返回值被丢掉——点了以后
+   * 界面还是空着转圈，跟没点一样，用户只能一直点下去。
+   */
+  const load = async () => {
+    setErr(null)
+    try {
+      applyRead(await call('career.get', {}))
+    } catch (e) { setErr(humanizeError(e)) }
+  }
+
   useEffect(() => {
     let gone = false
     call('career.get', {})
-      .then((r) => {
-        if (gone) return
-        if (r?.ok !== true) { setErr(r?.error ?? '你的简历这一份读不出来'); return }
-        setProfile(buildCareerForm(r.profileSections ?? {}))
-        setGoal(String(r.plan?.goal ?? ''))
-        setHorizon(String(r.plan?.horizon ?? '1年'))
-      })
+      .then((r) => { if (!gone) applyRead(r) })
       .catch((e) => { if (!gone) setErr(humanizeError(e)) })
     return () => { gone = true }
   }, [])
@@ -2784,7 +3299,7 @@ function CareerView({ onBack, flash }) {
         ? h(Spinner)
         : h('div', { className: 'lc-stack' },
             h(Note, { tone: 'err', icon: 'warning' }, err),
-            h(Btn, { block: true, onClick: () => { setErr(null); call('career.get', {}) } }, '再试一次'),
+            h(Btn, { block: true, onClick: () => { load() } }, '再试一次'),
           ),
     )
   }
@@ -2942,6 +3457,29 @@ function BookView({ bookId, onBack, flash }) {
     await openChapter(index)
   }
 
+  /**
+   * 删掉某一章。
+   *
+   * `novel.chapter.delete` 后台一直都有，界面从来没调过——写歪了一章，
+   * 用户只能去文件夹里找那个文件。删的是正文本身，不是「收起来」。
+   */
+  const removeChapter = async (c) => {
+    const n = Number(c?.index ?? 0)
+    const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
+      ? window.confirm(`把第 ${n} 章删掉？\n\n这一章的正文一起删，删了就真没了。别的章不受影响；大纲里那一行还在，你可以重写。`)
+      : true
+    if (ok !== true) return
+    setErr(null)
+    setBodyDirty(false)
+    try {
+      const r = await call('novel.chapter.delete', { id: bookId, index: n })
+      if (r?.ok !== true) { setErr(r?.error ?? '这一章没删掉'); return }
+      flash?.(`删掉了第 ${n} 章`)
+      // 重新读一遍这本书：章列表少一条，正文换成还在的那一章。
+      await load(n > 1 ? n - 1 : 0)
+    } catch (e) { setErr(humanizeError(e)) }
+  }
+
   useEffect(() => { load(0) }, [bookId])
 
   const doPlan = async () => {
@@ -3081,6 +3619,28 @@ function BookView({ bookId, onBack, flash }) {
         : null,
     ),
 
+    // ── 已经写过的章 ──
+    // 以前这一块没有：写了几章之后想回头删掉某一章，界面上根本没有落脚的地方。
+    chapters.length === 0
+      ? null
+      : h('div', { className: 'lc-sec' },
+          h('div', { className: 'lc-row' },
+            h('div', { className: 'lc-grow' }, h('span', { style: { fontWeight: 650 } }, `已经写过的章 · ${chapters.length}`)),
+            h('span', { className: 'lc-meta' }, '点一章就能翻过去'),
+          ),
+          h('div', { className: 'lc-stack', style: { gap: 4, marginTop: 6 } },
+            chapters.map((c) => h('div', { key: c.index, className: 'lc-row', style: { gap: 6 } },
+              h(Btn, {
+                size: 'sm', icon: 'book',
+                tone: Number(c.index) === Number(chapterIndex) ? 'primary' : undefined,
+                onClick: () => { goChapter(Number(c.index)) },
+              }, `第 ${c.index} 章${String(c.title ?? '').trim() === '' ? '' : ` · ${String(c.title).slice(0, 16)}`}`),
+              h('div', { className: 'lc-grow' }),
+              h(Btn, { size: 'sm', ghost: true, icon: 'trash', onClick: () => removeChapter(c) }, '删掉这一章'),
+            )),
+          ),
+        ),
+
     // ── 第二段：写这一章 ──
     h('div', { className: 'lc-sec' },
       h('div', { className: 'lc-row' },
@@ -3171,6 +3731,10 @@ function TavernView({ chat, onChat, onBack, flash }) {
   // 「挑几句写进卡里」。同样排在最后。
   const [exBusy, setExBusy] = useState(false)
   const [exNote, setExNote] = useState('')
+  // 这一张卡现在读不出来了（被删掉、被挪走、文件坏了）——后台照样回话，
+  // 但它手上没有这张卡，演出来的就不是卡上那个人。以前这一句没人说，
+  // 用户只会觉得「TA 今天怎么没性格了」。这一行排在最后，同上。
+  const [cardWarn, setCardWarn] = useState('')
   const turns = Array.isArray(chat?.turns) ? chat.turns : []
   const rawName = String(chat?.card_name ?? '').trim()
   const name = rawName === '' ? 'TA' : rawName
@@ -3188,6 +3752,11 @@ function TavernView({ chat, onChat, onBack, flash }) {
       // 不然用户会以为自己那句话没发出去、再打一遍，最后文件里出现两份。
       if (Array.isArray(r?.turns)) onChat({ ...chat, turns: r.turns })
       if (r?.ok !== true) { setErr(r?.error ?? 'TA 没接上话，过一会儿再试一次'); return }
+      // 后台在卡读不出来时会退化成空 persona 照样回话，并把原因放在 warning 里。
+      // 不说的话，用户看到的只是「TA 变了个性格」，会以为是自己哪里点错了。
+      setCardWarn(String(r?.warning ?? '').trim() === ''
+        ? ''
+        : '这张卡现在读不出来了，这一段没在照卡演。往上看一眼是不是刚删过或者挪过它。')
       setDraft('')
     } catch (e) {
       setErr(humanizeError(e))
@@ -3323,6 +3892,8 @@ function TavernView({ chat, onChat, onBack, flash }) {
       className: 'lc-stack',
       style: { gap: 7, maxHeight: '52vh', overflowY: 'auto', padding: '2px 1px' },
     }, turns.map(bubble)),
+    // 紧贴在对话流末尾：这一段不是照卡演的，必须当场说，不能等用户自己发现。
+    cardWarn === '' ? null : h(Note, { tone: 'warn', icon: 'warning' }, cardWarn),
     memoryText === '' ? null : h(Note, { icon: 'book' },
       h('div', { style: { fontWeight: 650, marginBottom: 3 } }, '前面这些已经收好了'),
       h('div', { style: { whiteSpace: 'pre-wrap' } }, memoryText),
@@ -3405,7 +3976,7 @@ function TavernView({ chat, onChat, onBack, flash }) {
   )
 }
 
-function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, onInterview, onAnalyze, worlds, onOpenWorld, initialEditing }) {
+function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, onStartInterview, onAnalyze, worlds, onOpenWorld, initialEditing, mode }) {
   const [editing, setEditing] = useState(initialEditing === true)
   const [busy, setBusy] = useState('')
   const [err, setErr] = useState(null)
@@ -3524,7 +4095,7 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
 
     memFlag === null
       ? null
-      : h('div', { className: 'lc-meta' }, `这条是从你写过的记忆里认出来的，当时只记了半句。还差：${memFlag.missing.join('、')}。点「接着聊」就会专门问这几样。`),
+      : h('div', { className: 'lc-meta' }, `这条是从你写过的记忆里认出来的，当时只记了半句。还差：${memFlag.missing.join('、')}。点「聊一聊」就会专门问这几样。`),
 
     cov === undefined ? null : h('div', null,
       h('div', { className: 'lc-row' },
@@ -3541,12 +4112,22 @@ function CardView({ card, onRefresh, proposal, setProposal, flash, onDeleted, on
     // 主操作：三个指向明确的按钮
     h('div', { className: 'lc-row', style: { marginTop: 2 } },
       h(Btn, { tone: 'primary', icon: 'pencil', onClick: () => setEditing(true) }, '改这张卡'),
-      h(Btn, { tone: 'interview', icon: 'chat', onClick: () => onInterview(buildPreset(data)) }, '接着聊'),
+      // 补这张卡也不在插件里问：开一个新对话，把「补哪一张」说给它听。
+      // 带上名字，新对话里才不用再问一遍「你说的是谁」。
+      h(Btn, {
+        tone: 'interview',
+        icon: 'chat',
+        onClick: () => onStartInterview({
+          about: String(data?.name ?? '').trim(),
+          mode,
+
+        }),
+      }, '聊一聊（新开一个对话）'),
       h(Btn, { tone: 'analyze', size: 'sm', icon: 'spark', onClick: onAnalyze }, '读材料'),
     ),
 
     cov !== undefined && cov.empty.length > 0
-      ? h('div', { className: 'lc-meta' }, '「接着聊」会专门问还空着的那几样。')
+      ? h('div', { className: 'lc-meta' }, '会在新对话里问，答完 AI 自己写进卡里。')
       : null,
 
     issues.length > 0
@@ -4491,7 +5072,7 @@ function ProposalPanel({ proposal, onClose, onApplied, applyBlocked, onBuildCard
       h('span', { className: 'lc-grow' }),
       h('span', { className: 'lc-meta' }, `选了 ${checked} 条`),
     ),
-    h('div', { className: 'lc-meta' }, '每一条下面都引用了材料里的原话。它编不出来的——材料里找不到原文的，已经被丢掉了。'),
+    h('div', { className: 'lc-meta' }, '每一条下面都引用了材料里的原话。它编不出来的——材料里找不到原文的、和前面那条重复的，都已经丢掉了。'),
     adoptedBefore > 0
       ? h('div', { className: 'lc-meta' }, `其中 ${adoptedBefore} 条之前已经写进卡了，不再列在这里。`)
       : null,
@@ -4510,7 +5091,7 @@ function ProposalPanel({ proposal, onClose, onApplied, applyBlocked, onBuildCard
       ),
     ))),
     (proposal.rejected ?? []).length > 0
-      ? h(Note, { tone: 'warn', icon: 'warning' }, `有 ${proposal.rejected.length} 条在材料里找不到原话，已经丢掉了。`)
+      ? h(Note, { tone: 'warn', icon: 'warning' }, `没有采用的有 ${proposal.rejected.length} 条：${rejectedWords(proposal)}。`)
       : null,
     // 名下还没有卡时不给采纳按钮。硬给的话点下去只会得到「找不到这张卡」，
     // 而用户刚刚才看完一整页建议——说清楚比给个坏按钮好。
@@ -4535,6 +5116,36 @@ function ProposalPanel({ proposal, onClose, onApplied, applyBlocked, onBuildCard
             busy ? h(Spinner) : null,
           ),
   )
+}
+
+/**
+ * 被丢掉的条目为什么被丢：引文对不上，还是和同一字段里另一条重复？
+ * 提案里带的是完整 rejected（每条有 reason）；分析结果和提案列表只带计数，
+ * 后端会把计数拆成 rejectedDuplicate / rejectedQuote 两个数回传。
+ * 拿不到原因的时候不许硬说成「找不到原话」——那是在冤枉用户。
+ */
+function rejectedSplit(one) {
+  const raw = one?.rejected
+  if (Array.isArray(raw)) {
+    const dup = raw.filter((r) => String(r?.reason ?? '').includes('重复')).length
+    return { known: true, total: raw.length, dup, quote: raw.length - dup }
+  }
+  const total = Number(raw ?? 0) || 0
+  if (one?.rejectedDuplicate !== undefined && one?.rejectedQuote !== undefined) {
+    return { known: true, total, dup: Number(one.rejectedDuplicate) || 0, quote: Number(one.rejectedQuote) || 0 }
+  }
+  return { known: false, total, dup: 0, quote: total }
+}
+
+/** 把「丢了几条、为什么丢」说成一句人话；一条都没丢时返回空串。 */
+function rejectedWords(one) {
+  const split = rejectedSplit(one)
+  if (!(split.total > 0)) return ''
+  if (!split.known) return `${split.total} 条没能通过校验，已经丢掉（引文对不上，或者和前面那条重复）`
+  const bits = []
+  if (split.dup > 0) bits.push(`${split.dup} 条和前面那条重复，只留了一条`)
+  if (split.quote > 0) bits.push(`${split.quote} 条在材料里找不到原话，已经丢掉`)
+  return bits.join('；')
 }
 
 /** 把字段名翻译成人话。 */
@@ -4680,7 +5291,15 @@ function NewCardView({ state, onCreate, presetName }) {
   )
 }
 
-// ── 访谈 ──────────────────────────────────────────────────────────
+// ── 访谈（已经不走了，留作参考）──────────────────────────────────
+//
+// 这一段是插件自己演的访谈：插件问、插件拆字段、插件写卡。现在所有入口
+// （首页的「聊一聊」、卡片页补信息、材料页）都改成开一个新对话，把
+// /lifecard-interview 那个 skill 带上——问法只有一份，两边不会走样。
+//
+// 所以：任何界面路径都进不到 InterviewView，VIEWS.interview 也没有入口了。
+// 代码和它的测试留着，是因为拆字段、写卡那些逻辑以后可能还要用；真要改
+// 访谈的问法，改的是 skill，不是这里。入口见 openInterviewSession。
 
 function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAnalyze, mode }) {
   // 这扇门建的是现实里的人，还是虚构的角色。两者的第一问本来就不该一样：
@@ -4726,6 +5345,10 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
   // 不然分析页一条都不勾，而「一条都不勾」= 全读——别人的材料会被读进这张卡。
   const [materialPaths, setMaterialPaths] = useState([])
   const scrollRef = useRef(null)
+  // 开局失败要收掉刚建的那张空卡。收不掉的时候（比如超过十分钟窗口）它不是
+  // 一句道歉能了事的：列表里会留一张同名空卡，下次同名建卡就撞
+  // 「已经有一张叫…」。所以得记下来，并给一个能点过去的地方。
+  const [stuckCard, setStuckCard] = useState(null)
 
   // 宿主给什么就用什么；一个都没有（还没重启、旧版宿主）就用本地这份。
   const relations = (state?.relations?.length ?? 0) > 0 ? state.relations : RELATION_FALLBACK
@@ -4762,7 +5385,7 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
       .split(/[、,，;；\s]+/)
       .map((s) => s.trim())
       .filter((s) => s !== '')
-    setBusy(true); setErr(null)
+    setBusy(true); setErr(null); setStuckCard(null)
     try {
       const id = preset?.id ?? safeId(targetName)
       // 先按 id 精确匹配，再按名字兜底。顺序不能反：酒馆里「复制一份来演」
@@ -4826,10 +5449,21 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
         // 问题没准备出来（多半是 AI 那边没响应）。这时候刚建的那张空卡要收回去：
         // 留着它就是列表里一张名字对、点开什么都没有的卡，用户下次还会再建一张。
         // 本来就有的卡不动——那张卡上有他自己写的东西。
+        let leftover = false
         if (existing === undefined && typeof made?.path === 'string' && made.path !== '') {
-          try { await call('card.delete', { path: made.path, reason: '访谈没能开始，撤掉这次建的空卡' }) } catch (e) { /* 撤不掉也不该挡住这句话 */ }
+          // 用 discard 而不是 delete：这张卡从没进过列表，写墓碑会占住名字，
+          // 用户马上换个名字重来时就会撞上「这个名字被一张已经删掉的卡占着」。
+          try {
+            const dr = await call('card.discard', { path: made.path })
+            // 收不掉就记一笔。以前这里连返回值都不看，界面只说「已经撤掉了」，
+            // 用户回列表却看见一张空卡，还以为是新问题。
+            if (dr?.ok !== true) leftover = true
+          } catch (e) { leftover = true }
         }
-        setErr(`${p?.error ?? '没法准备问题'}。${existing === undefined ? '刚才建的那张空卡已经撤掉了，' : ''}过一会儿再点一次「开始」。`)
+        setStuckCard(leftover ? { name: targetName } : null)
+        setErr(leftover
+          ? `${p?.error ?? '没法准备问题'}。刚才建的那张空卡没能收走，去列表里把它删掉再重试。`
+          : `${p?.error ?? '没法准备问题'}。${existing === undefined ? '刚才建的那张空卡已经撤掉了，' : ''}过一会儿再点一次「开始」。`)
         setPhase('pick')
         return
       }
@@ -4845,6 +5479,10 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
   }
 
   const advance = async (status, reason) => {
+    // 正记着的时候再点一次，会把同一题记两遍、还多跳一题——
+    // 用户看到的就是「答案和题目错位」。按键已经 disabled，
+    // 但键盘回车和连点仍可能挤进来，所以这里再挡一道。
+    if (busy === true) return
     if (current === null) return
     const q = current
     setBusy(true); setErr(null)
@@ -4857,6 +5495,7 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
         status,
         reason,
         fills: q.fills,
+        options: q.options,
       })
       // 记不下来就别往下走。以前这里不看结果：盘写不进去（文件夹被挪走、
       // 变成只读）时界面照样把这一问答进对话、照样跳下一题，用户答了半小时，
@@ -4877,14 +5516,14 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
         setLog((prev) => [...prev, { role: 'bot', text: q.ask, options: q.options }, { role: 'me', text: status === 'skipped' ? (reason === 'sealed' ? '（这个不想说）' : '（跳过）') : '（以后再说）' }])
       }
       setAnswer('')
-      // 队列推进
-      const rest = queue.slice(1)
+      // 队列推进：按「这一题不在队里了」来算，不靠 slice(1) 的位置假设
+      const rest = queue.filter((item) => item.id !== q.id)
       if (rest.length === 0) {
         const p = await call('interview.plan', { about: aboutId, relation, limit: 3, kind: fiction ? 'fictional' : 'real' })
         // 没问着问题不等于问完了。以前这里不看结果：AI 没连上、模型抽风、
         // 文件夹读不出来，界面都会直接跳到结束页，还写「现在写满了 undefined%」。
         if (p?.ok !== true) {
-          setErr(`${p?.error ?? '想不出下一题'}。刚才那一句已经记下了，这里是没接上——过一会儿点「再问一题」接着来。`)
+          setErr(`${p?.error ?? '想不出下一题'}。刚才那一句已经记下了，这里是没接上——过一会儿点下面「再问一题」接着来。`)
           return
         }
         setPlan(p)
@@ -4901,6 +5540,24 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
         setCurrent(rest[0])
       }
       await onRecorded()
+    } catch (e) {
+      setErr(humanizeError(e))
+    } finally { setBusy(false) }
+  }
+
+  // 队列走空了、但下一组问题没要到（模型没连上/抽风）时的退路。
+  // 以前错误文案让人点「再问一题」，界面上根本没有这个按钮，
+  // 用户只能重开一场或者干脆放弃。
+  const askMore = async () => {
+    if (busy === true) return
+    setBusy(true); setErr(null)
+    try {
+      const p = await call('interview.plan', { about: aboutId, relation, limit: 3, kind: fiction ? 'fictional' : 'real' })
+      if (p?.ok !== true) { setErr(p?.error ?? '这会儿想不出下一题，过一会儿再点一次。'); return }
+      setPlan(p)
+      setQueue(p.next ?? [])
+      setCurrent((p.next ?? [])[0] ?? null)
+      if ((p.next ?? []).length === 0) { setPhase('done'); await onRecorded() }
     } catch (e) {
       setErr(humanizeError(e))
     } finally { setBusy(false) }
@@ -5022,6 +5679,16 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
         : h('div', { className: 'lc-meta' },
             relations.find((r) => r.id === relation)?.hint ?? '随便点一个最贴的。这一句只决定先问什么，不决定他的身份。'),
       err === null ? null : h(Err, { text: err }),
+      // 空卡没被收走：给一条能走的路，不是让人自己去列表里翻。
+      stuckCard === null
+        ? null
+        : h('div', { className: 'lc-note' },
+            h('div', { style: { lineHeight: 1.7 } },
+              `「${String(stuckCard.name ?? '').trim() === '' ? '刚才建的那张卡' : String(stuckCard.name)}」那张空卡还在列表里。`),
+            h('div', { className: 'lc-row', style: { marginTop: 8, gap: 6 } },
+              h(Btn, { size: 'sm', icon: 'list', onClick: () => { setStuckCard(null); setErr(null); onDone() } }, '去列表里删掉它'),
+            ),
+          ),
       h(Btn, { tone: fiction ? fictionTone : 'interview', big: true, block: true, onClick: start, disabled: busy, icon: 'send' }, busy ? '准备中…' : '开始聊'),
     )
   }
@@ -5062,17 +5729,26 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
       log.map((entry, n) => entry.role === 'bot'
         ? h('div', { key: n, className: 'lc-stack' },
             h('div', { className: 'lc-bubble bot' }, h('div', { style: { whiteSpace: 'pre-wrap' } }, entry.text)),
+            // 已经答完的那几题，选项只留着让人回看，**不能再点**：
+            // 它们属于上一题，点下去会把那句话填进「这一题」的答案框，
+            // 于是记下来的答案和题对不上（用户说的「选项和上一题答案错位」）。
             (entry.options ?? []).length > 0
               ? h('div', { className: 'lc-stack', style: { marginTop: 4 } },
-                  entry.options.map((opt, k) => h('button', {
-                    key: k, className: 'lc-opt', type: 'button',
-                    onClick: () => setAnswer(opt),
+                  entry.options.map((opt, k) => h('div', {
+                    key: k, className: 'lc-opt lc-opt-past',
+                    'data-past-option': 'yes',
                   }, h('span', { className: 'lc-opt-num' }, String(k + 1)), h('span', null, opt))))
               : null,
           )
         : h('div', { key: n, className: 'lc-bubble me' }, h('div', { style: { whiteSpace: 'pre-wrap' } }, entry.text))),
 
       current === null ? null : h('div', { className: 'lc-stack', style: { marginTop: 10 } },
+        // 这一题的问题必须**在答题时就看得见**。以前只把问题写进日志气泡，
+        // 而气泡是答完才追加的，于是用户在答「第 N 题」时，屏幕上最后一条
+        // 还是「第 N-1 题」——答的什么、写进哪一题，全靠猜。
+        h('div', { className: 'lc-bubble bot', 'data-current-ask': current.id },
+          h('div', { style: { whiteSpace: 'pre-wrap' } }, String(current.ask ?? '')),
+          h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '这一题')),
         (current.options ?? []).length > 0
           ? h('div', { className: 'lc-meta' }, '选一个，或者直接在下面写自己的：')
           : null,
@@ -5083,7 +5759,14 @@ function InterviewView({ state, listing, preset, onRecorded, flash, onDone, onAn
       ),
     ),
     h('div', { style: { padding: 10, borderTop: '1px solid var(--lc-line)', background: 'var(--lc-panel)' } },
-      err === null ? null : h('div', { style: { marginBottom: 6 } }, h(Err, { text: err })),
+      err === null ? null : h('div', { style: { marginBottom: 6 } },
+        h(Err, { text: err }),
+        // 这一题已经记下了、下一组问题没要到：给一个真的能点的「再问一题」，
+        // 而不是让人对着错误信息干等。
+        queue.length <= 1
+          ? h('div', { style: { marginTop: 6 } }, h(Btn, { size: 'sm', icon: 'chat', tone: 'primary', disabled: busy, onClick: askMore }, '再问一题'))
+          : null,
+      ),
       h('textarea', {
         className: 'lc-textarea', style: { minHeight: 62, marginBottom: 6 },
         value: answer, onChange: (e) => setAnswer(e.target.value),
@@ -5242,7 +5925,7 @@ function TextImport({ onAnalyze }) {
  * 直接建卡会造出一排空卡，看着像成功、其实什么也不能用。
  * 摆出来、标清楚每人缺什么，用户自己决定哪些值得现在做。
  */
-function MemoryView({ onDone, onBack }) {
+function MemoryView({ onDone, onBack, mode, onStartInterview }) {
   const [scan, setScan] = useState(null)
   const [picked, setPicked] = useState(null) // null = 还没选过，等于全选
   const [busy, setBusy] = useState(false)
@@ -5307,7 +5990,12 @@ function MemoryView({ onDone, onBack }) {
       `${whereText}认出了 ${people.length} 个人。`),
 
     people.length === 0
-      ? h(Note, { tone: undefined, icon: 'person' }, '记忆里没有提到具体的人。可以先「陪我聊聊」，聊过的内容会变成材料。')
+      ? h('div', { className: 'lc-stack' },
+          h(Note, { tone: undefined, icon: 'person' }, '记忆里没有提到具体的人。可以先「聊一聊」，聊过的内容会变成材料。'),
+          h('div', null,
+            h(Btn, { tone: 'interview', icon: 'chat', onClick: () => onStartInterview({ about: '', mode }) }, '聊一聊（新开一个对话）'),
+            h('div', { className: 'lc-meta' }, '会在新对话里问，答完 AI 自己写进卡里'),
+          ))
       : h('div', { className: 'lc-stack' },
           people.map((p) => {
             const key = peopleKey(p)
@@ -5394,7 +6082,8 @@ function peopleKey(p) {
 // ── 让 AI 读材料 ──────────────────────────────────────────────────
 
 function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMaterials, onBack, onNeedMaterial, onAppliedCard }) {
-  const materials = listing?.materials ?? []
+  // 备份和临时文件不算材料（见 isRealMaterial）：它们点开是空的，读也读不出东西。
+  const materials = (listing?.materials ?? []).filter(isRealMaterial)
   const cards = listing?.cards ?? []
   // 从别的页带过来的人，可能只有一个名字：材料刚存下、卡还没建。
   // 这种也该直接开始读——读出来的东西先进「建议」，采纳时才建卡。
@@ -5405,9 +6094,17 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
   // 带过来的材料可能是一份，也可能是好几份（访谈一路上记下来的）。
   // 不认数组的话会变成「[一份, 另一份]」被当成一个路径，一条都勾不上，
   // 而一条都不勾等于全读。
+  // 「读哪些材料」分三种：null = 全读（默认），[] = 一份都不读，[路径…] = 只读这几份。
+  // 以前用「长度 0 就是全读」来表示「还没选」，于是把最后一份也取消勾选以后，
+  // 界面悄悄回到「全读」——用户以为自己刚取消了，下一次读的却是全部。
   const [chosen, setChosen] = useState(() => {
-    if (Array.isArray(presetMaterials)) return presetMaterials.filter((x) => typeof x === 'string' && x !== '')
-    return presetMaterials === undefined || presetMaterials === null ? [] : [presetMaterials]
+    if (Array.isArray(presetMaterials)) {
+      // 显式给了清单就照单办：空清单就是「一份不读」，还给它 []。
+      // 折回 null 等于「全读」——一场什么都没记下的访谈会因此把
+      // 别人的材料一起读进这张卡里。
+      return presetMaterials.filter((x) => typeof x === 'string' && x !== '')
+    }
+    return presetMaterials === undefined || presetMaterials === null ? null : [presetMaterials]
   })
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
@@ -5495,16 +6192,20 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
   // 那一份，还以为读的是全部。
   const toggleMaterial = (path) => {
     setChosen((prev) => {
-      if (prev.length === 0) return materials.map((m) => m.path).filter((p) => p !== path)
-      if (prev.includes(path)) return prev.filter((p) => p !== path)
-      const next = [...prev, path]
-      // 全勾回来时收回「一个都没选」的表示，界面才会如实显示「全读」
-      return next.length === materials.length ? [] : next
+      // 收起态（全读）里点掉一份 = 从「全读」变成「只读剩下的那几份」。
+      const now = prev === null ? materials.map((m) => m.path) : prev
+      const next = now.includes(path) ? now.filter((p) => p !== path) : [...now, path]
+      // 又全勾回来了：收回成「全读」，界面才如实显示
+      return next.length === materials.length ? null : next
     })
   }
+  // 一份都没选（不是「还没选」）：这时候「开始读」得置灰，否则点下去要么读全部、
+  // 要么后台报「选中的材料都不存在」，两种都不是用户想要的。
+  const nothingChosen = chosen !== null && chosen.length === 0
 
   // 选了哪几份就按哪几份算字数：「一条都不勾 = 全读」。
-  const readChars = (chosen.length > 0 ? materials.filter((m) => chosen.includes(m.path)) : materials)
+  const readChars = materials
+    .filter((m) => chosen === null || chosen.includes(m.path))
     .reduce((sum, m) => sum + (Number(m.chars) || Number(m.size) || 0), 0)
   const longRead = readChars > 20000
 
@@ -5524,14 +6225,14 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
         about,
         // about 可能是卡 id，也可能只是个名字（还没建卡）。两种都照实传。
         name: cards.find((c) => c.id === about)?.name ?? about,
-        materials: chosen.length > 0 ? chosen : undefined,
+        materials: chosen === null ? undefined : chosen,
         concept: conceptForRun === null ? undefined : conceptForRun,
         // 这个人是真人还是虚构角色：采纳时如果卡还不存在，就按这个身份现建。
         kind: String(presetAbout?.kind ?? '').trim() === 'fictional' ? 'fictional' : 'real',
       })
       if (r.ok !== true) { setErr(r.error ?? '没跑成'); return }
       setResult(r)
-      flash(`读出了 ${r.accepted} 条${r.rejected > 0 ? `，${r.rejected} 条没能核实已丢掉` : ''}`)
+      flash(`读出了 ${r.accepted} 条${r.rejected > 0 ? `，${rejectedWords(r)}` : ''}`)
     } catch (e) {
       // 「连不上后台」在等了几分钟之后出现，真实原因通常不是没启动，
       // 而是 AI 那边卡住了、连接被断开。说实话比说套话有用。
@@ -5627,9 +6328,14 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
       ),
     ),
 
-    h(Field, { label: '读哪些材料', hint: chosen.length === 0 ? '一个都不选就是全读。' : `已选 ${chosen.length} 份。` },
+    h(Field, {
+      label: '读哪些材料',
+      hint: nothingChosen
+        ? '现在一份都没选。至少选一份，或者把要读的材料挑出来。'
+        : chosen === null ? '不选 = 全读。' : `已选 ${chosen.length} 份。`,
+    },
       h('div', { className: 'lc-stack' }, materials.map((m) => {
-        const on = chosen.includes(m.path) || chosen.length === 0
+        const on = chosen === null || chosen.includes(m.path)
         return h('div', {
           key: m.path, className: 'lc-proposal-item' + (on ? ' on' : ''),
           onClick: () => toggleMaterial(m.path), role: 'button', tabIndex: 0,
@@ -5646,7 +6352,7 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
     err === null ? null : h(Err, { text: err }),
 
     h('div', { className: 'lc-row' },
-      h(Btn, { tone: 'analyze', big: true, onClick: run, disabled: busy || about === '' || materials.length === 0, icon: 'spark' }, busy ? '正在读…' : '开始读'),
+      h(Btn, { tone: 'analyze', big: true, onClick: run, disabled: busy || about === '' || materials.length === 0 || nothingChosen, icon: 'spark' }, busy ? '正在读…' : '开始读'),
       busy ? h(Spinner) : null,
     ),
     // 这一趟是真等：模型先在心里想一遍再写（实测小材料也要四十秒上下，
@@ -5661,7 +6367,7 @@ function AnalyzeView({ listing, state, flash, onProposal, presetAbout, presetMat
     result === null ? null : h('div', null,
       h(Note, { tone: 'ok', icon: 'check' },
         h('div', null, `读出了 ${result.accepted} 条。`),
-        result.rejected > 0 ? h('div', { className: 'lc-meta', style: { marginTop: 3 } }, `另有 ${result.rejected} 条在材料里找不到原句，已经丢掉——AI 编的东西进不来。`) : null,
+        result.rejected > 0 ? h('div', { className: 'lc-meta', style: { marginTop: 3 } }, `另有 ${rejectedWords(result)}。`) : null,
       ),
       // 写小说和酒馆里，用户要的是「读完就有一张能用的角色卡」，
       // 不是再去访谈一遍——虚构角色本来就没有「他是我的什么人」这种问题，
@@ -6554,6 +7260,23 @@ const PANEL_ID = 'lifecard'
 const PANEL_ORDER = 35
 
 function apply(ctx) {
+  // 留住宿主，供 openInterviewSession 开新会话用。
+  // 必须在最前面：下面拿不到 betterSidebar 会提前 return，放后面就永远是 null。
+  HOST = ctx
+  // 开新会话的两样能力都是可选的：有就记下来，没有就一直是 null（走退路）。
+  // 不写进 inject 导出数组——那会让缺服务的干净 profile 整个 apply 不执行。
+  try {
+    ctx.inject?.(['remote.session'], (scoped) => {
+      const got = scoped.get?.('remote.session', false)
+      if (got !== undefined && got !== null) REMOTE_SESSION = got
+    })
+  } catch (e) { /* 老宿主没有这个服务 */ }
+  try {
+    ctx.inject?.(['uiWorkspace'], (scoped) => {
+      const got = scoped.get?.('uiWorkspace', false)
+      if (got !== undefined && got !== null) UI_WORKSPACE = got
+    })
+  } catch (e) { /* 老宿主没有这个服务 */ }
   // 样式也算副作用：跟着插件一起上手、一起回收。
   ctx.effect(() => ensureStyle(document), 'lifecard: 样式')
 
@@ -6593,7 +7316,7 @@ function apply(ctx) {
   ctx.effect(() => sidebar.registerTab({
     id: 'lifecard',
     title: 'Life Cards',
-    description: '把你认识的人和虚构角色写成档案：聊着建、导入角色卡、或从材料里读出来',
+    description: '把你认识的人和虚构角色写成档案：聊一聊、导入角色卡、或从材料里读出来',
     icon: () => h(TabIcon),
     order: 40,
     single: true,
@@ -6615,6 +7338,13 @@ const inject = ['slots']
 		exports.apply = apply;
 		exports.inject = inject;
 		exports.LifeCardTab = LifeCardTab;
+		// 测试专用口子：这两条路要等宿主服务就绪（ctx.inject）才分得清，
+		// 假宿主里造不出 inject，所以允许测试直接把两个服务塞进来。
+		exports.__openInterviewSession = openInterviewSession;
+		exports.__setHostServices = (remote, ui) => {
+			REMOTE_SESSION = remote === undefined ? null : remote;
+			UI_WORKSPACE = ui === undefined ? null : ui;
+		};
 		return module.exports;
 	}
 });

@@ -379,6 +379,16 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   t('已问过的那题不再问', plain.next.every((q) => q.id !== 'friend.q01'), plain.next)
   t('另一个人一题都不该被算成已问', neighbor.next.some((q) => q.id === 'friend.q01'), neighbor.next)
   t('两个人的已问数不同', plain.askedAlready === 1 && neighbor.askedAlready === 0, { plain: plain.askedAlready, neighbor: neighbor.askedAlready })
+
+  // 材料块的标题必须是「问题本身」。以前是 `## friend.q01`，回头「整理进卡里」
+  // 时模型看到的是一串题号加裸答案，不知道这句话在回答什么，只能把答案
+  // 硬塞进不相干的格子里。
+  const recText = rec.material === null ? '' : await fs.readFile(path.join(ws, rec.material), 'utf8')
+  t('访谈材料的标题是那句问题', recText.includes('## 怎么认识的'), recText.slice(0, 160))
+  t('访谈材料里留着题号方便回查', recText.includes('问过的题号：friend.q01'), recText.slice(0, 200))
+  const rec2 = await api3['interview.record']({ about: 'zsan', q: 'friend.q02', ask: '平时怎么称呼', answer: '叫老张', options: ['老张', '张哥'] })
+  const rec2Text = await fs.readFile(path.join(ws, rec2.material), 'utf8')
+  t('访谈材料带上当时给的几个方向', rec2Text.includes('老张 / 张哥'), rec2Text.slice(-260))
 }
 
 // ── 访谈：跳过 ≠ 不想说 ────────────────────────────────────────
@@ -537,7 +547,9 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
 // 演得满意的那一场直接变成小说的正文。这条路上有两处最容易坏：
 // 一本正经地写进了错的书，或者模型什么都没写却报了成功。
 {
-  const prose = '他把伞往门里递了递，雨顺着伞骨往下淌。她没接，只是看着他的手。'
+  // 这一段会被两处用到：`tavern.toChapter` 取它当正文，`novel.chapter.review` 取它当读者的意见。
+  // 开头那句是专门用来钉「模型的话在最前面、数出来的在后面」的。
+  const prose = '第一句是读者的意见：她把伞推回来的时候，我没懂她要说什么。\n他把伞往门里递了递，雨顺着伞骨往下淌。'
   const proseLlm = {
     listProviders: async () => [{ provider: 'raccoon', models: [{ id: 'sn-deepseek-v4-1-flash-1017' }] }],
     listModels: async () => [],
@@ -585,6 +597,30 @@ await fs.rm(inside, { recursive: true, force: true }).catch(() => {})
   t('第二次变成第 2 章', Number(conv2.chapter) === 2, String(conv2.chapter))
   const ch1 = await table3['novel.chapter.get']({ id: bookId, index: 1 })
   t('第一章没被覆盖', String(ch1.body ?? '').includes('伞骨'))
+
+  // 「挑挑毛病」= 模型当读者 + 机器顺手数一遍套话。
+  // 只靠模型读，密度这种毛病它看不出来（它读的是「哪里卡住」，不是「瞳孔一缩用了几次」）。
+  {
+    const chapter = await table3['novel.chapter.save']({
+      id: bookId,
+      index: 5,
+      body: [
+        '此外，雨还在下。',
+        '这不是等人，而是等一个说法。',
+        '他瞳孔一缩。她也瞳孔一缩。',
+        '命运的齿轮开始转动。',
+      ].join('\n'),
+    })
+    t('先写一章留着挑毛病', chapter.ok === true, JSON.stringify(chapter).slice(0, 140))
+
+    const reviewed = await table3['novel.chapter.review']({ id: bookId, index: 5 })
+    t('挑毛病跑得通', reviewed.ok === true, JSON.stringify(reviewed).slice(0, 160))
+    t('模型的意见还在最前面', reviewed.ok === true && String(reviewed.review).startsWith('第一句是读者的意见'), String(reviewed.review).slice(0, 60))
+    t('后面接着一段数出来的', reviewed.ok === true && String(reviewed.review).includes('顺手数了一下'), String(reviewed.review).slice(-80))
+    t('数出来「此外」', reviewed.ok === true && String(reviewed.review).includes('此外'), String(reviewed.review).slice(-200))
+    t('数出来「命运的齿轮」', reviewed.ok === true && String(reviewed.review).includes('命运的齿轮'), String(reviewed.review).slice(-200))
+    t('扫描结果单独给了，别的界面也能用', reviewed.ok === true && reviewed.scan !== undefined && reviewed.scan.total >= 3, reviewed.ok === true ? reviewed.scan.total : reviewed.error)
+  }
 
   // 空会话不许变出一张空章
   // 没有开场白的卡才会开出「一句话都还没说」的会话
@@ -1031,6 +1067,433 @@ console.log('\n=== 23. 文本角色卡（.txt）也能导进来 ===')
   const prose = await table['import.cards']({ files: [{ name: '散文.txt', base64: Buffer.from('他坐在院子里修一把旧椅子。\n天快黑了。', 'utf8').toString('base64') }] })
   t('没有字段的 txt 也整份收进来，不会卡在「读不进去」', prose.imported === 1 && (prose.results[0]?.path ?? '').endsWith('.card.md'), JSON.stringify(prose.results[0]).slice(0, 160))
   await fs.rm(ws, { recursive: true, force: true })
+}
+
+console.log('\n=== 24. 撤掉的卡：列表看得到、能恢复、能彻底删 ===')
+{
+  // 单独一个工作区，不依赖前面各组留下的东西。
+  const ws2 = await fs.mkdtemp(path.join(os.tmpdir(), 'lc-withdrawn-'))
+  const table2 = api.buildApi({ get: () => undefined }, async () => ws2, {})
+
+  const made = await table2['card.save']({
+    path: 'people/old.card.md',
+    data: { lifecard: '0.1', id: 'old', kind: 'real', world: 'reality', name: '旧人' },
+    sections: [{ title: '自述', body: '会被删掉的人。' }],
+  })
+  t('先建一张卡', made.ok === true, JSON.stringify(made).slice(0, 160))
+
+  const before = await table2['workspace.list']({})
+  t('列表一开始就带着「已经撤掉的」这一栏', Array.isArray(before.withdrawn) && before.withdrawn.length === 0, before.withdrawn)
+
+  const del = await table2['card.delete']({ path: 'people/old.card.md' })
+  t('删除成功', del.ok === true, JSON.stringify(del).slice(0, 200))
+  t('删除的回话告诉你去哪儿找回', String(del.note).includes('已经撤掉的') && !String(del.note).includes('撤回'), del.note)
+
+  const listed = await table2['workspace.list']({})
+  t('删掉之后不在正常列表里', listed.cards.every((c) => c.path !== 'people/old.card.md'), listed.cards.map((c) => c.path))
+  const row = (listed.withdrawn ?? []).find((x) => x.path === 'people/old.card.md')
+  t('列表里多出「已经撤掉的」这一条', row !== undefined, listed.withdrawn)
+  t('那一条带着名字和编号', row?.name === '旧人' && row?.id === 'old', row)
+
+  const gone = await table2['card.get']({ path: 'people/old.card.md' })
+  t('撤掉的卡打不开', gone.ok === false, JSON.stringify(gone).slice(0, 160))
+  t('打不开时说的是人话，还给指了回来的路', String(gone.error).includes('恢复'), gone.error)
+
+  // 恢复：不需要版本号，直接救回列表。
+  const back = await table2['card.restore']({ path: 'people/old.card.md' })
+  t('不带版本号就是恢复撤掉的卡', back.ok === true, JSON.stringify(back).slice(0, 200))
+  const reopened = await table2['card.get']({ path: 'people/old.card.md' })
+  t('恢复后打得开', reopened.ok === true && reopened.data?.name === '旧人', reopened.error ?? reopened.data?.name)
+  t('恢复以后不再带「撤掉了」的标记', reopened.withdrawn !== true, reopened)
+  const after = await table2['workspace.list']({})
+  t('恢复后不在「已经撤掉的」里', (after.withdrawn ?? []).every((x) => x.path !== 'people/old.card.md'), after.withdrawn)
+
+  const liveRestore = await table2['card.restore']({ path: 'people/old.card.md' })
+  t('活卡不能恢复', liveRestore.ok === false && String(liveRestore.error).includes('没有被撤掉'), JSON.stringify(liveRestore))
+
+  // 彻底删：活卡一律拒绝，只有撤掉的才让删。
+  const purgeLive = await table2['card.purge']({ path: 'people/old.card.md' })
+  t('活卡不许彻底删', purgeLive.ok === false && String(purgeLive.error).includes('还在列表里'), JSON.stringify(purgeLive))
+  t('活卡被拒之后文件还在', await fs.access(path.join(ws2, 'people/old.card.md')).then(() => true).catch(() => false))
+
+  const purgeMaterial = await table2['card.purge']({ path: 'materials/x.md' })
+  t('不是卡片文件不给删', purgeMaterial.ok === false, JSON.stringify(purgeMaterial))
+
+  await table2['card.delete']({ path: 'people/old.card.md' })
+  const purged = await table2['card.purge']({ path: 'people/old.card.md' })
+  t('撤掉的卡可以彻底删', purged.ok === true, JSON.stringify(purged).slice(0, 200))
+  t('彻底删真删了文件', (await fs.stat(path.join(ws2, 'people/old.card.md')).catch(() => null)) === null)
+  const dead = await table2['card.get']({ path: 'people/old.card.md' })
+  t('彻底删之后再打开是「文件不存在」', dead.ok === false && String(dead.error).includes('文件不存在'), dead.error)
+  t('「已经撤掉的」里也清掉了', ((await table2['workspace.list']({})).withdrawn ?? []).every((x) => x.path !== 'people/old.card.md'))
+
+  // 越界：新路由也得钉在工作区里。
+  const evil = '../' + path.basename(inside) + '/people/pwned.card.md'
+  const evilRestore = await table2['card.restore']({ path: evil })
+  t('card.restore 拒绝越界', badPath(evilRestore), evilRestore)
+  const evilPurge = await table2['card.purge']({ path: evil })
+  t('card.purge 拒绝越界', badPath(evilPurge), evilPurge)
+  t('越界那边没有可删的文件', await fs.access(path.join(inside, 'people', 'pwned.card.md')).then(() => true).catch(() => false) === false)
+
+  // 带版本号还是老行为：退回历史版本，不许被「恢复撤掉的卡」抢走。
+  await table2['card.save']({
+    path: 'people/hist.card.md',
+    data: { lifecard: '0.1', id: 'hist', kind: 'real', world: 'reality', name: '旧版人' },
+    sections: [{ title: '自述', body: '第一版。' }],
+  })
+  await table2['card.save']({
+    path: 'people/hist.card.md',
+    data: { lifecard: '0.1', id: 'hist', kind: 'real', world: 'reality', name: '新版人' },
+    sections: [{ title: '自述', body: '第二版。' }],
+  })
+  const history = await table2['card.history']({ path: 'people/hist.card.md' })
+  const oldest = (history.versions ?? []).at(-1)?.stamp
+  const rolled = await table2['card.restore']({ path: 'people/hist.card.md', stamp: oldest })
+  const histCard = await store.readCard(ws2, 'people/hist.card.md')
+  t('带版本号仍然退回历史版本', rolled.ok === true && String(histCard?.sections?.find((x) => x.title === '自述')?.body ?? '').includes('第一版'), { rolled, stamp: oldest })
+  await fs.rm(ws2, { recursive: true, force: true })
+}
+
+
+console.log('\n=== 25. 删掉的卡要真的让出名字和门 ===')
+{
+  const ws3 = await fs.mkdtemp(path.join(os.tmpdir(), 'lc-redacted-'))
+  const table3 = api.buildApi({ get: () => undefined }, async () => ws3, {})
+  const people = path.join(ws3, 'people')
+  const trash = path.join(ws3, '.lifecard/redacted/people')
+
+  const gone = await table3['card.save']({
+    path: 'people/gone.card.md',
+    data: { lifecard: '0.1', id: 'gone', kind: 'real', world: 'reality', name: '走掉的人' },
+    sections: [{ title: '自述', body: '会被删掉的人。' }],
+  })
+  const keep = await table3['card.save']({
+    path: 'people/keep.card.md',
+    data: { lifecard: '0.1', id: 'keep', kind: 'real', world: 'reality', name: '留着的人' },
+    sections: [{ title: '自述', body: '不删的人。' }],
+  })
+  t('两张卡都建好了', gone.ok === true && keep.ok === true, { gone, keep })
+
+  await table3['card.defaults.set']({ mode: 'tavern', id: 'gone' })
+  await table3['card.defaults.set']({ mode: 'real', id: 'keep' })
+  t('酒馆那扇门先挑的是要被删的那张', api.buildPersonaSection(ws3, 'tavern').includes('走掉的人'))
+
+  const del = await table3['card.delete']({ path: 'people/gone.card.md' })
+  t('删除成功', del.ok === true, JSON.stringify(del).slice(0, 200))
+  const stillThere = await fs.stat(path.join(people, 'gone.card.md')).then(() => true).catch(() => false)
+  t('删掉之后 people 里没有这个文件了', stillThere === false)
+  const names = await fs.readdir(people).catch(() => [])
+  t('readdir 里也不再出现它（不是靠墓碑过滤出来的）', names.every((n) => n !== 'gone.card.md'), names)
+  const inTrash = await fs.stat(path.join(trash, 'gone.card.md')).then((st) => st.isFile()).catch(() => false)
+  t('回收目录里有它，原文没丢', inTrash === true)
+  const listed = await table3['workspace.list']({})
+  t('列表「已经撤掉的」里能看到它', (listed.withdrawn ?? []).some((x) => x.path === 'people/gone.card.md' && x.name === '走掉的人'), listed.withdrawn)
+
+  const pins = await table3['card.defaults.get']({})
+  t('酒馆那扇门不再指着删掉的卡', String(pins.cards?.tavern ?? '') === '', pins)
+  t('别的门不受影响', String(pins.cards?.real ?? '') === 'keep', pins)
+  t('删掉以后酒馆那扇门拼不出东西', api.buildPersonaSection(ws3, 'tavern') === '', api.buildPersonaSection(ws3, 'tavern').slice(0, 80))
+  t('现实那扇门照旧', api.buildPersonaSection(ws3, 'real').includes('留着的人'))
+
+  const again = await table3['card.save']({
+    data: { lifecard: '0.1', id: 'gone', kind: 'real', world: 'reality', name: '走掉的人' },
+    sections: [{ title: '自述', body: '同名再建一次。' }],
+  })
+  t('同名再建被挡住，说的是人话', again.ok === false && String(again.error).includes('被一张已经删掉的卡占着'), again)
+  t('挡住新卡的是一条撤掉的记录，返回体也带标记', again.ok === false && again.withdrawn === true, again)
+
+  // 老式的账：文件还在原地、只写了墓碑。这种人也不能被注入进 system prompt。
+  await table3['card.save']({
+    path: 'people/legacy.card.md',
+    data: { lifecard: '0.1', id: 'legacy', kind: 'real', world: 'reality', name: '老账里的人' },
+    sections: [{ title: '自述', body: '原位还留着。' }],
+  })
+  await table3['card.defaults.set']({ mode: 'novel', id: 'legacy' })
+  const legacyText = await fs.readFile(path.join(people, 'legacy.card.md'), 'utf8')
+  await store.appendRedaction(ws3, { path: 'people/legacy.card.md', sha256: store.sha256(legacyText), reason: '用户删除' })
+  t('原位还在的撤掉卡也不进 system prompt', api.buildPersonaSection(ws3, 'novel') === '', api.buildPersonaSection(ws3, 'novel').slice(0, 80))
+
+  // readCard 的两条「已撤掉」分支必须长一个样：一条是文件已经搬进回收目录、
+  // 原位 ENOENT；一条是文件还在原位、只是账上记着撤掉（老式记录）。以前只有
+  // 前者带 withdrawn:true，上层拿这个字段决定「给不给恢复入口」时就漏了一半。
+  const movedRead = await store.readCard(ws3, 'people/gone.card.md')
+  const legacyRead = await store.readCard(ws3, 'people/legacy.card.md')
+  t('搬走的那张打不开', movedRead.ok === false, JSON.stringify(movedRead).slice(0, 200))
+  t('原位还在的那张也打不开', legacyRead.ok === false, JSON.stringify(legacyRead).slice(0, 200))
+  t('搬走的那张带着「撤掉了」这个标记', movedRead.withdrawn === true, movedRead)
+  t('原位还在的那张也带同一个标记', legacyRead.withdrawn === true, legacyRead)
+  t('两条分支的返回形状一样', Object.keys(movedRead).sort().join(',') === Object.keys(legacyRead).sort().join(','), { moved: Object.keys(movedRead).sort(), legacy: Object.keys(legacyRead).sort() })
+  t('两条分支的说法一字不差', String(movedRead.error) === String(legacyRead.error), { moved: movedRead.error, legacy: legacyRead.error })
+  t('两处都提到「撤掉」、都说了怎么找回来', [movedRead.error, legacyRead.error].every((x) => String(x).includes('撤掉') && String(x).includes('恢复')), [movedRead.error, legacyRead.error])
+  t('两处都不出现「撤回」这个词', [movedRead.error, legacyRead.error].every((x) => !String(x).includes('撤回')), [movedRead.error, legacyRead.error])
+  const legacyRoute = await table3['card.get']({ path: 'people/legacy.card.md' })
+  t('走路由也一样带着标记', legacyRoute.ok === false && legacyRoute.withdrawn === true, JSON.stringify(legacyRoute).slice(0, 200))
+
+  // 撤着的卡不许直接退回旧版本：那会把文件写回原位，而它照样不在列表里。
+  await table3['card.save']({
+    path: 'people/hist2.card.md',
+    data: { lifecard: '0.1', id: 'hist2', kind: 'real', world: 'reality', name: '有版本的人' },
+    sections: [{ title: '自述', body: '第一版。' }],
+  })
+  await table3['card.save']({
+    path: 'people/hist2.card.md',
+    data: { lifecard: '0.1', id: 'hist2', kind: 'real', world: 'reality', name: '有版本的人' },
+    sections: [{ title: '自述', body: '第二版。' }],
+  })
+  const hist = await table3['card.history']({ path: 'people/hist2.card.md' })
+  const anyStamp = (hist.versions ?? []).at(-1)?.stamp
+  t('先攒出一个旧版本', typeof anyStamp === 'string' && anyStamp !== '', hist)
+  await table3['card.delete']({ path: 'people/hist2.card.md' })
+  const blockedVersion = await table3['card.restore']({ path: 'people/hist2.card.md', stamp: anyStamp })
+  t('撤掉的卡不能直接退回旧版本', blockedVersion.ok === false && String(blockedVersion.error).includes('撤掉的状态'), blockedVersion)
+  t('这一条也带 withdrawn，跟读卡那两条一个形', blockedVersion.ok === false && blockedVersion.withdrawn === true, blockedVersion)
+  t('而且没有偷偷把文件写回列表', (await table3['workspace.list']({})).cards.every((x) => x.path !== 'people/hist2.card.md'))
+
+  // 放回列表以后再退版本，就不该被当成「还撤着」拦下来。
+  const backAgain = await table3['card.restore']({ path: 'people/hist2.card.md' })
+  t('先放回列表', backAgain.ok === true, JSON.stringify(backAgain).slice(0, 200))
+  const versionNow = await table3['card.restore']({ path: 'people/hist2.card.md', stamp: anyStamp })
+  t('恢复之后带版本号调不会被误判', versionNow.ok === true && versionNow.withdrawn !== true, JSON.stringify(versionNow).slice(0, 200))
+
+  const purged = await table3['card.purge']({ path: 'people/gone.card.md' })
+  t('彻底删成功', purged.ok === true, JSON.stringify(purged).slice(0, 200))
+  const trashLeft = await fs.stat(path.join(trash, 'gone.card.md')).then(() => true).catch(() => false)
+  t('回收目录里也清了', trashLeft === false)
+  const afterPurgeRead = await store.readCard(ws3, 'people/gone.card.md')
+  t('彻底删掉之后不再挂着「撤掉了」的标记', afterPurgeRead.ok === false && afterPurgeRead.withdrawn !== true, afterPurgeRead)
+  t('彻底删掉之后说的是「文件不存在」', String(afterPurgeRead.error).includes('文件不存在'), afterPurgeRead.error)
+
+  const rebuilt = await table3['card.save']({
+    data: { lifecard: '0.1', id: 'gone', kind: 'real', world: 'reality', name: '走掉的人' },
+    sections: [{ title: '自述', body: '清掉之后重建。' }],
+  })
+  t('清掉之后能用同一个名字重建', rebuilt.ok === true, JSON.stringify(rebuilt).slice(0, 200))
+
+  // 提案采纳：卡被删掉的时候不许「复活」出一张同名的。
+  const mat = await store.appendMaterial(ws3, '家人', '他说家里人都好，家人最重要。\n')
+  const proposal = {
+    about: { id: 'prop', name: '提案里的人', kind: 'real', world: 'reality' },
+    items: [{ field: 'tags', value: '家人', source_level: '自述', evidence: { material: mat.path, quote: '家人最重要' } }],
+  }
+  const saved = await store.saveProposal(ws3, 'prop', proposal, { [mat.path]: await fs.readFile(path.join(ws3, mat.path), 'utf8') })
+  t('提案存下来了', saved.ok !== false && saved.accepted === 1, saved)
+  await table3['card.save']({
+    path: 'people/prop.card.md',
+    data: { lifecard: '0.1', id: 'prop', kind: 'real', world: 'reality', name: '提案里的人' },
+    sections: [],
+  })
+  await table3['card.delete']({ path: 'people/prop.card.md' })
+  const revive = await table3['proposal.apply']({ json: saved.json, checked: [0] })
+  t('删掉的卡不会被提案悄悄复活', revive.ok === false && String(revive.error).includes('删过一次'), JSON.stringify(revive).slice(0, 240))
+  t('而且确实没有建出新文件', await fs.stat(path.join(people, 'prop.card.md')).then(() => false).catch(() => true))
+  await table3['card.purge']({ path: 'people/prop.card.md' })
+  const afterPurge = await table3['proposal.apply']({ json: saved.json, checked: [0] })
+  t('清掉之后提案可以照常建卡', afterPurge.ok === true, JSON.stringify(afterPurge).slice(0, 240))
+
+  // 访谈开局建错了的空卡：能收走，而且不留墓碑占名字。
+  const fresh = await table3['card.save']({
+    path: 'people/fresh.card.md',
+    data: { lifecard: '0.1', id: 'fresh', kind: 'real', world: 'reality', name: '空卡' },
+    sections: [],
+  })
+  t('先建一张空卡', fresh.ok === true, fresh)
+  const discarded = await table3['card.discard']({ path: 'people/fresh.card.md' })
+  t('空卡能收走', discarded.ok === true, JSON.stringify(discarded).slice(0, 200))
+  t('收走以后目录里也没有它', await fs.stat(path.join(people, 'fresh.card.md')).then(() => false).catch(() => true))
+  const freshAgain = await table3['card.save']({
+    path: 'people/fresh.card.md',
+    data: { lifecard: '0.1', id: 'fresh', kind: 'real', world: 'reality', name: '空卡' },
+    sections: [],
+  })
+  t('同一个名字马上能再建（没留墓碑）', freshAgain.ok === true, JSON.stringify(freshAgain).slice(0, 200))
+
+  const full = await table3['card.save']({
+    path: 'people/full.card.md',
+    data: { lifecard: '0.1', id: 'full', kind: 'real', world: 'reality', name: '写过东西的卡' },
+    sections: [{ title: '自述', body: '这里有内容。' }],
+  })
+  t('再建一张有内容的卡', full.ok === true, full)
+  const refused = await table3['card.discard']({ path: 'people/full.card.md' })
+  t('新路由收不走写过内容的卡', refused.ok === false && String(refused.error).includes('已经写了内容'), refused)
+  t('拒绝之后文件还在', await fs.stat(path.join(people, 'full.card.md')).then((st) => st.isFile()).catch(() => false))
+
+  // 放了很久的空卡也不能当「刚建的空卡」收掉——不然这就是删活卡的后门。
+  const old = await table3['card.save']({
+    path: 'people/old-empty.card.md',
+    data: { lifecard: '0.1', id: 'old-empty', kind: 'real', world: 'reality', name: '放了很久的空卡' },
+    sections: [],
+  })
+  t('放久的空卡建好了', old.ok === true, old)
+  const past = new Date(Date.now() - 60 * 60 * 1000)
+  await fs.utimes(path.join(people, 'old-empty.card.md'), past, past)
+  const tooOld = await table3['card.discard']({ path: 'people/old-empty.card.md' })
+  t('放久了的空卡不许走这条路', tooOld.ok === false && String(tooOld.error).includes('放了一会儿'), tooOld)
+
+  // ── repair round 2 的四条 finding ───────────────────────────────
+  // R1：card.discard 收走的空卡不能变成「已经撤掉的」里一行摘不掉的幽灵。
+  const ghostRow = (await table3['workspace.list']({})).withdrawn.filter((w) => w.path === 'people/fresh.card.md')
+  t('收走的空卡不在「已经撤掉的」里多出一行', ghostRow.length === 0, ghostRow)
+
+  // R2：彻底删掉必须连历史版本一起删——文案承诺「磁盘上的原文一起删」。
+  const snapData = { lifecard: '0.1', id: 'snap', kind: 'real', world: 'reality', name: '有历史的人' }
+  await table3['card.save']({ path: 'people/snap.card.md', data: { ...snapData }, sections: [{ title: '自述', body: '第一版。' }] })
+  await table3['card.save']({ path: 'people/snap.card.md', data: { ...snapData }, sections: [{ title: '自述', body: '第二版。' }] })
+  const snapDir = path.join(ws3, '.lifecard/snapshots', 'people__snap.card.md')
+  t('先攒出一个历史版本', await fs.stat(snapDir).then((st) => st.isDirectory()).catch(() => false))
+  await table3['card.delete']({ path: 'people/snap.card.md' })
+  const snapPurged = await table3['card.purge']({ path: 'people/snap.card.md' })
+  t('彻底删成功', snapPurged.ok === true, JSON.stringify(snapPurged).slice(0, 200))
+  t('历史版本也一起删掉了', await fs.stat(snapDir).then(() => false).catch(() => true))
+
+  // R3：列在「已经撤掉的」里、但原文读不出来的残份，也要能放回来、能彻底删。
+  const ghostData = { lifecard: '0.1', id: 'ghost', kind: 'real', world: 'reality', name: '读不出的残份' }
+  await table3['card.save']({ path: 'people/ghost.card.md', data: { ...ghostData }, sections: [{ title: '自述', body: '原文读不出来。' }] })
+  const ghostMoved = await store.moveCardToRedacted(ws3, 'people/ghost.card.md')
+  t('把卡搬进回收目录（故意不记账）', ghostMoved.ok === true, ghostMoved)
+  const ghostTrash = path.join(ws3, ghostMoved.redacted)
+  await fs.chmod(ghostTrash, 0o000)
+  t('读不出来的残份照样列在「已经撤掉的」里', (await store.listWithdrawn(ws3)).some((w) => w.path === 'people/ghost.card.md'))
+  const ghostBack = await table3['card.restore']({ path: 'people/ghost.card.md' })
+  t('读不出来的残份也能放回来', ghostBack.ok === true, JSON.stringify(ghostBack).slice(0, 200))
+  t('放回来之后原位确实有文件了', await fs.stat(path.join(people, 'ghost.card.md')).then((st) => st.isFile()).catch(() => false))
+  await fs.chmod(path.join(people, 'ghost.card.md'), 0o644)
+
+  const ghost2Data = { lifecard: '0.1', id: 'ghost2', kind: 'real', world: 'reality', name: '第二个残份' }
+  await table3['card.save']({ path: 'people/ghost2.card.md', data: { ...ghost2Data }, sections: [{ title: '自述', body: '也是读不出来。' }] })
+  const ghost2Moved = await store.moveCardToRedacted(ws3, 'people/ghost2.card.md')
+  await fs.chmod(path.join(ws3, ghost2Moved.redacted), 0o000)
+  const ghost2Purged = await table3['card.purge']({ path: 'people/ghost2.card.md' })
+  t('读不出来的残份也删得掉', ghost2Purged.ok === true, JSON.stringify(ghost2Purged).slice(0, 200))
+  t('删完以后不在「已经撤掉的」里了', (await store.listWithdrawn(ws3)).every((w) => w.path !== 'people/ghost2.card.md'))
+
+  // R4：被丢掉的条目有两种原因，后端要把两个数分开给。
+  const dupMat = await store.appendMaterial(ws3, '重复', '他喜欢下棋。他喜欢下棋。\n')
+  const dupProposal = {
+    about: { id: 'dupwho', name: '重复的人', kind: 'real', world: 'reality' },
+    items: [
+      { field: '自述', value: '他喜欢下棋。', source_level: '自述', evidence: { material: dupMat.path, quote: '他喜欢下棋' } },
+      { field: '自述', value: '他喜欢 下棋!', source_level: '自述', evidence: { material: dupMat.path, quote: '他喜欢下棋' } },
+    ],
+  }
+  const dupSaved = await store.saveProposal(ws3, 'dupwho', dupProposal, { [dupMat.path]: await fs.readFile(path.join(ws3, dupMat.path), 'utf8') })
+  t('只收一条、另一条判重复', dupSaved.ok !== false && dupSaved.accepted === 1 && dupSaved.rejected === 1, dupSaved)
+  t('重复的条数单独给出来', dupSaved.rejectedDuplicate === 1, dupSaved)
+  t('引文对不上的条数是 0', dupSaved.rejectedQuote === 0, dupSaved)
+  const dupListed = ((await table3['proposal.list']({})).proposals ?? []).find((x) => x.json === dupSaved.json)
+  t('提案列表那一行也分得清重复', dupListed !== undefined && dupListed.rejectedDuplicate === 1 && dupListed.rejectedQuote === 0, dupListed)
+
+  await fs.rm(ws3, { recursive: true, force: true })
+}
+
+console.log('\n=== 26. 撤掉的名字按名字也拦；空材料不是全读；备份不算材料 ===')
+{
+  // 用户库里的坑：id 是拼音、名字是中文（people/rat.card.md 这种）。
+  // 以前只按「算出来的路径 + id」拦，按名字建卡能另造一张同名卡出来，
+  // 首页和「已经撤掉的」各一个「妈妈」，点放回来变两张。
+  const ws13 = await fs.mkdtemp(path.join(tmpdir(), 'lc-name-' + stamp + '-'))
+  await store.openWorkspace(ws13, { create: true })
+  const cp13 = api.buildApi(ctx, async () => ws13, { workspace: ws13 })
+  const made = await cp13['card.save']({
+    data: baseCard({ id: 'mama', name: '妈妈', relation: '母亲' }),
+    sections: [{ title: '自述', body: '一辈子在纺织厂。' }],
+  })
+  t('先建一张 id 拼音、名字中文的卡', made.ok === true, made.error)
+  t('它落在 people/mama.card.md', made.path === 'people/mama.card.md', made)
+  t('删掉它', (await cp13['card.delete']({ path: made.path })).ok === true)
+  const byName = await cp13['card.save']({ data: baseCard({ name: '妈妈' }), sections: [] })
+  t('按中文名字重新建卡被拦住（以前会另建一张同名卡）', byName.ok === false, byName)
+  t('拦住时说的是那句话，还带着标记', byName.withdrawn === true && String(byName.error).includes('已经删掉的卡占着'), byName)
+  const leaked = await fs.stat(path.join(ws13, 'people', '妈妈.card.md')).then(() => true).catch(() => false)
+  t('拦住的时候磁盘上没有多出 people/妈妈.card.md', leaked === false)
+  const byPath = await cp13['card.save']({ path: 'people/妈妈.card.md', data: baseCard({ name: '妈妈' }), sections: [] })
+  t('直接点名那个位置也一样拦住', byPath.ok === false && byPath.withdrawn === true, byPath)
+  t('彻底删掉它', (await cp13['card.purge']({ path: made.path })).ok === true)
+  const freed = await cp13['card.save']({ data: baseCard({ name: '妈妈' }), sections: [] })
+  t('清掉之后同一个名字能正常建卡', freed.ok === true, freed.error)
+  // 不同目录同名不许互相拦。
+  const inWorld = await cp13['card.save']({
+    path: 'worlds/wx/cards/阿岩.card.md',
+    data: baseCard({ id: 'ayan', name: '阿岩', world: 'wx' }),
+    sections: [],
+  })
+  t('先在世界里建一张叫阿岩的卡', inWorld.ok === true, inWorld.error)
+  await cp13['card.delete']({ path: 'worlds/wx/cards/阿岩.card.md' })
+  const otherDir = await cp13['card.save']({ data: baseCard({ id: 'ayan2', name: '阿岩' }), sections: [] })
+  t('别的目录里有同名撤掉的卡，不挡 people 这边', otherDir.ok === true, otherDir.error)
+
+  // 覆盖材料会留下 材料.md.bak-<时间戳>，以前它会被当成正式材料一起喂给模型。
+  await store.appendMaterial(ws13, '摘录', '她十九岁进厂，手指头被机器压过一回。')
+  await fs.writeFile(path.join(ws13, 'materials', '摘录.md.bak-20261029'), '她十八岁进厂。', 'utf8')
+  await fs.writeFile(path.join(ws13, 'materials', '摘录.md.tmp-77'), '半个文件', 'utf8')
+  const mats = Object.keys(await store.readMaterials(ws13))
+  const onlyMat = mats[0] ?? ''
+  t('读材料时只剩那一份正式的', mats.length === 1 && onlyMat.includes('摘录'), mats)
+  t('备份与临时残骸不算材料', !mats.some((one) => /\.(bak|tmp)-/.test(one)), mats)
+  const listed = await cp13['workspace.list']({})
+  const listedMats = (listed.materials ?? []).map((one) => String(one.path ?? one.material ?? one.name ?? ''))
+  t('列表里同样不出现备份', !listedMats.some((one) => /\.(bak|tmp)-/.test(one)), listedMats)
+  t('列表里还看得到那份正式材料', listedMats.some((one) => one.includes('摘录')), listedMats)
+
+  // 三种意思必须分得开：不传 = 全读；[] = 一份都不读；[路径] = 只读这些。
+  const seen = []
+  const fakeLlm = {
+    listProviders: async () => [{ provider: 'raccoon', models: [{ id: 'sn-deepseek-v4-1-flash-1017' }] }],
+    listModels: async () => [],
+    stream: async (opts) => {
+      seen.push(opts.model)
+      return (async function* () {
+        yield { type: 'text-delta', text: '{"items":[],"gaps":[],"questions":[]}' }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })()
+    },
+  }
+  const cp13m = api.buildApi({ ...ctx, get: (name) => (name === 'llm' ? fakeLlm : undefined) }, async () => ws13, { workspace: ws13 })
+  const none = await cp13m['analyze.run']({ about: 'mama', materials: [] })
+  t('一份都没选时说人话，不当成「全读」', none.ok === false && String(none.error).includes('没选任何材料'), none)
+  t('一份都没选时根本不去调模型', seen.length === 0, seen)
+  const all = await cp13m['analyze.run']({ about: 'mama' })
+  t('不传材料清单还是全读，会真的去调模型', seen.length > 0 && all.ok === true, { ok: all.ok, error: all.error, seen })
+  const before = seen.length
+  const missing = await cp13m['analyze.run']({ about: 'mama', materials: ['materials/没这份.md'] })
+  t('点名的材料不存在就报出来，不静默跳过', missing.ok === false && String(missing.error).includes('找不到'), missing)
+  t('报错里点名是哪一份', String(missing.error).includes('没这份'), missing.error)
+  t('材料找不到时不调模型', seen.length === before, seen)
+  const only = await cp13m['analyze.run']({ about: 'mama', materials: [onlyMat] })
+  t('只给一份时只读那一份', only.ok === true, only.error)
+  await fs.rm(ws13, { recursive: true, force: true })
+}
+
+console.log('\n=== 27. 后台替用户开新对话（session.open）===')
+
+{
+  const made = []
+  const sent = []
+  const controller = {
+    create: async (req) => {
+      made.push(req)
+      return { sessionId: 'sess-9', agentPreset: req?.agentPreset ?? 'standard' }
+    },
+    prompt: async (req) => { sent.push(req) },
+  }
+  const table2 = api.buildApi({ get: (name) => (name === 'sessionController' ? controller : undefined) }, async () => ws, {})
+  const ok = await table2['session.open']({ preset: 'lc-tavern', text: '/lifecard-interview\n帮我建一张新的人物卡' })
+  t('建会话时把预设带过去', made.length === 1 && made[0]?.agentPreset === 'lc-tavern', made)
+  t('建好之后把第一句发出去', sent.length === 1 && String(sent[0]?.content?.[0]?.text ?? '').includes('/lifecard-interview'), sent)
+  t('发消息是队列模式', sent[0]?.mode === 'queue', sent[0])
+  t('回执里带着会话号', ok.ok === true && ok.sessionId === 'sess-9', ok)
+  t('回执里说清实际用的是哪套预设', ok.agentPreset === 'lc-tavern', ok)
+  t('回执里说清第一句发出去了', ok.sent === true, ok)
+
+  const noText = await table2['session.open']({ preset: 'lc-real' })
+  t('不给第一句也照样只建会话', noText.ok === true && noText.sent === false, noText)
+
+  const boom = api.buildApi({ get: (name) => (name === 'sessionController' ? { create: async () => { throw new Error('会话服务没响应') }, prompt: async () => {} } : undefined) }, async () => ws, {})
+  const bad = await boom['session.open']({ preset: 'lc-real', text: 'x' })
+  t('建会话失败时说人话，不抛给前端', bad.ok === false && !String(bad.error).includes('    at '), bad)
+
+  const none = api.buildApi({ get: () => undefined }, async () => ws, {})
+  const missing = await none['session.open']({ preset: 'lc-real', text: 'x' })
+  t('这台机器没有会话服务时如实说', missing.ok === false && String(missing.error).includes('复制'), missing)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

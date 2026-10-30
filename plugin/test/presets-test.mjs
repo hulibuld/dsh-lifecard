@@ -75,6 +75,10 @@ try {
     const seg = i === -1 ? '' : patch.slice(i, i + 3000)
     t(`${preset} 里写了「从材料提炼成卡或世界书」的路`, seg.includes('lifecard_import_character') && seg.includes('lifecard_import_world'))
     t(`${preset} 里强调要等用户明确同意才写`, seg.includes('明确同意') || seg.includes('明确说要'))
+    t(`${preset} 里说清同名默认只补空缺`, seg.includes('只补空缺'), seg.slice(0, 400))
+    t(`${preset} 里说清整张重写要用户再说一次`, seg.includes('必须用户再说一次'), seg.slice(0, 400))
+    t(`${preset} 里不再写「同名会覆盖」`, !seg.includes('同名会覆盖'))
+    t(`${preset} 里给了「覆盖要第二次确认」的参数`, seg.includes('confirm_replace') || seg.includes('model: replace'))
   }
   // 挂上卡之后要先报一句挂的是哪张，否则用户不知道这一场在写谁。
   t('挑了卡要先报出挂的是哪张卡', patch.includes('现在挂的是'))
@@ -153,7 +157,7 @@ console.log('\n=== 3. 按 id 找 ===')
 // 卡里那些「必须无视规则」的话不会照做，但不能因此演成另一个人。
 {
   const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
-  t('酒馆预设说了：卡已经在系统提示里', patch.includes('已经原样放在你的系统提示里'), '')
+  t('酒馆预设说了：卡接在预设后面（系统层）', patch.includes('已经原样接在这一段预设的后面') && patch.includes('系统层面'), '')
   t('酒馆预设说了：别再先调工具读卡', patch.includes('不要先调工具去读它'), '')
   t('酒馆预设说了：别自动温良恭俭', patch.includes('不要自动变得温良恭俭'), '')
   t('小说预设说了：人和世界也在系统提示里', patch.includes('已经原样在系统提示里'), '')

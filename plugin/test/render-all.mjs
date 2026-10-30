@@ -71,10 +71,16 @@ const factory = new Function('require', 'module', 'exports', 'window', 'document
 const api = factory(fakeRequire, module, module.exports, fakeWindow, document)
 
 const registered = []
+// 「开一个新会话」这个宿主能力。谁点「聊一聊」都该落到这儿，而不是插件自己切屏。
+const SESSIONS = []
 api.apply({
-  get: (name) => (name === 'betterSidebar'
-    ? { registerTab: (d) => { registered.push(d); return () => {} } }
-    : undefined),
+  get: (name) => {
+    if (name === 'betterSidebar') return { registerTab: (d) => { registered.push(d); return () => {} } }
+    if (name === 'uiWorkspace') {
+      return { startSession: (workspaceId, options) => { SESSIONS.push({ workspaceId, ...(options ?? {}) }); return Promise.resolve() } }
+    }
+    return undefined
+  },
   effect: (fn) => { fn(); return () => {} },
 })
 const tab = registered[0]
@@ -305,6 +311,67 @@ const homeTree = renderRoot('首页（有数据）', base('home'))
   t('每份材料旁边能「看」', homeText.includes('"看"') || homeText.includes('看'), homeText.slice(0, 400))
   t('每份材料旁边能「删」', homeText.includes('"删"') || homeText.includes('删'), homeText.slice(0, 400))
 }
+// ── 已经撤掉的卡：入口要看得见，展开后两条路都要有 ──────────────────
+// 删掉的卡不是没了，是从列表里撤下去、原文还在磁盘上。以前这一栏根本不存在，
+// 删错的人找不回来，想清干净的人也找不到路——卡在中间，只能去翻文件夹。
+const GONE_ITEMS = [
+  { path: 'cards/gone.card.md', id: 'gone', name: '老周', withdrawn_at: '2026-10-20T10:00:00.000Z' },
+  { path: 'cards/old.card.md', id: 'old', name: '小满', withdrawn_at: '2026-10-21T10:00:00.000Z' },
+]
+/** 展开后的纯 DOM 树里，用户真的读得到的字（含 title）。 */
+const textIn = (node) => {
+  if (node === null || node === undefined) return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(textIn).join('')
+  if (typeof node !== 'object') return ''
+  const title = typeof node.props?.title === 'string' ? node.props.title : ''
+  return title + textIn(node.children)
+}
+/** 按条件收节点：找按钮就看它，别去数 JSON 字符串（props 和 children 会各算一次）。 */
+const collectIn = (node, pred, out = []) => {
+  if (node === null || node === undefined) return out
+  if (Array.isArray(node)) { for (const n of node) collectIn(n, pred, out); return out }
+  if (typeof node !== 'object') return out
+  if (pred(node)) out.push(node)
+  collectIn(node.children, pred, out)
+  return out
+}
+const hasAttr = (name) => (n) => Object.prototype.hasOwnProperty.call(n.props ?? {}, name)
+{
+  const page = renderRoot('首页（有撤掉的卡）', base('home', { 2: { ...LISTING, withdrawn: GONE_ITEMS } }))
+  const pageTree = expand(page)
+  const pageText = textIn(pageTree)
+  t('有撤掉的卡时首页有这一栏', pageText.includes('已经撤掉的'), pageText.slice(0, 300))
+  t('这一栏标题带张数', pageText.includes('已经撤掉的 · 2'), pageText.slice(0, 300))
+  t('这一栏说清「看不见，但原文还在」', pageText.includes('看不见，但原文还在'), pageText.slice(0, 300))
+  t('默认收着，不先铺开两个按钮', !pageText.includes('放回来') && !pageText.includes('彻底删掉'), pageText.slice(0, 300))
+
+  const none = renderRoot('首页（没有撤掉的卡）', base('home'))
+  t('没有撤掉的卡时这一栏整块不出现', !textIn(expand(none)).includes('已经撤掉的'), '')
+
+  t('撤掉的卡有独立的渲染块', seen.has('WithdrawnSection'), [...seen.keys()].includes('WithdrawnSection'))
+  const open = renderOne('撤掉的卡（展开）', seen.get('WithdrawnSection'), {
+    items: GONE_ITEMS, open: true, onToggle: () => {}, onRestore: () => {}, onPurge: () => {},
+  })
+  const openTree = expand(open)
+  const openText = textIn(openTree)
+  t('展开后一条一行', collectIn(openTree, hasAttr('data-withdrawn-row')).length === 2, openText.slice(0, 300))
+  t('每条都有「放回来」', collectIn(openTree, hasAttr('data-withdrawn-restore')).length === 2, openText.slice(0, 300))
+  t('每条都有「彻底删掉」', collectIn(openTree, hasAttr('data-withdrawn-purge')).length === 2, openText.slice(0, 300))
+  t('展开后按钮写着「收起」', openText.includes('收起'), openText.slice(0, 300))
+  t('撤掉的卡都画出了名字', openText.includes('老周') && openText.includes('小满'), openText.slice(0, 300))
+  t('展开后说清两条路各是什么', openText.includes('回到上面的列表') && openText.includes('删了就真没了'), openText.slice(0, 400))
+  t('这一块不露路径和后缀', !openText.includes('.card.md') && !openText.includes('cards/') && !openText.includes('/tmp/'), openText.slice(0, 300))
+  t('这一块不说「撤回」', !openText.includes('撤回'), openText.slice(0, 300))
+
+  const shut = renderOne('撤掉的卡（收着）', seen.get('WithdrawnSection'), {
+    items: GONE_ITEMS, open: false, onToggle: () => {}, onRestore: () => {}, onPurge: () => {},
+  })
+  const shutTree = expand(shut)
+  t('只给「展开」不给按钮', textIn(shutTree).includes('展开') && collectIn(shutTree, hasAttr('data-withdrawn-restore')).length === 0, textIn(shutTree).slice(0, 200))
+  t('空列表时整块不画', seen.get('WithdrawnSection')({ items: [], open: true }) === null, '')
+}
+
 renderRoot('首页（空）', base('home', { 2: { ok: true, cards: [], materials: [], proposals: [], worlds: [], errors: [] } }))
 renderRoot('首页（展开更多工具）', base('home', { 10: true }))
 renderRoot('记忆（从首页进来）', base('memory'))
@@ -406,14 +473,42 @@ const hasRotate = (tree) => {
   return found
 }
 
-{
-  // 刚看完「妈妈」的卡，回首页点「聊着建」——访谈页不能还开着妈妈。
-  const tree = renderRoot('首页（带着上一个人进访谈）', base('home', { 9: { id: 'mama', name: '妈妈' } }))
-  const clicked = clickByText(tree, '聊着建')
-  t('首页「聊着建」点得动', clicked === true)
-  t('点「聊着建」跳到访谈页', hookStore[0] === 'interview', String(hookStore[0]))
-  t('点「聊着建」不再带着上一个人', hookStore[9] === null, JSON.stringify(hookStore[9]))
-}
+await (async () => {
+  // 首页点「聊一聊」：不再进插件里的访谈页，改成开一个新会话，
+  // 输入框里摆好 skill 和一句意图（后端宿主负责真开，这里记调用）。
+  const tree = renderRoot('首页（点聊一聊）', base('home', { 9: { id: 'mama', name: '妈妈' } }))
+  const before = SESSIONS.length
+  const clicked = clickByText(tree, '聊一聊')
+  // 现在是异步的：先让后台建会话，再断言「开了哪一场」。
+  await new Promise((r) => setTimeout(r, 30))
+  const session = SESSIONS[before] ?? {}
+  t('首页「聊一聊」点得动', clicked === true)
+  t('点「聊一聊」不再切到插件里的访谈页', hookStore[0] !== 'interview', String(hookStore[0]))
+  t('点「聊一聊」开了一个新会话', SESSIONS.length === before + 1, JSON.stringify(SESSIONS.slice(-2)))
+  t('新会话里带着访谈那个 skill', String(session.prompt ?? '').includes('/lifecard-interview'), JSON.stringify(session))
+  t('首页用的是真实人物那套预设', session.agentPreset === 'lc-real', String(session.agentPreset))
+  t('首页不带某个人进去问', !String(session.prompt ?? '').includes('妈妈'), JSON.stringify(session))
+  const homeWords = textIn(expand(tree))
+  t('界面上说清是在新对话里问', homeWords.includes('会在新对话里问'), homeWords.slice(0, 300))
+})();
+await (async () => {
+  // 卡片页上补信息：新会话得知道「补哪一张」，不然第一句还得问我是谁。
+  const tree = renderRoot('卡片详情（想补信息）', base('card', { 6: CARD_DETAIL }))
+  const before = SESSIONS.length
+  const clicked = clickByText(tree, '聊一聊')
+  // 现在是异步的：先让后台建会话，再断言「开了哪一场」。
+  await new Promise((r) => setTimeout(r, 30))
+  const session = SESSIONS[before] ?? {}
+  t('卡片页「聊一聊」点得动', clicked === true)
+  t('卡片页点完不切到插件里的访谈页', hookStore[0] !== 'interview', String(hookStore[0]))
+  t('卡片页点完开了一个新会话', SESSIONS.length === before + 1, JSON.stringify(SESSIONS.slice(-2)))
+  t('新会话带上了这张卡的名字', String(session.prompt ?? '').includes('妈妈'), JSON.stringify(session))
+  t('新会话里带着访谈那个 skill', String(session.prompt ?? '').includes('/lifecard-interview'), JSON.stringify(session))
+  const cardWords = textIn(expand(tree))
+  t('卡片页说清会在新对话里问', cardWords.includes('会在新对话里问'), cardWords.slice(0, 300))
+  t('卡片页的按钮上写着「新开一个对话」', cardWords.includes('聊一聊（新开一个对话）'), cardWords.slice(0, 300))
+})();
+
 {
   const tree = renderRoot('首页（带着上一个人去整理材料）', base('home', { 9: { id: 'mama', name: '妈妈' } }))
   const clicked = clickByText(tree, '份材料')
@@ -545,6 +640,14 @@ renderRoot('让 AI 读材料（已有材料）', base('analyze', { 9: { id: 'mam
   const joined = visibleText.slice(before).join('|')
   t('分析页给的是「开始读」', joined.includes('开始读'), joined.slice(0, 160))
 }
+function findNodes(node, pred, out = []) {
+  if (node === null || node === undefined || typeof node !== 'object') return out
+  if (Array.isArray(node)) { for (const item of node) findNodes(item, pred, out); return out }
+  if (pred(node)) out.push(node)
+  if (node.children !== undefined) findNodes(node.children, pred, out)
+  return out
+}
+
 renderRoot('陪他聊聊', base('interview'))
 renderRoot('陪他聊聊（从卡片进来）', base('interview', { 9: { id: 'mama', name: '妈妈', relationLabel: '母亲' } }))
 // 「还有什么」点开之后的样子：收起时只是一行灰字，摊开才有输入框。
@@ -558,6 +661,30 @@ renderOne('陪他聊聊（已经在横线里写了爷爷）', seen.get('Intervie
   // InterviewView 的 hook 槽（续上）：6 customFocus / 7 plan / 8 queue / 9 current /
   // 10 answer / 11 log / 12 busy / 13 err / 14 aboutId / 15 dropped / 16 ref
   const Q = { id: 'cooking-1', ask: '你妈做饭的时候有什么固定动作？', options: ['先把菜全切好'], fills: ['habit'] }
+  {
+    // 答题时屏幕上必须看得见「这一题问的是什么」。
+    // 以前问题只写进日志气泡，而气泡是答完才追加的 —— 用户在答第 N 题时，
+    // 屏幕上最后一条还是第 N-1 题，写什么都像在答上一题。
+    const live = renderOne('陪他聊聊（这一题的问题看得见）', seen.get('InterviewView'), { state: STATE, listing: LISTING }, { 0: 'talk', 9: Q, 10: '' })
+    const askNodes = findNodes(live, (n) => n.props?.['data-current-ask'] !== undefined)
+    t('答题时显示这一题的问题', askNodes.length === 1 && textOf(askNodes[0]).includes('有什么固定动作'), String(askNodes.length))
+
+    // 上一题的选项只是回看用：它们不能再点，否则会把答案填进「这一题」。
+    const cur = renderOne('陪他聊聊（带着上一题的记录）', seen.get('InterviewView'), { state: STATE, listing: LISTING }, {
+      0: 'talk', 9: Q, 10: '',
+      11: [{ role: 'bot', text: '你妈说话声音大吗？', options: ['大', '不大'] }, { role: 'me', text: '大' }],
+    })
+    const past = findNodes(cur, (n) => n.props?.['data-past-option'] === 'yes')
+    t('上一题的选项留着但点不动', past.length === 2 && past.every((n) => typeof n.props.onClick !== 'function'), String(past.length))
+
+    // 记完这一题、下一组问题没要到：错误提示旁边要有一个真的能点的「再问一题」。
+    const stuck = renderOne('陪他聊聊（下一组问题没要到）', seen.get('InterviewView'), { state: STATE, listing: LISTING }, {
+      0: 'talk', 8: [], 9: Q, 10: '', 12: false, 13: '刚才那一句已经记下了，这里是没接上',
+    })
+    const retry = flatButtons(expand(stuck)).find((b) => textOf(b).includes('再问一题'))
+    t('没要到下一组问题时给一个能点的「再问一题」', retry !== undefined && typeof retry.props.onClick === 'function')
+  }
+
   const asked = []
   const realConfirm = fakeWindow.confirm
   fakeWindow.confirm = (msg) => { asked.push(String(msg)); return false }
@@ -608,9 +735,13 @@ renderOne('陪他聊聊（已经在横线里写了爷爷）', seen.get('Intervie
       { 0: 'pick', 1: '王叔' })
     t('点得到「开始聊」', clickByText(tree, '开始聊'))
     await wait()
-    const del = calls.filter((c) => c.url.includes('card.delete'))
-    t('问题没准备出来时把刚建的空卡撤掉了', del.length === 1 && del[0].body.path === 'cards/wang-shu.card.md', JSON.stringify(calls.map((c) => c.url)))
-    t('撤卡时说了为什么', del.length === 1 && String(del[0].body.reason ?? '').includes('访谈'), JSON.stringify(del.map((c) => c.body.reason)))
+    // 这里必须走「收走一张刚建的空卡」那条路，不能走「删除」：删除会写墓碑、
+    // 占住名字，用户紧接着换个名字重来就会撞上「这个名字被一张删掉的卡占着」。
+    const del = calls.filter((c) => c.url.includes('card.discard') || c.url.includes('card.delete'))
+    t('问题没准备出来时把刚建的空卡收走了', del.length === 1 && del[0].body.path === 'cards/wang-shu.card.md', JSON.stringify(calls.map((c) => c.url)))
+    t('收走的是刚建的空卡，不是删一张真卡', del.length === 1 && del[0].url.includes('card.discard'), JSON.stringify(calls.map((c) => c.url)))
+    const said = hookStore.filter((v) => typeof v === 'string').join(' | ')
+    t('撤卡时告诉用户那张空卡去哪了', said.includes('撤掉'), said.slice(0, 300))
   }
 
   // ② 名字撞上已有的卡：要么先问一句，要么不许动旧卡上已经写过的关系
@@ -753,7 +884,7 @@ if (seen.has('CardView')) {
   renderOne('卡片详情（正在编辑）', seen.get('CardView'), {
     card: CARD_DETAIL, proposal: null, setProposal: () => {}, flash: () => {},
     onRefresh: async () => {}, onDeleted: async () => {},
-    onInterview: () => {}, onAnalyze: () => {},
+    onStartInterview: () => {}, onAnalyze: () => {},
   }, { 0: true })
 }
 
@@ -763,11 +894,11 @@ if (seen.has('CardView')) {
   const tree = renderOne('卡片详情（从记忆来的、还缺东西）', seen.get('CardView'), {
     card: CARD_DETAIL, proposal: null, setProposal: () => {}, flash: () => {},
     onRefresh: async () => {}, onDeleted: async () => {},
-    onInterview: () => {}, onAnalyze: () => {},
+    onStartInterview: () => {}, onAnalyze: () => {},
   }, { 5: { ok: true, from_memory: true, missing: ['名字', '出生时间'], flag: true } })
   const text = JSON.stringify(expand(tree))
   t('红点说出了还缺几样', text.includes('还缺 2 样'))
-  t('红点解释了这几样是哪来的', text.includes('接着聊'))
+  t('红点解释了这几样是哪来的', text.includes('聊一聊'))
 }
 
 // CardView 的 hook 槽：0 editing / 1 busy / 2 err / 3 showExport / 4 showHistory / 5 memFlag
@@ -775,7 +906,7 @@ if (seen.has('CardView')) {
   renderOne('卡片详情（历史展开）', seen.get('CardView'), {
     card: CARD_DETAIL, proposal: null, setProposal: () => {}, flash: () => {},
     onRefresh: async () => {}, onDeleted: async () => {},
-    onInterview: () => {}, onAnalyze: () => {},
+    onStartInterview: () => {}, onAnalyze: () => {},
   }, { 4: true })
 }
 
@@ -861,6 +992,29 @@ if (seen.has('ProposalPanel')) {
   t('life 说成「吃 / 身体」', /吃：清淡/.test(text) && /身体：腿不好/.test(text), text)
   t('competency 的等级是中文', /做红烧肉：精通/.test(text), text)
   t('对象值不再抖出字段名 / JSON / 英文等级', !/knows|does_not_know|them_to_me|me_to_them|JSON|expert/.test(text), text)
+}
+
+if (seen.has('ProposalPanel')) {
+  // 被丢掉的条目现在有两种原因：引文对不上，或者和前面那条重复。以前界面
+  // 一律说「在材料里找不到原话 / AI 编的东西进不来」，于是用户明明说过的话
+  // 被当成模型瞎编——重复的事实反而被说成了不存在的证据。
+  const DUP_ONLY = {
+    json: 'proposals/p4.json',
+    about: { id: 'mama', name: '妈妈' },
+    items: [],
+    rejected: [
+      { item: { field: 'tags', value: '家人' }, reason: '和前面那条重复' },
+      { item: { field: '自述', value: '她每天下午四点做饭。' }, reason: '和后面那条重复，只留了长的' },
+    ],
+    md: 'proposals/p4.md',
+  }
+  const from = visibleText.length
+  renderOne('建议面板（丢掉的都是重复的）', seen.get('ProposalPanel'), { proposal: DUP_ONLY, onClose: () => {}, onApplied: async () => {} })
+  const text = visibleText.slice(from).join('\n')
+  t('丢掉的全是重复时说「重复」', text.includes('重复'), text)
+  t('不再把重复说成 AI 编的', !text.includes('AI 编'), text)
+  t('不再一律说「找不到原话」', !text.includes('找不到原话'), text)
+  t('说清重复的两条是怎么处理的', text.includes('只留了一条') || text.includes('只留了长的'), text)
 }
 
 if (seen.has('HistoryPanel')) {
@@ -1259,7 +1413,10 @@ t('tab.component 是函数', typeof tab.component === 'function')
 
 // ── 契约：真实渲染出的可见文字里不能有技术黑话 ─────────────────────
 const forbidden = ['JSON', 'chunk', 'tEXt', 'CHARX', 'CCv2', 'CCv3', 'Zod', 'schema', 'YAML',
-  'proposal', 'materials/', 'doctor', 'workspace', '.lifecard', 'tombstone', '墓碑', 'frontmatter']
+  'proposal', 'materials/', 'doctor', 'workspace', '.lifecard', 'tombstone', '墓碑', 'frontmatter',
+  // 「开一个新会话」是跟外壳打交道，这些名字不该落到用户眼睛里：
+  // 用户要看见的是「聊一聊」和「会在新对话里问」。
+  'startSession', 'uiWorkspace', 'agentPreset', 'lc-real', 'lc-tavern', 'lc-novel', '/lifecard-interview']
 const unique = [...new Set(visibleText)]
 t('真的渲染出了大量可见文字', unique.length > 80, `${unique.length} 段`)
 
@@ -1274,7 +1431,7 @@ t('界面文案里没有技术黑话', offenders.length === 0, offenders.join(' 
 const all = unique.join('\n')
 for (const [label, word] of [
   ['「改这张卡」按钮', '改这张卡'],
-  ['「接着聊」按钮', '接着聊'],
+  ['「聊一聊」按钮', '聊一聊'],
   ['「导出角色卡」按钮', '导出角色卡'],
   ['人话的能力等级', '精通'],
   ['人话的状态', '还在'],
@@ -2037,6 +2194,127 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   text = textOf(expand(tree))
   t('材料长的时候说清会更慢', text.includes('一两分钟'))
   t('长材料时把字数说出来', text.includes('45 千字') || text.includes('45千字'))
+}
+
+
+// ── 读不到的东西要说清楚；删不掉的入口要真的有 ──────────────────────
+// 这一组是「界面一声不响」的现场：材料里混了备份文件、有文件读不了、
+// 一份材料都没选、书架上删不掉。都是用户看得见、但界面上没话说的地方。
+
+{
+  // 存材料是先写临时文件再改名。改名那一步被打断，就留下 `.妈妈.md.bak-1234`
+  // 这种残骸，它一直被当成一份材料摆在列表里：用户看到两份「妈妈」，
+  // 点开其中一份是空的，还以为自己写丢了。
+  const JUNK = {
+    ...LISTING,
+    cards: [{ id: 'sera', path: 'cards/sera.card.md', name: 'Sera', kind: 'fictional', coverage: 50 }],
+    materials: [
+      { path: 'materials/mama.md', name: '妈妈访谈.md', chars: 800 },
+      { path: 'materials/.mama.md.bak-1234', name: '.妈妈访谈.md.bak-1234', chars: 0 },
+      { path: 'materials/mama.md.tmp-99', name: '妈妈访谈.md.tmp-99', chars: 0 },
+    ],
+  }
+  // 材料栏只在「真实人物记录」那扇门里铺开；写小说那扇门只报一个数字。
+  const realText = textIn(expand(renderRoot('首页（材料里混了备份文件）', base('home', { 2: { ...JUNK, cards: [{ id: 'mama', path: 'cards/mama.card.md', name: '妈妈', kind: 'real', coverage: 60 }] } }))))
+  t('材料栏只算真的那几份', realText.includes('材料 · 1'), realText.slice(0, 400))
+  t('备份文件不摆在材料列表里', !realText.includes('bak') && !realText.includes('tmp'), realText.slice(0, 400))
+  const novelText = textIn(expand(renderRoot('小说门（材料里混了备份文件）', base('novel', { 2: JUNK }))))
+  t('「读那 N 段材料」也只算真的', novelText.includes('读那 1 段材料'), novelText.slice(0, 400))
+}
+
+{
+  // 只报「有 5 个文件读不了」等于没说：用户不知道是哪几个，只能一格一格翻。
+  const BROKEN = {
+    ...LISTING,
+    errors: [
+      { path: 'people/妈妈.card.md', error: '读不出来' },
+      { path: 'people/老张.card.md', error: '读不出来' },
+      { path: 'worlds/长夜.world.md', error: '读不出来' },
+      { path: 'people/阿吉.card.md', error: '读不出来' },
+      { path: 'people/小满.card.md', error: '读不出来' },
+    ],
+  }
+  const text = textIn(expand(renderRoot('首页（有文件读不了）', base('home', { 2: BROKEN }))))
+  t('说清有几个文件读不了', text.includes('5 个文件读不了'), text.slice(0, 500))
+  t('把读不了的几个名字点出来', text.includes('「妈妈」') && text.includes('「老张」'), text.slice(0, 500))
+  t('超过三个就收成「还有 N 个」', text.includes('还有 2 个'), text.slice(0, 500))
+  t('不把文件路径摆到界面上', !text.includes('.card.md') && !text.includes('people/'), text.slice(0, 500))
+  t('说清别的没受影响', text.includes('没影响别的'), text.slice(0, 500))
+}
+
+{
+  // 首页这条路：访谈没收下材料，分析页不许把「空」当成「没指定」。
+  const page = renderRoot('首页（聊完一场没记下材料）', base('analyze', { 9: { name: '林小雨' }, 14: [] }))
+  const pageText = textIn(expand(page))
+  t('从首页进分析页时空清单停在「一份都没选」', pageText.includes('现在一份都没选'), pageText.slice(0, 400))
+}
+
+{
+  const view = seen.get('AnalyzeView')
+  const LIST = {
+    ok: true, workspace: '/tmp/x',
+    cards: [{ id: 'mama', path: 'cards/mama.card.md', name: '妈妈', kind: 'real', coverage: 62 }],
+    materials: [
+      { path: 'materials/a.md', name: 'a.md', chars: 800, size: 2048 },
+      { path: 'materials/b.md', name: 'b.md', chars: 900, size: 2048 },
+    ],
+    errors: [], proposals: [],
+  }
+  const props = { listing: LIST, state: { ok: true, workspace: '/tmp/x', exists: true }, presetAbout: { id: 'mama', name: '妈妈' }, presetMaterials: null, flash: () => {}, onProposal: () => {}, onBack: () => {}, onNeedMaterial: () => {} }
+
+  // 默认：一份都没挑 = 全读。
+  const all = renderOne('分析（默认全读）', view, props, { 0: '妈妈', 1: null, 2: false, 3: null, 4: null, 10: null })
+  const allText = textOf(expand(all))
+  t('默认说清「不选 = 全读」', allText.includes('不选 = 全读'), allText.slice(0, 400))
+  const allBtn = collectIn(expand(all), (n) => n.type === 'button' && textOf(n).includes('开始读'))[0]
+  t('默认状态下「开始读」点得动', allBtn?.props?.disabled !== true, JSON.stringify(allBtn?.props?.disabled))
+
+  // 一份都不选（明确取消）：不许再偷偷全读，按钮也得灰掉并说清怎么办。
+  const none = renderOne('分析（一份都不选）', view, props, { 0: '妈妈', 1: [], 2: false, 3: null, 4: null, 10: null })
+  const noneText = textOf(expand(none))
+  t('一份都没选时把话说清楚', noneText.includes('现在一份都没选'), noneText.slice(0, 400))
+  t('并说清该怎么办', noneText.includes('至少选一份'), noneText.slice(0, 400))
+  const noneBtn = collectIn(expand(none), (n) => n.type === 'button' && textOf(n).includes('开始读'))[0]
+  t('一份都没选时「开始读」是灰的', noneBtn?.props?.disabled === true, JSON.stringify(noneBtn?.props?.disabled))
+
+  // 从「全读」里点掉一份：不是回弹成全读，而是「只读剩下的那几份」。
+  // 注意别用 expand() 再找一遍：展开会重挂组件、状态就丢了，点下去写的是
+  // 另一份槽位。renderOne 已经把整棵树展开好，直接在里面找那一行。
+  const picked = renderOne('分析（点掉一份）', view, props, { 0: '妈妈', 1: null, 2: false, 3: null, 4: null, 10: null })
+  const row = collectIn(picked, (n) => typeof n.props?.onClick === 'function' && textOf(n).includes('a.md'))[0]
+  t('材料行点得动', row !== undefined, textOf(picked).slice(0, 300))
+  row?.props?.onClick()
+  const after = hookStore[1]
+  t('点掉一份之后只剩另一份（不是又变回全读）',
+    Array.isArray(after) && after.length === 1 && String(after[0]).includes('b.md'), JSON.stringify(after))
+
+  const onlyOne = renderOne('分析（只挑了一份）', view, props, { 0: '妈妈', 1: ['materials/b.md'], 2: false, 3: null, 4: null, 10: null })
+  t('只挑一份的时候说「已选 1 份」', textOf(expand(onlyOne)).includes('已选 1 份'), textOf(expand(onlyOne)).slice(0, 400))
+
+  // 点掉最后一份：停在「一份都不读」，不许回弹成全读。
+  const lastOne = renderOne('分析（点掉最后一份）', view, props, { 0: '妈妈', 1: ['materials/b.md'], 2: false, 3: null, 4: null, 10: null })
+  const lastRow = collectIn(lastOne, (n) => typeof n.props?.onClick === 'function' && textOf(n).includes('b.md'))[0]
+  t('最后一份也点得动', lastRow !== undefined, textOf(lastOne).slice(0, 300))
+  lastRow?.props?.onClick()
+  t('点掉最后一份后停在一份都不读（不是又变回全读）',
+    Array.isArray(hookStore[1]) && hookStore[1].length === 0, JSON.stringify(hookStore[1]))
+
+  // 一场访谈一句材料都没记下：带过来的清单是空的，页面必须停在「一份不读」。
+  // 以前空清单被折成「没指定」，一按「开始读」把别人的材料一起读了。
+  const fromTalk = renderOne('分析（访谈没记下材料）', view, { ...props, presetMaterials: [] }, { 0: '妈妈', 2: false, 3: null, 4: null, 10: null })
+  const fromTalkText = textOf(expand(fromTalk))
+  t('访谈没记下材料时停在「一份都没选」', fromTalkText.includes('现在一份都没选'), fromTalkText.slice(0, 400))
+  t('并说清要自己挑材料', fromTalkText.includes('至少选一份'), fromTalkText.slice(0, 400))
+  const fromTalkBtn = collectIn(expand(fromTalk), (n) => n.type === 'button' && textOf(n).includes('开始读'))[0]
+  t('这时「开始读」是灰的', fromTalkBtn?.props?.disabled === true, JSON.stringify(fromTalkBtn?.props?.disabled))
+}
+
+{
+  // 书架：`拿掉这本书`后台一直有，界面从来没接过，用户只能在文件管理器里翻目录。
+  const SHELF = { ...LISTING, cards: [{ id: 'sera', path: 'cards/sera.card.md', name: 'Sera', kind: 'fictional', coverage: 50 }] }
+  const tree = renderRoot('写小说门（书架上有书）', base('novel', { 2: SHELF, 26: [{ id: 'b1', title: '长夜' }] }))
+  const words = textIn(expand(tree))
+  t('书架上每本书都有「不要这本了」', words.includes('不要这本了'), words.slice(0, 400))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

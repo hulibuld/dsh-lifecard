@@ -132,6 +132,10 @@ console.log('\n=== 5. 给 AI 的话：这一章的计划、上一章结尾、设
   t('作者这一句要求在', prompt.includes('打开箱子那一段'), '')
   t('明说了不写章节标题', prompt.includes('不写章节标题'), '')
   t('明说了只写这一章', prompt.includes('只写这一章'), '')
+  t('要求形容词能还原到具体东西上', prompt.includes('能用手的场面'), '')
+  t('要求不解释刚写出来的动作', prompt.includes('不解释刚写出来的东西'), '')
+  t('要求比喻只在现场捞', prompt.includes('比喻只在现场捞'), '')
+  t('对话框里的短回应允许留', prompt.includes('人物对话里「行」'), '')
 
   const outlinePrompt = novel.buildOutlinePrompt({
     title: '雾港', genre: '悬疑', idea: '三个人', cast: [], worldEntries: [], chapters: 8, ask: '',

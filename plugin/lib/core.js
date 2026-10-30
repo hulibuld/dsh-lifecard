@@ -84,6 +84,47 @@ export const PROPOSAL_FIELDS = [
 ]
 
 /**
+ * 正文类小节。这些字段的内容是成段的话，同一件事很容易被模型写成
+ * 一句短的又说成一句长的，所以除完全重复外还做包含式去重。
+ *
+ * 结构字段（name、tags、birth_year…）不做包含式：`家` 是 `家人` 的子串，
+ * 但它们是两个 tag；把短的那个当重复删掉，等于悄悄丢数据。
+ */
+const LONG_TEXT_FIELDS = new Set([
+  '自述', '性格', '场景', '开场白', '备选开场', '对话示例', '创作者备注',
+  '关系史', '不会说的话', '不会做的事', '外貌', '口癖', '备注',
+  'knowledge', 'life', 'address',
+])
+
+/**
+ * 去重时用的正文形态：去掉空白与标点、统一小写。
+ *
+ * 「他喜欢下棋。」和「他 喜欢下棋」是同一句话，只差标点和空格。
+ * 模型重新整理同一份材料时，这种差别几乎必然出现——按原样比就漏了。
+ */
+function proposalTextKey(text) {
+  return String(text ?? '')
+    .toLowerCase()
+    .replace(/[\s\p{P}\p{S}]+/gu, '')
+}
+
+/** 一条提案的值做成去重键。数组按元素摊平，对象按稳定序列化。 */
+function proposalValueKey(item) {
+  const v = item?.value
+  if (typeof v === 'string') return proposalTextKey(v)
+  if (Array.isArray(v)) {
+    return v
+      .map((x) => (typeof x === 'string' ? proposalTextKey(x) : proposalTextKey(JSON.stringify(x))))
+      .filter((s) => s !== '')
+      .sort()
+      .join('|')
+  }
+  if (v === null || v === undefined) return ''
+  if (typeof v === 'object') return proposalTextKey(JSON.stringify(v))
+  return proposalTextKey(String(v))
+}
+
+/**
  * 模型自报的 line_start 与实际匹配位置允许相差几行。
  *
  * 多行引文的首行（`quote.split('\n')[0]`）与 quote 的真实起点常常差一两行
@@ -896,6 +937,16 @@ export function verifyQuote(item, materials) {
 
 /**
  * 校验整个提案：逐条过引文门，不通过的移进 rejected。
+ *
+ * 还要去重。同一条事实在同一份提案里出现两遍（模型把材料里一句话拆成
+ * 两个「自述」条目，或者换个标点再说一遍），以前两条都会过闸门、被勾选、
+ * 写进卡——用户整理一次材料，卡里就多一段重复的正文。
+ * 这一步只在**同一 field 内**比：`name` 和 `自述` 里出现同一句话不是重复，
+ * 那是两个字段各说各的。比对前先去掉空白和标点、统一大小写。
+ *
+ * 正文类小节（自述、场景、对话示例…）再做包含式去重：短的被长的吸收。
+ * 结构字段不做，"家" 是 "家人" 的子串，但那是两个 tag。
+ *
  * @param {object} proposal
  * @param {Record<string, string>} materials
  */
@@ -903,6 +954,9 @@ export function verifyProposal(proposal, materials) {
   const items = asArray(proposal?.items)
   const accepted = []
   const rejected = []
+  /** field → 已经收下的条目（记下键和对象，长句吸收短句时要回撤）。 */
+  const seen = new Map()
+
   for (const item of items) {
     if (item === null || typeof item !== 'object') {
       rejected.push({ item, reason: '条目不是对象' })
@@ -927,7 +981,39 @@ export function verifyProposal(proposal, materials) {
       rejected.push({ item, reason: q.reason })
       continue
     }
-    accepted.push({ ...item, verified_line: q.line })
+
+    const field = item.field.trim()
+    const key = proposalValueKey(item)
+    const prior = seen.get(field) ?? []
+    let dup
+    if (key !== '') {
+      dup = prior.find((p) => p.key === key)
+      if (dup === undefined && LONG_TEXT_FIELDS.has(field)) {
+        dup = prior.find((p) => p.key !== '' && (key.includes(p.key) || p.key.includes(key)))
+      }
+    }
+    if (dup !== undefined) {
+      if (key.length > dup.key.length && key.includes(dup.key)) {
+        // 新的这句更长、把前面那句整个包含进来了：留长的，把短的撤下来。
+        // 「他喜欢下棋」和「他喜欢下棋，每天下午都要下一盘」是同一件事，
+        // 留两句会让卡读起来像复读。
+        const at = accepted.indexOf(dup.entry)
+        if (at >= 0) accepted.splice(at, 1)
+        seen.set(field, prior.filter((p) => p !== dup))
+        rejected.push({ item: dup.item, reason: '和后面那条重复，只留了长的' })
+      } else {
+        rejected.push({ item, reason: '和前面那条重复' })
+        continue
+      }
+    }
+
+    const entry = { ...item, verified_line: q.line }
+    accepted.push(entry)
+    if (key !== '') {
+      const list = seen.get(field) ?? []
+      list.push({ key, item, entry })
+      seen.set(field, list)
+    }
   }
   return { accepted, rejected, ok: rejected.length === 0 }
 }

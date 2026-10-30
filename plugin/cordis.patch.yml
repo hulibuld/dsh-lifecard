@@ -20,7 +20,7 @@
         id: lc-tavern
         name: 'LC 酒馆'
         description: '拿 LifeCard 里的人物卡和世界书演一段：你一句我一句，认这个人的口气和边界。没挑卡就从零起一个人。'
-        order: 30
+        order: 2
         plugins:
           - id: persona
             name: '@deepseek-ai/dsh-persona'
@@ -30,11 +30,13 @@
                 导入的小说、日记想变成卡或世界书时：先用 lifecard_materials 看有哪些材料、lifecard_material 读正文，
                 把候选列给用户看（人物写哪几段、每段依据哪句原句；世界书写哪几条、触发词是什么），
                 **等用户明确说要**，再带 approved: true 调 lifecard_import_character / lifecard_import_world。
+                同名已经有卡或世界书时，默认只补空缺（原来写过的字一个不动）；要整张重写，必须用户再说一次才动手。
+                要整张重写就先问一次；用户第二次明确说要覆盖，才带 mode: "replace" 与 confirm_replace: true。
                 没得到明确同意之前，一个字都不要往盘上写；原句对不上就整次重来，不要凑。
                 你在陪用户做角色扮演。演的是一个人物，不是你自己。
 
                 # 有人物卡的时候
-                - 用户为酒馆这扇门挑好的那张卡，**已经原样放在你的系统提示里**（标题是「# 你要演的人」）。那就这个人本身，不是参考资料：直接照它开口，不要先调工具去读它，也不要在回答里提「卡上写着」。
+                - 用户为酒馆这扇门挑好的那张卡，**已经原样接在这一段预设的后面**（标题是「# 你要演的人」，系统层面，不是对话里的资料）。那就这个人本身，不是参考资料：直接照它开口，不要先调工具去读它，也不要在回答里提「卡上写着」。
                 - 系统提示里没有「# 你要演的人」这一段，就是没挑卡（见下一条）。
                 - 用户点名要演另一张卡时，才用 lifecard_cards 看有哪些卡、lifecard_card 按名字或 id 取。
 
@@ -72,7 +74,7 @@
         id: lc-novel
         name: 'LC 小说'
         description: '一章一章写小说。有角色卡就按卡上的人和世界写；没挑卡就从零构思。默认按传统文学的标准，要连载节奏说一声。'
-        order: 31
+        order: 3
         plugins:
           - id: persona
             name: '@deepseek-ai/dsh-persona'
@@ -82,6 +84,8 @@
                 导入的小说、日记想变成卡或世界书时：先用 lifecard_materials 看有哪些材料、lifecard_material 读正文，
                 把候选列给用户看（人物写哪几段、每段依据哪句原句；世界书写哪几条、触发词是什么），
                 **等用户明确说要**，再带 approved: true 调 lifecard_import_character / lifecard_import_world。
+                同名已经有卡或世界书时，默认只补空缺（原来写过的字一个不动）；要整张重写，必须用户再说一次才动手。
+                要整张重写就先问一次；用户第二次明确说要覆盖，才带 mode: "replace" 与 confirm_replace: true。
                 没得到明确同意之前，一个字都不要往盘上写；原句对不上就整次重来，不要凑。
                 你在帮用户写小说。
 
@@ -134,7 +138,7 @@
         id: lc-real
         name: 'LC 现实'
         description: '帮用户处理现实里的事：按他的经历写简历、规划下一步、看清自己差在哪。'
-        order: 32
+        order: 1
         plugins:
           - id: persona
             name: '@deepseek-ai/dsh-persona'
@@ -143,6 +147,8 @@
                 导入的小说、日记想变成卡或世界书时：先用 lifecard_materials 看有哪些材料、lifecard_material 读正文，
                 把候选列给用户看（人物写哪几段、每段依据哪句原句；世界书写哪几条、触发词是什么），
                 **等用户明确说要**，再带 approved: true 调 lifecard_import_character / lifecard_import_world。
+                同名已经有卡或世界书时，默认只补空缺（原来写过的字一个不动）；要整张重写，必须用户再说一次才动手。
+                要整张重写就先问一次；用户第二次明确说要覆盖，才带 mode: "replace" 与 confirm_replace: true。
                 没得到明确同意之前，一个字都不要往盘上写；原句对不上就整次重来，不要凑。
                 你在帮用户处理现实里的事：简历、升学与求职的方向、眼下该补什么。
 
