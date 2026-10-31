@@ -968,7 +968,10 @@ export function parseScriptScenes(text) {
 
   // 用下标循环：跨行续词那一段要把下面几行吞掉，吞完得能把游标往前挪。
   for (let index = 0; index < lines.length; index++) {
-    const raw = String(lines[index] ?? '').trim()
+    // 模型爱把整份剧本写成 markdown 列表（`- △她把伞靠在门边。`、`- 陈默：伞放门边。`）。
+    // 行首那个圆点是排版，不是戏；不剥掉的话每一行都落进「没归位」，
+    // 连演员表里都会多出一个叫「- 陈默」的人。
+    const raw = String(lines[index] ?? '').trim().replace(/^[-*+•·]\s+/, '')
     // 场号前面可能是「【第1场】」「场景1」「1.」，后面可能是「：旧书店」。
     // 模型和人都爱写成这几种，只认「第N场」会把一份好剧本读成 0 场。
     // 场号的写法就是这些：第3场 / 第 3 场 / 【第3场】/ 场景3 / 场3 / SCENE 3 / 三、
@@ -1027,7 +1030,8 @@ export function parseScriptScenes(text) {
 
     // 这一栏的写法五花八门：【出场人物】、出场人物：、【 出场人物 】、【人物】、【登场人物】。
     // 只认一种，剩下的都读成「这场没写人」，演员表就排不出来。
-    const castHit = /^[【\[]?\s*(?:出场人物|出场人员|人物|登场人物|角色)\s*[】\]]?\s*[：:]?\s*(.*)$/.exec(raw)
+    // 标签外面可能套一层加粗（`**【出场人物】** 林小雨、陈默`），一起剥。
+    const castHit = /^\*{0,2}\s*[【\[]?\s*\*{0,2}\s*(?:出场人物|出场人员|人物|登场人物|角色)\s*\*{0,2}\s*[】\]]?\s*[：:]?\s*\*{0,2}\s*(.*)$/.exec(raw)
     if (castHit !== null) {
       mode = 'cast'
       current.cast.push(...splitNames(castHit[1]))
@@ -1036,7 +1040,7 @@ export function parseScriptScenes(text) {
       if (current.cast.length > 0) current.declared = true
       continue
     }
-    const propHit = /^[【\[]?\s*(?:关键道具|道具)\s*[】\]]?\s*[：:]?\s*(.*)$/.exec(raw)
+    const propHit = /^\*{0,2}\s*[【\[]?\s*\*{0,2}\s*(?:关键道具|道具)\s*\*{0,2}\s*[】\]]?\s*[：:]?\s*\*{0,2}\s*(.*)$/.exec(raw)
     if (propHit !== null) {
       mode = 'props'
       current.props.push(...splitNames(propHit[1]))
@@ -1048,7 +1052,7 @@ export function parseScriptScenes(text) {
     // 这里单独收着，不报「没归位」（人写的是对的东西，只是不在我们认的五种行里）。
     // 注意别把「音乐：」「光线：」「音效：」收进来——那几样提示词里明写着不许写，
     // 收进备注等于把它们藏起来，扫描器就再也报不出来了。
-    const noteHit = /^[【\[]?\s*(?:时间|地点|场景|场次时间|服装|化妆|备注|说明|注|天气)\s*[】\]]?\s*[：:]\s*(.*)$/.exec(raw)
+    const noteHit = /^\*{0,2}\s*[【\[]?\s*\*{0,2}\s*(?:时间|地点|场景|场次时间|服装|化妆|备注|说明|注|天气)\s*\*{0,2}\s*[】\]]?\s*[：:]\s*\*{0,2}\s*(.*)$/.exec(raw)
     if (noteHit !== null) {
       const noteText = String(noteHit[1] ?? '').trim()
       if (noteText !== '') current.notes.push(noteText)

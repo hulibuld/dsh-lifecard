@@ -978,6 +978,22 @@ await fs.rm(ws, { recursive: true, force: true })
     await fs.rm(ws6, { recursive: true, force: true })
   }
 
+  // ⑳ 模型爱把整份剧本写成 markdown：列表符、加粗标签、井号场头。
+  {
+    const plain = '第1场\n旧书店·门厅 夜 内\n【出场人物】林小雨、陈默\n【关键道具】红伞\n△她把伞靠在门边。\n陈默（没抬头）说："伞放门边。"'
+    const markdown = '### 第1场 旧书店·门厅 夜 内\n\n**【出场人物】** 林小雨、陈默\n\n**【关键道具】** 红伞\n\n- △她把伞靠在门边。\n- 陈默（没抬头）说："伞放门边。"'
+    const a = novel.parseScriptScenes(plain)
+    const b = novel.parseScriptScenes(markdown)
+    t('markdown 列表符和加粗标签不影响分场', b.counts.scenes === 1, JSON.stringify(b.counts))
+    t('markdown 写法不报「没归位」', !novel.scanScript(markdown).issues.some((x) => x.kind === 'stray'), JSON.stringify(novel.scanScript(markdown).issues.map((x) => x.kind)))
+    t('markdown 写法不报「没写谁在这场」', !novel.scanScript(markdown).issues.some((x) => x.kind === 'no-cast'), '')
+    t('加粗标签里的名字照常读出来', JSON.stringify(b.scenes[0].cast) === JSON.stringify(['林小雨', '陈默']), JSON.stringify(b.scenes[0].cast))
+    t('加粗标签里的道具照常读出来', JSON.stringify(b.scenes[0].props) === JSON.stringify(['红伞']), JSON.stringify(b.scenes[0].props))
+    t('列表符后面的 △ 还是动作', b.scenes[0].actions.length === 1 && b.scenes[0].actions[0] === '她把伞靠在门边。', JSON.stringify(b.scenes[0].actions))
+    t('列表符后面的人名不带圆点', b.scenes[0].dialogues.every((d) => !String(d.who).startsWith('-')), JSON.stringify(b.scenes[0].dialogues.map((d) => d.who)))
+    t('两种写法读出来的场头一致', a.scenes[0].place === b.scenes[0].place && a.scenes[0].dayNight === b.scenes[0].dayNight && a.scenes[0].inOut === b.scenes[0].inOut, `${a.scenes[0].place}/${b.scenes[0].place}`)
+  }
+
   // ⑲ 场记标签（时间/地点/服装/天气）不是台词，「音乐：」「光线：」却真是镜头话。
   {
     const base = '第1场\n客厅 日 内\n【出场人物】甲\n'
