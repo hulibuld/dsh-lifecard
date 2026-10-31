@@ -3983,8 +3983,12 @@ function BookView({ bookId, onBack, flash }) {
               // 「删掉这份」写全：不写清是剧本，人会以为删的是小说正文。
               h(Btn, { size: 'sm', ghost: true, icon: 'trash', disabled: busy !== '', onClick: removeScript }, '删掉这份剧本'),
               h('div', { className: 'lc-grow' }),
+              // 字数去掉空白再数：报告里、存好之后的回执里都是这个口径，
+              // 这里多算的空格和换行只会让人以为「存完少了几十个字」。
               h('span', { className: 'lc-meta' },
-                scriptDirty ? `${scriptText.length} 字 · 还没存` : `${scriptText.length} 字`),
+                scriptDirty
+                  ? `${scriptText.replace(/\s/g, '').length} 字 · 还没存`
+                  : `${scriptText.replace(/\s/g, '').length} 字`),
             ),
           ),
       // 这一节的报错就摆在这一节里。放全页最底下等于没报——

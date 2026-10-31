@@ -612,8 +612,19 @@ console.log('\n=== 10.12 模型真会写出来的那些样子（审查员 49f9a6
     t(`括注节拍不当没归位：${beat}`, !kinds(base(`△ 他把碗放下。\n${beat}`)).includes('stray'), JSON.stringify(kinds(base(`△ 他把碗放下。\n${beat}`))))
   }
 
-  // ⑧ 只有心里话的一场不算空场。
-  t('只有一句心里话不算空场', !kinds(base('（心里想：他不会回来了。）')).includes('empty-scene'), JSON.stringify(kinds(base('（心里想：他不会回来了。）'))))
+  // ⑧ 只有心里话（或只有一行「（沉默）」）的场，算是空场。
+  // 一场戏里只有一句心里想的，拍出来就是一个站着不动的空镜头，
+  // 配音也一句词都没有。以前这两种算作不空，于是这种场一条提示都不报。
+  t('只有一句心里话算空场', kinds(base('（心里想：他不会回来了。）')).includes('empty-scene'), JSON.stringify(kinds(base('（心里想：他不会回来了。）'))))
+  t('只有一行沉默算空场', kinds(base('（沉默）')).includes('empty-scene'), JSON.stringify(kinds(base('（沉默）'))))
+  t('有动作就不是空场', !kinds(base('△ 他把碗放下。\n（心里想：他不会回来了。）')).includes('empty-scene'), JSON.stringify(kinds(base('△ 他把碗放下。\n（心里想：他不会回来了。）'))))
+  // 心里话一场最多一句，这条一直写在提示词里，可扫描器从来不看。
+  {
+    const three = kinds(base('△ 他站着。\n（心里想：他不会回来了。）\n（心里想：雨还在下。）'))
+    t('心里话超过一句要报', three.includes('too-many-thoughts'), JSON.stringify(three))
+    const one = kinds(base('△ 他站着。\n（心里想：他不会回来了。）'))
+    t('一句心里话不许报', !one.includes('too-many-thoughts'), JSON.stringify(one))
+  }
 
   // ⑨ 「停留 3 分钟」不是秒，「停留 2 秒」才是。
   t('停留 3 分钟不算时长', !kinds(base('△ 队伍在门口停留 3 分钟才挪一步。')).includes('camera'), JSON.stringify(kinds(base('△ 队伍在门口停留 3 分钟才挪一步。'))))
@@ -1048,6 +1059,216 @@ await fs.rm(ws, { recursive: true, force: true })
     t('只缺内外时必须报「没写场头」', kinds('第1场\n客厅 日\n【出场人物】甲\n△站着。').includes('no-head'), JSON.stringify(kinds('第1场\n客厅 日\n【出场人物】甲\n△站着。')))
     t('空场必须报「空场」', kinds('第1场\n客厅 日 内\n【出场人物】甲').includes('empty-scene'), JSON.stringify(kinds('第1场\n客厅 日 内\n【出场人物】甲')))
     t('只有台词没有动作必须报', kinds('第1场\n客厅 日 内\n【出场人物】甲\n甲说："走。"').includes('no-action'), '')
+  }
+}
+
+// ⑰ 审查员 4bba667e / c6f9b494 / 48e2ff3a / 10cee65e 那一轮：
+//    A 类「静默丢数据」、B 类「误报」、C 类「漏报」、D 类「落盘」。
+//    这一组每一条都对应一份真的会出现的剧本写法，不是想象出来的。
+{
+  const scanOf = (body) => novel.scanScript(`第1场\n客厅 日 内\n【出场人物】甲\n${body}\n`)
+  const kindsOf = (body) => scanOf(body).issues.map((x) => x.kind)
+  const hasKind = (body, kind) => kindsOf(body).includes(kind)
+
+  // A1 场号同行写了叙述：以前整句消失，只剩一条「这场没写人」。
+  {
+    const text = '第1场\n客厅 日 内\n【出场人物】甲\n△她推开门。\n\n第2场 她跑进雨里，没回头。\n厨房 夜 内\n△她在案板前站着。'
+    const parsed = novel.parseScriptScenes(text)
+    // 那句话属于**新开的那一场**（场号在同一行，句子跟在号后面）。
+    t('场号同行那句叙述进「没归位」，不许无声消失', parsed.scenes[1].other.some((x) => x.includes('跑进雨里')), JSON.stringify(parsed.scenes.map((sc) => sc.other)))
+    t('场号同行那句叙述也会被报出来', novel.scanScript(text).issues.some((x) => x.kind === 'stray'), JSON.stringify(novel.scanScript(text).issues))
+    t('下一场的场头照常认', parsed.scenes[1].place === '厨房' && parsed.scenes[1].dayNight === '夜', JSON.stringify({ p: parsed.scenes[1].place, d: parsed.scenes[1].dayNight }))
+  }
+
+  // A2 【出场人物】紧跟下一场的场头：以前下一整场连场头一起被吞成人名。
+  {
+    const text = '第1场\n客厅 日 内\n【出场人物】甲\n厨房 夜 内\n△她切菜。'
+    const parsed = novel.parseScriptScenes(text)
+    t('标签下面是场头时要开新的一场', parsed.scenes.length === 2, parsed.scenes.length)
+    t('新那一场的场头是真场头', parsed.scenes[1].place === '厨房', JSON.stringify(parsed.scenes[1].place))
+    t('演员表里不许混进「厨房 夜 内」', parsed.scenes[0].cast.join(',') === '甲', JSON.stringify(parsed.scenes[0].cast))
+    t('那一场的动作还在', parsed.scenes[1].actions.length === 1, JSON.stringify(parsed.scenes[1].actions))
+  }
+
+  // A3 中文数字「三、」跟阿拉伯数字一样要形状校验。
+  {
+    const text = '第1场\n客厅 日 内\n【出场人物】甲\n△她站着没动。\n三、他把碗放下，转身往门口走。\n△她抬起头。'
+    const parsed = novel.parseScriptScenes(text)
+    t('「三、」后面不是场头就不许切成新场', parsed.scenes.length === 1, parsed.scenes.length)
+    t('「三、」那一行进「没归位」，不许消失', parsed.scenes[0].other.some((x) => x.includes('把碗放下')), JSON.stringify(parsed.scenes[0].other))
+    t('「一、二楼的灯」不许被当成场号', novel.parseScriptScenes('第1场\n客厅 日 内\n【出场人物】甲\n△ 一、二楼的灯都灭了。').scenes.length === 1, '')
+    t('真的「三、客厅 日 内」还是要认', novel.parseScriptScenes('一、客厅 日 内\n【出场人物】甲\n△她站着。\n三、客厅 夜 内\n△她坐着。').scenes.length === 2, novel.parseScriptScenes('一、客厅 日 内\n【出场人物】甲\n△她站着。\n三、客厅 夜 内\n△她坐着。').scenes.length)
+  }
+
+  // A4 标签下面写了一句叙述：以前被当成名字/道具名塞进去。
+  {
+    const parsed = novel.parseScriptScenes('第1场\n厨房 夜 内\n【关键道具】菜刀\n她把刀放在案板上\n△灯灭了。')
+    t('标签下面那句叙述不进道具表', parsed.scenes[0].props.join(',') === '菜刀', JSON.stringify(parsed.scenes[0].props))
+    t('标签下面那句叙述进「没归位」', parsed.scenes[0].other.some((x) => x.includes('案板')), JSON.stringify(parsed.scenes[0].other))
+    const cast = novel.parseScriptScenes('第1场\n客厅 日 内\n【出场人物】甲、乙\n林小雨是女一号，脾气很硬\n△她站着。')
+    t('人物简介那种整句不许当人名', !cast.scenes[0].cast.some((x) => x.length > 6), JSON.stringify(cast.scenes[0].cast))
+  }
+
+  // A5 场号同行带 tags：以前标签进了地名，道具静默丢失。
+  {
+    const parsed = novel.parseScriptScenes('第1场\n客厅 日 内\n【出场人物】甲\n\n第2场 客厅 夜 内 【关键道具】红伞\n△她站着。')
+    t('场号同行的道具标签要认出来', parsed.scenes[1].props.join(',') === '红伞', JSON.stringify(parsed.scenes[1].props))
+    t('场号同行的标签不许粘进地名', parsed.scenes[1].place === '客厅', JSON.stringify(parsed.scenes[1].place))
+    t('场号同行的人名标签也要认', novel.parseScriptScenes('第1场 客厅 日 内 【出场人物】甲、乙\n△她站着。').scenes[0].cast.join(',') === '甲,乙', JSON.stringify(novel.parseScriptScenes('第1场 客厅 日 内 【出场人物】甲、乙\n△她站着。').scenes[0].cast))
+  }
+
+  // B1 台词括注里写的动作也算动作。
+  {
+    t('台词括注里写了动作就不报「没动作」', !hasKind(`甲（把碗放下，站起来）说："我走了。"\n乙（没抬头）说："走。"`, 'no-action'), JSON.stringify(kindsOf(`甲（把碗放下，站起来）说："我走了。"`)))
+    t('只有台词、括注里也没动作时还是要报', hasKind('甲说："走。"', 'no-action'), '')
+  }
+
+  // B2 整行括注写得再长也是表演提示。
+  {
+    t('长括注也是表演提示，不许报「没归位」', !hasKind('（他把碗放下，转身往门口走，走到一半又停下来）\n甲说："我走了。"', 'stray'), JSON.stringify(kindsOf('（他把碗放下，转身往门口走，走到一半又停下来）\n甲说："我走了。"')))
+    t('长括注也算这一场有动作', !hasKind('（他把碗放下，转身往门口走，走到一半又停下来）\n甲说："我走了。"', 'no-action'), '')
+  }
+
+  // B3 场记类标签：「场记／注意／提示／调度」以前当成人名。
+  {
+    for (const label of ['场记', '注意', '提示', '调度']) {
+      const parsed = novel.parseScriptScenes(`第1场\n客厅 日 内\n【出场人物】甲\n${label}：她进门的动作。\n甲说："走。"`)
+      t(`「${label}：」进备注，不进演员表`, !parsed.scenes[0].cast.includes(label), JSON.stringify(parsed.scenes[0].cast))
+      t(`「${label}：」的内容收进备注`, parsed.scenes[0].notes.length === 1, JSON.stringify(parsed.scenes[0].notes))
+    }
+  }
+
+  // B4 标签名带后缀。
+  {
+    t('【人物表】也认', novel.parseScriptScenes('第1场\n客厅 日 内\n【人物表】甲、乙\n△站着。').scenes[0].cast.join(',') === '甲,乙', JSON.stringify(novel.parseScriptScenes('第1场\n客厅 日 内\n【人物表】甲、乙\n△站着。').scenes[0].cast))
+    t('【道具清单】也认', novel.parseScriptScenes('第1场\n客厅 日 内\n【道具清单】红伞、信\n△站着。').scenes[0].props.join(',') === '红伞,信', JSON.stringify(novel.parseScriptScenes('第1场\n客厅 日 内\n【道具清单】红伞、信\n△站着。').scenes[0].props))
+    t('同一个人名只算一次', novel.parseScriptScenes('第1场\n客厅 日 内\n【出场人物】甲\n【人物表】甲\n△站着。').scenes[0].cast.join(',') === '甲', JSON.stringify(novel.parseScriptScenes('第1场\n客厅 日 内\n【出场人物】甲\n【人物表】甲\n△站着。').scenes[0].cast))
+  }
+
+  // B5 日夜词表不能再把「夜里」「白昼」当地名。
+  {
+    for (const word of ['夜晚', '夜里', '白昼', '早间', '午间', '早上', '黑天', '阴天', '雨天', '雨夜']) {
+      const head = novel.parseSceneHeadLine(`客厅 ${word} 内`)
+      t(`「${word}」认成日夜`, head !== null && head.dayNight === word && head.place === '客厅', JSON.stringify(head))
+    }
+  }
+
+  // B6 整行套方括号的场头。
+  {
+    const scan = novel.scanScript('【第1场 客厅 日 内】\n【出场人物】甲\n△她站着。')
+    t('【第1场 客厅 日 内】不许把「内】」当地名', scan.scenes[0].inOut === '内' && scan.scenes[0].place === '客厅', JSON.stringify({ p: scan.scenes[0].place, io: scan.scenes[0].inOut }))
+    t('【第1场 客厅 日 内】不许报「没写场头」', !scan.issues.some((x) => x.kind === 'no-head'), JSON.stringify(scan.issues))
+  }
+
+  // B8 现场的声音不是配乐说明。
+  {
+    t('婚礼录像里的音乐是戏', !hasKind('△电视里在放婚礼录像，音乐响起来，全场鼓掌。', 'camera'), JSON.stringify(kindsOf('△电视里在放婚礼录像，音乐响起来，全场鼓掌。')))
+    t('乐队起调子是戏', !hasKind('△台上乐队起了一个调子，音乐响起。', 'camera'), JSON.stringify(kindsOf('△台上乐队起了一个调子，音乐响起。')))
+    t('「背景音乐渐弱」是说明，要报', hasKind('△背景音乐渐弱。', 'camera'), '')
+  }
+
+  // B9 「电视上在打上字幕」是现场画面。
+  {
+    t('电视上在打上字幕是戏', !hasKind('△电视上在打上字幕，一行一行往上滚。', 'camera'), JSON.stringify(kindsOf('△电视上在打上字幕，一行一行往上滚。')))
+    t('「字幕：」是说明，要报', hasKind('字幕：三天后。', 'camera') || hasKind('字幕：三天后。', 'narrator'), '')
+  }
+
+  // B10 「绳子的长度」不是时长。
+  {
+    t('量绳子长度是戏', !hasKind('△他量了量绳子的长度，两米三。', 'camera'), JSON.stringify(kindsOf('△他量了量绳子的长度，两米三。')))
+    t('「时长：15 秒」要报', hasKind('△时长：15 秒。', 'camera'), '')
+  }
+
+  // C1 括注和心里话两栏也要扫镜头词。
+  {
+    t('括注里的镜头话要报', hasKind('（镜头推近到她的脸）\n甲说："走。"', 'camera'), JSON.stringify(kindsOf('（镜头推近到她的脸）\n甲说："走。"')))
+    t('心里话里的镜头话要报', hasKind('（心里想：镜头推近到她的脸）\n△ 他站着。', 'camera'), JSON.stringify(kindsOf('（心里想：镜头推近到她的脸）\n△ 他站着。')))
+  }
+
+  // C2 漏报的十来种分镜写法。
+  {
+    for (const line of [
+      '△远镜头，她从门口进来。',
+      '△中景，两个人在桌前。',
+      '△镜头A：她进门。',
+      '△镜号3：她进门。',
+      '△3号机位拍她的手。',
+      '△手持跟拍，她跑过走廊。',
+      '△升格，雨滴在半空停住。',
+      '△后切到她的脸。',
+      '△画面转为黑白。',
+      '△（镜头拉远）',
+      '△镜头一：她站在门口',
+      '△定格。',
+      '△幻灯片式的回忆。',
+    ]) {
+      t(`分镜写法要报：${line}`, hasKind(line, 'camera'), JSON.stringify(kindsOf(line)))
+    }
+    // 反向：这些是戏，不许报。
+    for (const line of [
+      '△他举起相机，镜头对准窗外。',
+      '△他对着镜头笑了一下。',
+      '△她一秒都没停。',
+      '△收音机里在念旁白。',
+      '△桌上摊着一叠分镜稿。',
+      '△他不懂运镜，也不懂剪辑。',
+    ]) {
+      t(`戏里的话不许报成镜头：${line}`, !hasKind(line, 'camera'), JSON.stringify(kindsOf(line)))
+    }
+  }
+
+  // c6f9b494 要求的负向断言：叙述别被吃成台词。
+  {
+    t('「他想起一句话：雨停了。」不是台词', novel.parseDialogueLine('他想起一句话：雨停了。') === null, JSON.stringify(novel.parseDialogueLine('他想起一句话：雨停了。')))
+    t('「那年冬天：雪下得很大。」不是台词', novel.parseDialogueLine('那年冬天：雪下得很大。') === null, '')
+    t('「广播里说：列车晚点。」不是台词', novel.parseDialogueLine('广播里说：列车晚点。') === null, '')
+    t('「母亲在信里写：别等我。」不是台词', novel.parseDialogueLine('母亲在信里写：别等我。') === null, '')
+    t('单字名「念说：走。」还算台词', novel.parseDialogueLine('念说："走。"')?.who === '念', JSON.stringify(novel.parseDialogueLine('念说："走。"')))
+    t('「白念说」不许被剥成「白」', novel.parseDialogueLine('白念说："走。"')?.who === '白念', JSON.stringify(novel.parseDialogueLine('白念说："走。"')))
+    t('「张道说」不许被剥成「张」', novel.parseDialogueLine('张道说："走。"')?.who === '张道', JSON.stringify(novel.parseDialogueLine('张道说："走。"')))
+    t('「林小雨道」还是「林小雨」', novel.parseDialogueLine('林小雨道："走。"')?.who === '林小雨', JSON.stringify(novel.parseDialogueLine('林小雨道："走。"')))
+    t('「才开口说」不许当说话人', novel.parseDialogueLine('他顿了顿，看向窗外，才开口说："走。"') === null, JSON.stringify(novel.parseDialogueLine('他顿了顿，看向窗外，才开口说："走。"')))
+    t('「才慢慢说」不许当说话人', novel.parseDialogueLine('林小雨沉默了一会儿，才慢慢说："走。"') === null, JSON.stringify(novel.parseDialogueLine('林小雨沉默了一会儿，才慢慢说："走。"')))
+    t('「林小雨说」在逗号后面还是林小雨', novel.parseDialogueLine('这时候门开了，林小雨说："你来了。"')?.who === '林小雨', JSON.stringify(novel.parseDialogueLine('这时候门开了，林小雨说："你来了。"')))
+    t('「甲：走吧。」无引号也算台词', novel.parseDialogueLine('甲：走吧。')?.who === '甲', JSON.stringify(novel.parseDialogueLine('甲：走吧。')))
+  }
+
+  // 一人连说两段。
+  {
+    const scan = novel.scanScript('第1场\n客厅 日 内\n【出场人物】甲\n△她站着。\n甲说："走。"\n"顺便把伞还了。"')
+    t('一个人连说两段要算成一句两段的台词', scan.counts.dialogues === 1, JSON.stringify(scan.counts))
+    t('连说两段时第二段不许报「没归位」', !scan.issues.some((x) => x.kind === 'stray'), JSON.stringify(scan.issues))
+    t('第二段的话要接在第一段后面', String(scan.scenes[0].dialogues[0].text ?? '').includes('伞'), JSON.stringify(scan.scenes[0].dialogues[0]))
+  }
+
+  // 心里话与（沉默）不算「这一场有东西」。
+  {
+    t('只有一句心里话的场要报空场', hasKind('（心里想：他不会回来了。）', 'empty-scene'), JSON.stringify(kindsOf('（心里想：他不会回来了。）')))
+    t('只有一行（沉默）的场要报空场', hasKind('（沉默）', 'empty-scene'), JSON.stringify(kindsOf('（沉默）')))
+    t('一场三句心里话要报', hasKind('（心里想：一）\n（心里想：二）\n（心里想：三）', 'too-many-thoughts'), JSON.stringify(kindsOf('（心里想：一）\n（心里想：二）\n（心里想：三）')))
+  }
+
+  // D1 落盘前剥围栏、D2 字数口径、D3 非规范名也读得到。
+  {
+    const book = await novel.createBook(ws, { title: '落盘探针', idea: '一件事' })
+    await novel.writeChapter(ws, book.id, 1, '第一章的正文。她推开门。')
+    const wrapped = '```markdown\n第1场\n客厅 日 内\n【出场人物】甲\n△她站着。\n```'
+    const saved = await novel.writeScript(ws, book.id, 1, wrapped)
+    t('带围栏的剧本存得进去', saved.ok === true, JSON.stringify(saved))
+    const back = await novel.readScript(ws, book.id, 1)
+    t('落盘时围栏被剥掉了', back.ok === true && !String(back.text).includes('```'), JSON.stringify(back.text?.slice(0, 40)))
+    t('落盘后的字数是去空白的字数', saved.chars === String(back.text).replace(/\s/g, '').length, JSON.stringify({ saved: saved.chars, real: String(back.text).replace(/\s/g, '').length }))
+    const list = await novel.listScripts(ws, book.id)
+    t('列表的字数和存的时候一个口径', list.scripts[0]?.chars === saved.chars, JSON.stringify({ l: list.scripts[0]?.chars, s: saved.chars }))
+    t('全空白的剧本不许落盘', (await novel.writeScript(ws, book.id, 1, '```\n```')).ok === false, '')
+    // 非规范名（1.md）：列得出来，也读得到。
+    const alias = path.join(ws, 'books', book.id, 'scripts', '1.md')
+    await fs.writeFile(alias, '第1场\n客厅 日 内\n【出场人物】甲\n△她站着。\n', 'utf8')
+    await fs.unlink(path.join(ws, 'books', book.id, 'scripts', '001.md')).catch(() => null)
+    const aliasList = await novel.listScripts(ws, book.id)
+    t('非规范名的剧本列得出来', aliasList.scripts.length === 1 && aliasList.scripts[0].index === 1, JSON.stringify(aliasList.scripts))
+    const aliasRead = await novel.readScript(ws, book.id, 1)
+    t('非规范名的剧本读得到', aliasRead.ok === true && String(aliasRead.text).includes('她站着'), JSON.stringify(aliasRead))
   }
 }
 

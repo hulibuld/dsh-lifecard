@@ -587,8 +587,9 @@ export function scriptRelPath(id, index) {
 /** 读一份剧本。没改过这一章也正常，返回空串。 */
 export async function readScript(root, id, index) {
   const rel = scriptRelPath(id, index)
+  const target = path.join(root, rel)
   try {
-    const text = await fs.readFile(path.join(root, rel), 'utf8')
+    const text = await fs.readFile(target, 'utf8')
     // 文件被别的软件写坏过（非法编码、混进 NUL）时，Node 不报错，
     // 只把这些字节换成替换字符。以前它就这样静静当成一份正常剧本显示出来。
     if (text.includes('\uFFFD') || text.includes('\u0000')) {
@@ -596,9 +597,40 @@ export async function readScript(root, id, index) {
     }
     return { ok: true, path: rel, text }
   } catch (error) {
-    if (error?.code === 'ENOENT') return { ok: true, path: rel, text: '', missing: true }
+    if (error?.code === 'ENOENT') {
+      // `scripts/1.md` 这种没补零的名字也算这一章（章列表里会显示「有剧本」）。
+      // 只按规范名读的话，列表说有、打开却是空的——人只会以为剧本丢了。
+      // 所以规范名读不到时，退回去找同章号的别的写法（只在读不到时才多一次目录读）。
+      const fallback = await findScriptFile(root, id, index)
+      if (fallback !== null) {
+        try {
+          const other = await fs.readFile(path.join(root, fallback.rel), 'utf8')
+          if (other.includes('\uFFFD') || other.includes('\u0000')) {
+            return { ok: false, error: '这份剧本的内容坏了（可能被别的软件改过）。可以用访达打开那个文件看一眼，或者删掉重新改一份。' }
+          }
+          return { ok: true, path: fallback.rel, text: other, alias: true }
+        } catch {
+          // 退路也读不到，就还是当没有。
+        }
+      }
+      return { ok: true, path: rel, text: '', missing: true }
+    }
     return { ok: false, error: '这份剧本读不出来。检查一下文件权限。' }
   }
+}
+
+/** 找这一章剧本的另一种文件名（`1.md`、`001.MD`）。找不到回 null。 */
+async function findScriptFile(root, id, index) {
+  const n = chapterIndexOf(chapterFileName(index))
+  if (n === 0) return null
+  const dir = path.join(root, bookRelPath(id), SCRIPT_DIR)
+  const names = await fs.readdir(dir).catch(() => null)
+  if (names === null) return null
+  const candidates = names
+    .filter((name) => chapterIndexOf(name) === n && name !== chapterFileName(n))
+    .sort()
+  if (candidates.length === 0) return null
+  return { file: candidates[0], rel: path.posix.join(bookRelPath(id), SCRIPT_DIR, candidates[0]) }
 }
 
 /** 写一份剧本（整份覆盖，先写临时文件再改名）。 */
@@ -615,9 +647,18 @@ export async function writeScript(root, id, index, text) {
   if (!Array.isArray(book.chapters) || !book.chapters.some((c) => Number(c.index) === n)) {
     return { ok: false, error: `这本书没有第 ${n} 章。先翻到真正的那一章再存。` }
   }
+  // 库函数自己也要挡一道：路由层会先拦空白，但别处直接调这里
+  // 会安安静静写出一个 0 字节的文件，之后读回来是空的，人以为剧本没了。
+  if (typeof text !== 'string' || text.trim() === '') {
+    return { ok: false, error: '这一份是空的，没往里存。' }
+  }
   const rel = scriptRelPath(id, n)
   const abs = path.join(root, rel)
-  const body = String(text ?? '')
+  // 模型把整份剧本包在 ``` 里，界面又把这份原样交回来存。
+  // 不剥就落盘，下一章 draft 会把上一章最后一场（带着围栏）带进去，
+  // 那份新剧本第一行就成了「```」，扫描器一路报「没归位」。
+  const body = stripFence(String(text))
+  if (body.trim() === '') return { ok: false, error: '这一份是空的，没往里存。' }
   const tmp = `${abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
   try {
     await fs.mkdir(path.dirname(abs), { recursive: true })
@@ -631,7 +672,9 @@ export async function writeScript(root, id, index, text) {
     if (error?.code === 'EISDIR' || error?.code === 'ENOTDIR') return { ok: false, error: '那个位置上被别的东西占着，这份剧本没存下来。' }
     return { ok: false, error: '这份剧本没能存下来。再试一次；还是不行就先关掉重开。' }
   }
-  return { ok: true, index: n, path: rel, chars: body.length }
+  // 字数跟报告、跟列表一个口径：去掉空白以后的字数。
+  // 用 body.length 的话，同一份剧本存的时候一个数、列的时候另一个数、报告里第三个。
+  return { ok: true, index: n, path: rel, chars: body.replace(/\s/g, '').length }
 }
 
 /** 删一份剧本。章不删，只删改出来的这份。 */
@@ -673,18 +716,24 @@ export async function listScripts(root, id) {
       if (canonical !== true && prev.file <= name) continue
     }
     let scenes = 0
+    let chars = 0
     try {
       const text = await fs.readFile(path.join(dir, name), 'utf8')
       scenes = parseScriptScenes(text).scenes.length
+      // 字数要和报告、和界面上那个数字一个口径：去掉空白以后的字数。
+      // 以前这里用的是文件字节数（UTF-8 一个汉字三字节），
+      // 同一份剧本在三个地方显示三个数字，人不知道该信哪个。
+      chars = text.replace(/\s/g, '').length
     } catch {
       scenes = 0
+      chars = 0
     }
     seen.set(index, {
       index,
       file: name,
       canonical,
       path: path.posix.join(bookRelPath(id), SCRIPT_DIR, name),
-      chars: stat.size,
+      chars,
       scenes,
       mtime: stat.mtime.toISOString(),
     })
@@ -702,7 +751,19 @@ export async function listScripts(root, id) {
  * 一个叫「林小雨（低声）说」的地方。
  */
 function parseSceneHeadLine(line) {
+  // 这一支是公开导出的（`export { parseSceneHeadLine }`），别处会直接把
+  // `**客厅 日 内**` 这样的行递进来。`scanScript` 入口先剥过壳，所以界面看不出来；
+  // 两个入口行为不一致迟早出事，干脆在这里自己剥一次。
+  // 场号和场头写在同一行很常见（`## 第3场 门外 夜 外`），
+  // 别处直接把整行递进来时，场号得先摘掉，否则地名会变成「第3场 门外」。
   const raw = String(line ?? '').trim()
+    // 整行套一层方括号（`【第1场 客厅 日 内】`、`[第2场 门外 夜 外]`）也要剥：
+    // 只剥行首的「【第1场」会把行尾的「内】」留在地名里。
+    .replace(/^[【\[]\s*/, '')
+    .replace(/\s*[】\]]$/, '')
+    .replace(/^[#>*_\s]+/, '')
+    .replace(/[#>*_\s]+$/, '')
+    .replace(/^(?:[【\[]?\s*第\s*[0-9０-９一二三四五六七八九十百零〇两]+\s*[场幕]\s*[】\]]?\s*[：:·.、]?|场景\s*[0-9０-９]+\s*[：:·.、]?|场次\s*[0-9０-９]+\s*[：:·.、]?)\s*/, '')
   if (raw === '') return null
   if (/^[△▲→▵Δ]/.test(raw) || raw.startsWith('【')) return null
   // 有冒号或引号的都是台词，不是地点。直角引号（「」『』）也算引号——
@@ -720,6 +781,11 @@ function parseSceneHeadLine(line) {
   const parts = unwrapped.split(/[\s/|、／｜]+/).filter((x) => x !== '')
   let dayNight = ''
   let inOut = ''
+  // 「院子里面 夜 外」：`里面` 是内外词，后面又明写了「外」。
+  // 明写的那个说了算——早先按先后顺序取第一个，地名成了「院子」、内外成了「内」，
+  // 人明明写的是屋外，读出来是屋里，还一条不报。
+  let inOutStrict = ''
+  let inOutTail = ''
   const rest = []
   for (const part of parts) {
     if (isDayNightPart(part)) {
@@ -738,13 +804,22 @@ function parseSceneHeadLine(line) {
     if (inner || outer) {
       // 第二个「内」「外」也是多余的：以前它会被当成地名，
       // 「室内 日 内」读出来地点就成了「内」。
-      if (inOut === '') inOut = inner ? '内' : '外'
+      // 单独的「内/外」最可信；「院子里面」这种带地名的只当备选，
+      // 后面只要出现明写的「外」，就按「外」算。
+      if (inner && part === '内' || part === '内景' || part === '室内' || part === '室内景') {
+        if (inOutStrict === '') inOutStrict = '内'
+      } else if (part === '外' || part === '外景' || part === '室外' || part === '室外景') {
+        if (inOutStrict === '') inOutStrict = '外'
+      } else if (inOutTail === '') {
+        inOutTail = inner ? '内' : '外'
+      }
       const leftover = innerTail !== null ? innerTail[1] : (outerTail !== null ? outerTail[1] : '')
       if (leftover !== '') rest.push(leftover)
       continue
     }
     rest.push(part)
   }
+  inOut = inOutStrict !== '' ? inOutStrict : inOutTail
   const place = rest.join(' ')
   // 只写了「室内 日 内」、没写是哪儿：日夜内外认下来了，地点留空
   // （后面会报「没写清在哪儿」，但不该把整行丢掉）。
@@ -772,7 +847,7 @@ function parseSceneHeadLine(line) {
 function isDayNightPart(part) {
   const text = String(part ?? '').trim()
   if (text === '') return false
-  if (/^(日|夜|日间|夜间|晨|清晨|黎明|早晨|早|上午|中午|午|下午|午后|黄昏|傍晚|晚|晚上|晚间|深夜|半夜|凌晨|白天|晴|阴)$/.test(text)) return true
+  if (/^(日|夜|日间|夜间|晨|清晨|黎明|早晨|早|早上|早间|上午|中午|午|午间|下午|午后|黄昏|傍晚|晚|晚上|晚间|深夜|半夜|凌晨|白天|白昼|夜晚|夜里|黑天|晴|阴|阴天|雨天|雨夜|雪天|月夜)$/.test(text)) return true
   // 深夜两点 / 凌晨三点半 / 早上七点
   return /^(?:凌晨|深夜|清晨|早晨|早上|上午|中午|下午|傍晚|晚上)?[0-9０-９一二三四五六七八九十百零〇两]{1,3}\s*点(?:半|一刻|[0-9０-９]{1,2}\s*分)?$/.test(text)
 }
@@ -798,6 +873,7 @@ const STAGE_LABELS = [
   '时间', '地点', '场景', '场次时间', '服装', '化妆', '备注', '说明', '注', '天气',
   '氛围', '基调', '音效', '声音', '音乐', '配乐', '光线', '色温',
   '镜头', '景别', '机位', '特写', '分镜', '时长', '转场',
+  '场记', '注意', '提示', '调度', '动作提示', '表演提示',
 ]
 
 /**
@@ -805,7 +881,7 @@ const STAGE_LABELS = [
  *
  * 也认不带引号的写法：`甲：走吧。`（中文剧本和话剧台本最标准的样子）。
  */
-export function parseDialogueLine(line) {
+export function parseDialogueLine(line, opts) {
   // `**甲（没抬头）说："走。"**`：模型爱给台词加粗，不剥壳整行就作废、台词消失。
   let raw = String(line ?? '').trim().replace(/^[*_`#>\s]+/, '').replace(/[*_`\s]+$/, '')
   if (raw === '' || /^[△▲→▵Δ]/.test(raw) || raw.startsWith('【')) return null
@@ -839,19 +915,34 @@ export function parseDialogueLine(line) {
   }
   if (hit === null) {
     // 不带引号：冒号后面直接是话，且话说到句末。
+    // 这一支最容易闯祸：`他想起一句话：雨停了。` `那年冬天：雪下得很大。`
+    // 都是小说正文，冒号左边一长串全是叙述。照单收下的话，最该被指出来的那种行
+    // 反而成了「合法台词」，演员表里还多出一个叫「他想起一句话」的人。
+    // 所以名字要过一道「像不像一个人」的检验。
     const bare = /^([^：:（(]{1,30}?)\s*(?:[（(]([^）)]{0,200})[）)])?\s*(?:说|道|问|答|喊|叫|念|嚷|吼|应|叹|回|接|嘟囔|嘀咕)?\s*[：:]\s*([^"“”「」『』]{1,200}?[。！？…~]+)\s*$/.exec(raw)
-    if (bare !== null) hit = [bare[0], bare[1], bare[2], bare[3], undefined]
+    if (bare !== null) {
+      const candidate = stripSaying(String(bare[1] ?? '').trim())
+      if (looksLikeSpeaker(candidate, String(bare[1] ?? '').trim(), opts?.names)) {
+        hit = [bare[0], candidate, bare[2], bare[3], undefined]
+      }
+    }
   }
   if (hit === null) return null
   const body = String(hit[3] ?? '').trim()
   // 台词前后的括注（`甲（低声）说` 与 `甲说："…"（把门带上）`）都算这一句的表演提示。
   const parenText = [String(hit[2] ?? '').trim(), String(hit[4] ?? '').trim()].filter((x) => x !== '').join('；')
-  let who = stripSaying(String(hit[1] ?? '').trim())
+  // 先留一份没剥过的：剥后缀会顺手把「慢慢」「低声」这类副词吃掉，
+  // 之后再看「逗号后面是不是叙述」就看不出来了（`才慢慢说` 剥完只剩「才」）。
+  const rawWho = String(hit[1] ?? '').trim()
+  let who = stripSaying(rawWho)
   // 「这时候门开了，林小雨说：」——冒号左边塞了半句叙述，
   // 以前整串被当成说话人，演员表里就多出一个叫「这时候门开了，林小雨」的人。
   // 逗号后面才是名字。
-  const afterComma = /[，,。；;！？]\s*([^，,。；;！？]{1,20})$/.exec(who)
-  if (afterComma !== null) who = stripSaying(afterComma[1])
+  const afterComma = /[，,。；;！？]\s*([^，,。；;！？]{1,20})$/.exec(rawWho)
+  // 「他顿了顿，看向窗外，才开口说：」——逗号后面那截是叙述，不是名字。
+  // 以前这类会被当成一个叫「才开口」的人，演员表里多一个幽灵角色，
+  // 真正的问题（这行还没改成动作或台词）反而查不出来。
+  if (afterComma !== null && !NARRATION_TAIL.test(afterComma[1])) who = stripSaying(afterComma[1])
   if (who === '') return null
   // 名字里不许有句读：有就说明冒号左边不是名字，是叙述。
   if (/[，,。；;！？：:]/.test(who)) return null
@@ -879,6 +970,47 @@ export function parseDialogueLine(line) {
 
 /** 「没人」的几种写法。它们不是人名。 */
 const PLACEHOLDER_NAMES = ['无', '沒有', '-', '—', '–', '－', '略', '空', '暂无', '没有', '无人物', 'N/A', 'n/a', 'NA']
+
+/**
+ * 逗号后面那截是叙述、不是名字：「才开口」「终于开口」「才慢慢」「回头看」。
+ *
+ * 这些词出现在名字的位置上，说明冒号左边整句都是散文，主角还没开口。
+ * 认错了会凭空多出一个演员（叫「才开口」），而这行本该被报成「还没归位」，
+ * 检查就失效了。
+ */
+const NARRATION_TAIL = /(?:开口|继续|终于|忽然|突然|然后|于是|只好|这才|顿了顿|想了想|愣了一下|叹了口气|回过神|抬|低|转|笑|看|停|沉默|慢慢|轻声|低声)/
+
+/** 明显是叙述里那种泛称主语，不是人名。 */
+const PRONOUN_SPEAKERS = /^(?:他|她|我|你|它|谁|有人|某人|大家|众人|所有人|两人|三个人|他们|她们|我们|你们)$/
+
+/**
+ * 不带引号的那一支要不要认这行台词：冒号左边得像一个人。
+ *
+ * `甲：走吧。` 是台词；`他想起一句话：雨停了。` 是小说还没改过来。
+ * 区别不在有没有冒号，在冒号左边那一串是不是一个人名。三条判据从宽到严：
+ *
+ * 1. 已经在【出场人物】里登记过的名字（`names`）一律认——作者自己写了这张表；
+ * 2. 两到四个字、不含「说写想念问答的了吗着过」、不含空白，按人名认；
+ * 3. 其余一律不认，让这行照常落进「没归位」，由人自己看要不要改。
+ */
+function looksLikeSpeaker(candidate, original, names) {
+  const name = String(candidate ?? '').trim()
+  if (name === '') return false
+  const pool = Array.isArray(names) ? names : []
+  if (pool.length > 0 && (pool.includes(name) || pool.includes(stripSaying(name)))) return true
+  if (PRONOUN_SPEAKERS.test(name)) return false
+  // 带这些字的多半是整句散文的主语：「母亲在信里写」「他想起一句话」。
+  if (/[说写想念问答喊叫的了吗着过]/.test(name)) return false
+  // 「那年冬天：雪下得很大。」「广播里说：列车晚点。」冒号左边是时间、地点，
+  // 不是人。按时间起头、按方位收尾的那种一律不认。
+  if (/^(?:那|这|此|其|当)[年月日天夜早晚]/.test(name)) return false
+  if (name.length <= 4 && /(?:里|中|上|下|内|外|前|后|边|旁|间)$/.test(name)) return false
+  // 单字（`甲：走吧。`、`乙说："等等。"`）在剧本里就是主角本人，得认。
+  if (name.length < 1 || name.length > 4) return false
+  // 剥之前那串比名字长太多，说明冒号左边还有别的字，是句子不是名字。
+  if (String(original ?? '').trim().length > name.length + 1) return false
+  return true
+}
 
 /**
  * 拆一行「心里想的」：`（心里想：他不会回来了。）`。
@@ -913,17 +1045,26 @@ function stripSaying(name) {
   // （「林小雨」和「林小雨低声」），出场统计就跟着不对。
   // 一层剥一层会剩下「冷冷」，所以要一直剥到不再变短为止。
   const SAY = /(?:说|道|问|答|喊|叫|念|嚷|吼|笑|哭|应|叹|回|接|嘟囔|嘀咕)$/
+  // 只剩两个字的时候不能照上面那串剥：「道」「问」「笑」「念」「应」「回」「叹」
+  // 在中文姓名里到处都是（张道、苏问、王笑、白念、陈应、沈回、郑叹），
+  // 剥掉就把一个人变成另一个人。只有这几个几乎不做名字末字的才敢剥。
+  const SAFE_SAY = /(?:说|喊|叫|答|嚷|吼|哭)$/
   // 「甲又说」「乙接着说」：这几个字是连接，不是名字。
   const LINK = /(?:又|再|接着|然后|继续|随后|补了?一句|转了?头|回过?头)$/
   const ADVERB = /(?:低声|轻声|大声|高声|小声|冷冷|淡淡|慢慢|轻轻|急急|忙忙|缓缓|沉沉|咬着牙|皱着眉|瞪着眼|叹口气|叹了口气|没抬头|抬起头|转过身|别过头)$/
   let out = String(name ?? '').trim()
   for (let round = 0; round < 6; round++) {
     const before = out
-    out = out.replace(ADVERB, '')
-    out = out.replace(/[的地]$/, '')
-    out = out.replace(SAY, '')
-    out = out.replace(/[的了着]$/, '')
-    out = out.replace(LINK, '')
+    // 剥之前先看名字还剩多长：两个字的名字差不多就是全名了，
+    // 除了「说/喊/叫」这一类，一个字都不动（`白念` 不许变成 `白`）。
+    const mayStrip = out.length > 2
+    if (mayStrip) out = out.replace(ADVERB, '')
+    if (out.length > 2) out = out.replace(/[的地]$/, '')
+    if (out.length > 2 || SAFE_SAY.test(out)) out = out.replace(SAY, '')
+    if (out.length > 2) out = out.replace(/[的了着]$/, '')
+    // 连接词紧跟单字人名（`甲又说` → `甲`）也得剥：正则先把「说」吃掉，
+    // 剩下「甲又」已经只有两个字，光看长度就不敢动了，人就多一个「甲又」。
+    if (out.length > 1) out = out.replace(LINK, '')
     if (out === before) break
   }
   // 行首的数字编号（`1. 甲说：…`）是清单号，不是名字的一部分。
@@ -989,8 +1130,11 @@ export function parseScriptScenes(text) {
     const nextIsHead = sceneHit !== null
       && String(sceneHit[8] ?? '').trim() === ''
       && looksLikeSceneHead(String(lines[index + 1] ?? '').trim())
+    // 阿拉伯数字和中文数字这两种「编号 + 标点」写法一样要形状校验：
+    // 正文里 `1. 他推开门。` 到处都是，`三、他把碗放下，转身往门口走。` 也一样，
+    // 一律当场号会把叙述整行吞掉（还只报一句「第 3 场没有场头」）。
     const numberedOk = sceneHit === null
-      || sceneHit[6] === undefined
+      || (sceneHit[6] === undefined && sceneHit[7] === undefined)
       || looksLikeSceneHead(sceneHit[8])
       || nextIsHead
     if (sceneHit !== null && numberedOk) {
@@ -1009,12 +1153,45 @@ export function parseScriptScenes(text) {
       mode = ''
       // 加粗/标题壳子里的场头（`**第1场 客厅 日 内**`、`## 第3场 门外 夜 外`）：
       // 行尾的 `**` 会把「内」粘成「内**」，日夜内外就认不出来了。
-      const inline = String(sceneHit[8] ?? '').trim().replace(/^[#>*_\s]+/, '').replace(/[#>*_\s]+$/, '').trim()
+      let inline = String(sceneHit[8] ?? '').trim().replace(/^[#>*_\s]+/, '').replace(/[#>*_\s]+$/, '').trim()
+      // 场号同行还带着标签（`第2场 客厅 夜 内 【关键道具】红伞`）：
+      // 把 【…】 那几段先切出来分派，剩下才是场头。
+      // 以前整行当场头，标签进了地名，红伞这个道具就无声无息地没了。
+      // 标签名可能带后缀（`【人物表】`、`【道具清单】`），标签后面也可能紧跟内容
+      // （`【关键道具】红伞`），两截都要收。
+      const tagRe = /[【\[]([^】\]]{0,40})[】\]]([^【\[]*)/g
+      let tagHit = tagRe.exec(inline)
+      while (tagHit !== null) {
+        const tagName = String(tagHit[1] ?? '').trim()
+        const tagBody = String(tagHit[2] ?? '').trim()
+        inline = inline.replace(tagHit[0], ' ').trim()
+        const body = tagBody.replace(/^[：:]/, '').trim()
+        // 标签后面那截得真像几个名字。`【人物简介】林小雨是女一。` 后面是一句话，
+        // 不是名字；以前整句会被塞进演员表，表里就多一个十一字长的「人」。
+        if (!looksLikeNameList(body) && body !== '') {
+          current.other.push(body)
+        } else if (/^(?:出场人物|出场人员|人物|登场人物|角色)/.test(tagName)) {
+          for (const name of splitNames(body)) {
+            if (!current.cast.includes(name)) current.cast.push(name)
+          }
+          if (current.cast.length > 0) current.declared = true
+        } else if (/^(?:关键道具|道具)/.test(tagName)) {
+          for (const prop of splitNames(body)) {
+            if (!current.props.includes(prop)) current.props.push(prop)
+          }
+        }
+        tagHit = tagRe.exec(inline)
+      }
       const head = inline === '' ? null : parseSceneHeadLine(inline)
       if (head !== null && (head.dayNight !== '' || head.inOut !== '' || head.place !== '')) {
         current.place = head.place
         current.dayNight = head.dayNight
         current.inOut = head.inOut
+      } else if (inline !== '') {
+        // 场号后面跟的不是场头，是一句叙述（`第2场 她跑进雨里，没回头。`）。
+        // 以前整段就这么扔了：不进动作、不进散行、一条提示都没有，
+        // 用户永远不会知道自己少了半句。留进散行，让扫描器报「没归位」。
+        current.other.push(inline)
       }
       continue
     }
@@ -1031,19 +1208,37 @@ export function parseScriptScenes(text) {
     // 这一栏的写法五花八门：【出场人物】、出场人物：、【 出场人物 】、【人物】、【登场人物】。
     // 只认一种，剩下的都读成「这场没写人」，演员表就排不出来。
     // 标签外面可能套一层加粗（`**【出场人物】** 林小雨、陈默`），一起剥。
-    const castHit = /^\*{0,2}\s*[【\[]?\s*\*{0,2}\s*(?:出场人物|出场人员|人物|登场人物|角色)\s*\*{0,2}\s*[】\]]?\s*[：:]?\s*\*{0,2}\s*(.*)$/.exec(raw)
+    const castHit = /^\*{0,2}\s*[【\[]?\s*\*{0,2}\s*(?:出场人物|出场人员|人物|登场人物|角色)[^【\[\]】\n]{0,6}\s*\*{0,2}\s*[】\]]?\s*[：:]?\s*\*{0,2}\s*(.*)$/.exec(raw)
     if (castHit !== null) {
-      mode = 'cast'
-      current.cast.push(...splitNames(castHit[1]))
-      // 标签后面一个名字都没有（空着、或者写「无」）不算写清了谁在这场。
-      // 早先只要出现这四个字就算，这条检查于是只查「有没有写标签」。
-      if (current.cast.length > 0) current.declared = true
+      const body = String(castHit[1] ?? '').trim()
+      // `【人物简介】林小雨是女一。` 后面是一句话，不是名字。
+      // 以前整句被当成一个演员，表里就多一个十一字长的「人」。
+      if (body === '' || looksLikeNameList(body)) {
+        mode = 'cast'
+        for (const name of splitNames(body)) {
+          if (!current.cast.includes(name)) current.cast.push(name)
+        }
+        // 标签后面一个名字都没有（空着、或者写「无」）不算写清了谁在这场。
+        // 早先只要出现这四个字就算，这条检查于是只查「有没有写标签」。
+        if (current.cast.length > 0) current.declared = true
+      } else {
+        mode = ''
+        current.other.push(body)
+      }
       continue
     }
-    const propHit = /^\*{0,2}\s*[【\[]?\s*\*{0,2}\s*(?:关键道具|道具)\s*\*{0,2}\s*[】\]]?\s*[：:]?\s*\*{0,2}\s*(.*)$/.exec(raw)
+    const propHit = /^\*{0,2}\s*[【\[]?\s*\*{0,2}\s*(?:关键道具|道具)[^【\[\]】\n]{0,6}\s*\*{0,2}\s*[】\]]?\s*[：:]?\s*\*{0,2}\s*(.*)$/.exec(raw)
     if (propHit !== null) {
-      mode = 'props'
-      current.props.push(...splitNames(propHit[1]))
+      const body = String(propHit[1] ?? '').trim()
+      if (body === '' || looksLikeNameList(body)) {
+        mode = 'props'
+        for (const prop of splitNames(body)) {
+          if (!current.props.includes(prop)) current.props.push(prop)
+        }
+      } else {
+        mode = ''
+        current.other.push(body)
+      }
       continue
     }
     // 「时间：深夜。」「地点：客厅。」这类场记信息。
@@ -1052,7 +1247,7 @@ export function parseScriptScenes(text) {
     // 这里单独收着，不报「没归位」（人写的是对的东西，只是不在我们认的五种行里）。
     // 注意别把「音乐：」「光线：」「音效：」收进来——那几样提示词里明写着不许写，
     // 收进备注等于把它们藏起来，扫描器就再也报不出来了。
-    const noteHit = /^\*{0,2}\s*[【\[]?\s*\*{0,2}\s*(?:时间|地点|场景|场次时间|服装|化妆|备注|说明|注|天气)\s*\*{0,2}\s*[】\]]?\s*[：:]\s*\*{0,2}\s*(.*)$/.exec(raw)
+    const noteHit = /^\*{0,2}\s*[【\[]?\s*\*{0,2}\s*(?:时间|地点|场景|场次时间|服装|化妆|备注|说明|注|天气|场记|注意|提示|调度|动作提示|表演提示)\s*\*{0,2}\s*[】\]]?\s*[：:]\s*\*{0,2}\s*(.*)$/.exec(raw)
     if (noteHit !== null) {
       const noteText = String(noteHit[1] ?? '').trim()
       if (noteText !== '') current.notes.push(noteText)
@@ -1079,7 +1274,10 @@ export function parseScriptScenes(text) {
     }
     // 整行就是一个括注、又短（「（沉默）」「（他站起来）」）：那是节拍，不是没归位的行。
     // 心里话走下面的 parseThoughtLine，别在里被截走。
-    const beat = /^[（(][^（()）]{1,20}[）)]$/.exec(raw)
+    // 整行就是一个括注：不管多长都是表演提示。
+    // 早先限了 20 字，写得细一点的舞台提示（`（他把碗放下，转身往门口走，走到一半又停下来）`）
+    // 就同时被判成「没归位」和「这一场没有动作」，两遍都错。
+    const beat = /^[（(][^（()）]{1,120}[）)]$/.exec(raw)
     if (beat !== null && parseThoughtLine(raw) === null) {
       current.beats.push(raw)
       mode = ''
@@ -1125,7 +1323,7 @@ export function parseScriptScenes(text) {
         if (/["”」』]\s*(?:（[^）]{0,60}）)?\s*$/.test(more)) { closed = true; break }
       }
       if (closed) {
-        const joined = parseDialogueLine(merged.replace(/\n/g, ''))
+        const joined = parseDialogueLine(merged.replace(/\n/g, ''), { names: current.cast })
         if (joined !== null) {
           // 行号跳过合并掉的那几行。
           index = next - 1
@@ -1139,7 +1337,24 @@ export function parseScriptScenes(text) {
         }
       }
     }
-    const said = parseDialogueLine(raw)
+    // 一个人连着说两段、第二段没写名字，只有一句引号：
+    //   甲说："走。"
+    //   "顺便把伞还了。"
+    // 第二行整行只是一个引号句。当成「没归位」太亏——它明显还是甲在说。
+    // 归到上一句的说话人，两句并成一句（中间留一个空格）。
+    // 只紧跟上一条台词（`mode === 'dialogue'`）时才算：中间隔了一个动作，
+    // 这句引号可能是另一个人在说话，也可能是引用一件东西上的字。
+    const onlyQuote = /^["“「『]([\s\S]+)["”」』]\s*(?:[（(][^）)]{0,60}[）)])?\s*$/.exec(raw)
+    if (onlyQuote !== null && mode === 'dialogue' && current.dialogues.length > 0) {
+      const last = current.dialogues[current.dialogues.length - 1]
+      const extra = String(onlyQuote[1] ?? '').trim()
+      if (extra !== '' && String(last?.text ?? '') !== '') {
+        last.text = `${last.text} ${extra}`.trim()
+        mode = 'dialogue'
+        continue
+      }
+    }
+    const said = parseDialogueLine(raw, { names: current.cast })
     if (said !== null) {
       current.dialogues.push(said)
       // 说这句话的人也算出场的人：写没写【出场人物】是另一件事，扫的时候分开算。
@@ -1147,7 +1362,7 @@ export function parseScriptScenes(text) {
       // 一行里塞了两个人的话（`甲说："走。"乙说："等等。"`）：
       // 第二句原样留下，让扫描器报「这行没归位」，别让它悄悄消失。
       if (String(said.rest ?? '') !== '') current.other.push(said.rest)
-      mode = ''
+      mode = 'dialogue'
       continue
     }
     // 场号下面紧跟的那一行常常就是「客厅 日 内」。
@@ -1167,21 +1382,63 @@ export function parseScriptScenes(text) {
     // 【出场人物】下面那行默认是名字，但模型经常直接接着写叙述。
     // 带句读的一律不算名字——否则「他把碗放下。」会被当成一个人，
     // 这一行也就再不会出现在「没归位」里。
-    if (mode === 'cast' && looksLikeNames(raw)) {
-      current.cast.push(...splitNames(raw))
-      // 写了标签但一个名字都没有（`【出场人物】` 后面空着、或者写「无」）：
-      // 不能算「写清了谁在这场」，不然这条检查等于只查有没有这四个字。
-      if (current.cast.length > 0) current.declared = true
-      continue
+    // 标签下面那几行默认是名字，可模型经常直接把下一场的场头、或者一句叙述
+    // 接着写下去。这里先试场头：认得出就是下一场，别把它吞成演员名
+    // （`【出场人物】甲` 紧跟 `厨房 夜 内`，以前第二场连场头一起被当成人名，
+    // 一场戏整个消失，零提示）。
+    if (mode === 'cast' || mode === 'props') {
+      const maybeHead = parseSceneHeadLine(raw)
+      if (maybeHead !== null && (maybeHead.dayNight !== '' || maybeHead.inOut !== '')) {
+        // 它不是名字，是场头。
+        // 这一场还没写场头 → 就地补上（别让这一场永远「没写场头」）。
+        if (current.place === '' && current.dayNight === '' && current.inOut === '') {
+          current.place = maybeHead.place
+          current.dayNight = maybeHead.dayNight
+          current.inOut = maybeHead.inOut
+          mode = ''
+          continue
+        }
+        // 这一场的场头已经齐了，标签下面又冒出一个场头：那是下一场，
+        // 只是作者没写「第 2 场」这几个字。开一个新的空场号接着写，
+        // 不然这一整场（连同后面的动作）都会被当成人名吞掉，一条提示都不报。
+        current = {
+          no: (scenes.length > 0 ? Number(scenes[scenes.length - 1].no) || scenes.length : scenes.length) + 1,
+          place: maybeHead.place, dayNight: maybeHead.dayNight, inOut: maybeHead.inOut,
+          declared: false,
+          cast: [], props: [], actions: [], dialogues: [], thoughts: [], beats: [], other: [], notes: [],
+          raw: [raw],
+        }
+        scenes.push(current)
+        mode = ''
+        continue
+      } else if (looksLikeNameList(raw)) {
+        if (mode === 'cast') {
+          for (const name of splitNames(raw)) {
+            if (!current.cast.includes(name)) current.cast.push(name)
+          }
+          if (current.cast.length > 0) current.declared = true
+        } else {
+          for (const prop of splitNames(raw)) {
+            if (!current.props.includes(prop)) current.props.push(prop)
+          }
+        }
+        continue
+      } else {
+        // 标签下面写了句叙述（`【关键道具】菜刀` 换行 `她把刀放在案板上`）：
+        // 它不是名字。以前这条整行被当成人名/道具名塞进去，画面上少了这个动作，
+        // 演员表里还多一个九字长的人。退出这一栏，让这行照常落进散行。
+        mode = ''
+      }
     }
-    if (mode === 'props' && looksLikeNames(raw)) { current.props.push(...splitNames(raw)); continue }
     current.other.push(raw)
   }
 
   for (const scene of scenes) {
-    // 只有一句心里话、或者只有一行「（沉默）」的一场，不算空场——
-    // 人站在那儿不动、心里说了一句话，戏是在的。
-    scene.empty = scene.actions.length === 0 && scene.dialogues.length === 0 && scene.thoughts.length === 0 && scene.beats.length === 0
+    // 空场只看有没有动作和台词。心里话和「（沉默）」不算——
+    // 一场戏里只有一句「（心里想：他不会回来了。）」，拍出来就是一个
+    // 站着不动的空镜头，配音也没台词可念。以前这两种算作不空，
+    // 于是「只有一句心里话」的场一条提示都没有。
+    scene.empty = scene.actions.length === 0 && scene.dialogues.length === 0
     scene.lines = scene.actions.length + scene.dialogues.length + scene.thoughts.length + scene.beats.length + scene.other.length
   }
   return {
@@ -1284,6 +1541,27 @@ function looksLikeNames(line) {
   return true
 }
 
+/**
+ * 标签**下面**紧接的一行是不是还在继续报名字。
+ *
+ * `looksLikeNames` 只要求「短、没句读」，可中文句子本来就可以不带句号：
+ * `【关键道具】菜刀` 下面写「她把刀放在案板上」，它照样通过，
+ * 于是这一行动作被当成道具名塞进清单，画面上少了这个动作，
+ * 道具表里多一个九字长的东西。
+ *
+ * 判据换成「一个个数出来都像名字」：拆出来的每一段不超过六个字，
+ * 而且要么分段多于一段、要么整行本来就短。一整句九个字没分隔的，
+ * 按散文算。
+ */
+function looksLikeNameList(line) {
+  const raw = String(line ?? '').trim()
+  if (!looksLikeNames(raw)) return false
+  const parts = raw.split(/[、,，/\s]+/).filter((x) => x !== '')
+  if (parts.length === 0) return false
+  if (parts.some((x) => x.length > 6)) return false
+  return parts.length > 1 || raw.length <= 6
+}
+
 /** 这一场还没认出「在哪儿 / 日还是夜 / 内还是外」。 */
 function headless(scene) {
   return scene.place === '' && scene.dayNight === '' && scene.inOut === ''
@@ -1310,7 +1588,9 @@ const CAMERA_WORDS = []
  * 「特写：」这种才是有人在写分镜。
  */
 const CAMERA_PATTERNS = [
-  { word: '旁白', re: /旁白\s*[：:]|^旁白|[，。！？]\s*旁白(?:响起|传来|念)|(?:加|配|打上|插入)\s*旁白/ },
+  // 「旁白」只认写成说明口吻的：`旁白：`、行首「旁白说」、或者「加了一段旁白」。
+  // 裸的「旁白」不算——`△ 旁白的声音从隔壁传过来。` 是收音机里的声音，是戏。
+  { word: '旁白', re: /旁白\s*[：:]|^\s*(?:△\s*)?旁白\s*(?:说|念|道|：|响起|响起来|\s*[，。])|(?:加|配|打上|插入|补)\s*(?:一段|段)?\s*旁白/ },
   { word: '画外音', re: /画外音\s*[：:]|^画外音|[，。！？]\s*画外音(?:响起|传来)|(?:加|配|插入)\s*画外音/ },
   { word: '画外', re: /画外\s*[：:]|（画外）|\(画外\)/ },
   // 「镜头慢慢拉开」「镜头缓缓推近」：副词夹在中间也要算。
@@ -1319,29 +1599,41 @@ const CAMERA_PATTERNS = [
   // 「他举起相机，镜头对准窗外」是戏里那个人手里正好有台相机。
   { word: '镜头', re: /^\s*△?\s*镜头\s*(?:一路|慢慢|缓缓|轻轻|猛地|突然|迅速|远远)?\s*.{0,10}?(?:一\s*(?:转|推|拉|晃|摇)|推|拉|摇|移|跟|升|降|切|转|给|带到|扫过|停在|停住|定格|对准)|(?:推|拉|摇|移|跟|升|降)镜(?:头)?|镜头[：:]/ },
   // `切到陈默翻账本的手`：行首一个「切到/转到」就是分镜，戏里没人这么说话。
-  { word: '切镜', re: /^(?:△\s*)?(?:切|转|划|摇|推|拉)到[^，。！？]{0,12}[。！？]?$|^(?:△\s*)?(?:切|转|划)到/ },
+  { word: '切镜', re: /^(?:△\s*)?(?:切|转|划|摇|推|拉)到[^，。！？]{0,12}[。！？]?$|^(?:△\s*)?(?:切|转|划)到|(?:^|[，。；])\s*(?:后|再|又|直)?切到/ },
   // 「摄像机」在戏里是道具：婚礼上有人扛着、监控装在墙角。
   // 只有当这句话是在说「给到哪台机器」时才算分镜。
   { word: '摄像机', re: /^(?:△\s*)?(?:摄像机|摄影机|摇臂)\s*[：:]|(?:机位|镜头|特写|拍到|摇到|切到|摇臂)\s*(?:对准|给到|推到)?\s*(?:摄像机|摄影机|摇臂)|(?:摄像机|摄影机)\s*(?:推|拉|摇|跟|升|降)/ },
-  { word: '景别', re: /景别\s*[：:＝=]|(?:远|全|中|近|特)景别|大远景|大特写|^(?:△\s*)?(?:远|全|中|近|特)景\s*[：:]|^(?:△\s*)?(?:远|全|中|近|特)景[^，。！？]{0,8}[。！？]?$/ },
+  // 景别写在行首就是分镜：`△中景，两个人在桌前。`「大远景」「远镜头」都算。
+  // 但「远处的全景照片」这种是戏里的话，所以要求它落在行首。
+  { word: '景别', re: /景别\s*[：:＝=]|(?:大远景|大特写|远镜头|中镜头|近镜头)|^(?:△\s*)?(?:远|全|中|近|特)景别?(?:\s*[：:，,。！？]|$)|^(?:△\s*)?(?:远|全|中|近|特)景[^，。！？]{0,8}[。！？]?$|^(?:△\s*)?空镜\s*[：:]/ },
+  // `镜头A：`「镜号3：」「镜头一：」——分镜表里的编号写法，戏里没人这么写。
+  // 只认后面跟冒号的，`他对着镜头笑了一下` 不算。
+  { word: '镜号', re: /^(?:△\s*)?(?:镜头|镜号)\s*[A-Za-z0-9一二三四五六七八九十]{1,3}\s*[：:]|镜号\s*[A-Za-z0-9一二三四五六七八九十]{1,3}/ },
+  // 「3号机位」「手持跟拍」「肩扛」都是拍摄说明。
+  { word: '机位标记', re: /\d+\s*号机位|手持|肩扛|跟拍|稳定器/ },
   // 「特写她的手」就是分镜写法，不需要冒号。
   { word: '特写', re: /特写\s*[：:]|(?:给|来个|推到|切到)(?:一个|个)?特写|特写镜头|特写[^，。！？]{0,6}[她他它脸眼手嘴脚]/ },
   { word: '机位', re: /机位\s*[：:]|机位(?:在|从|放到|架在)|换个机位/ },
-  { word: '运镜', re: /运镜\s*[：:]|运镜/ },
+  // 「他不懂运镜，也不懂剪辑」是在说那个人不懂，不是分镜写法。
+  { word: '运镜', re: /运镜\s*[：:]|^\s*(?:△\s*)?运镜/ },
   // 俯拍/仰拍/越轴/定格 当普通动词用的概率极低，直接裸认。
   { word: '机位角度', re: /俯拍|仰拍|越轴|航拍|俯视镜头|仰视镜头/ },
-  { word: '定格', re: /定格\s*[：:]|(?:加|来|给|插)(?:一个|个)?定格|画面定格|定格画面/ },
+  { word: '定格', re: /定格\s*[：:]|(?:加|来|给|插)(?:一个|个)?定格|画面定格|定格画面|^(?:△\s*)?定格\s*(?:[，。！？；]|$)/ },
   { word: '闪回', re: /闪回\s*[：:]|(?:插|加|来)(?:一个|个)?(?:回忆)?闪回|闪回镜头/ },
-  { word: '配乐', re: /(?:配乐|音乐|音效|声音)\s*[：:]|(?:配乐|音乐)\s*(?:起|响起|进来|淡入|淡出)|插入?(?:一段)?(?:配乐|音乐)/ },
+  // 「婚礼录像里音乐响起来」「乐队起了一个调子，音乐响起」是现场的声音，是戏。
+  // 只有在写成提示口吻时才报：`配乐：`、`背景音乐渐弱`、`插入一段配乐`。
+  { word: '配乐', re: /(?:配乐|音乐|音效|声音)\s*[：:]|^(?:△\s*)?(?:配乐|音乐)\s*(?:起|响起|淡入|淡出)|(?:背景音乐|插曲)\s*(?:渐弱|渐强|起|响起|淡入|淡出)|插入?(?:一段)?(?:配乐|音乐)|(?:配乐|音乐)\s*(?:渐弱|渐强)/ },
   { word: '光线', re: /光线\s*[：:]|色温\s*[：:]|(?:打光|布光)\s*[：:]/ },
   // 「黑场」「淡入」「淡出」都是戏里也可能出现的词（院子里的黑场子、像淡入的夜）。
   // 跟转场动词搭配才算分镜。
   // 「画面渐暗，转场。」「转场。」单独一句也是分镜台词，不是戏。
+  // 「画面转为黑白」也是在写调色说明。单写「画面暗下来」是戏，不管。
+  { word: '调色', re: /画面\s*(?:转为|变成|切成|渐暗|渐亮|定格)|色调\s*[：:]|黑白画面|慢速快门|幻灯片式的?回忆/ },
   { word: '转场', re: /转场\s*[：:]|(?:淡入|淡出|叠化|黑场)\s*(?:转场|过场)?\s*[：:]|(?:切|转|划|叠)\s*(?:到|入|出)?\s*(?:黑场|下一场)|转场(?:特效|方式)|叠化|(?:^|[，。；])\s*转场\s*(?:$|[。！？])/ },
   { word: '分镜', re: /分镜\s*[：:]|分镜头?脚本|画分镜|分镜稿(?:是|谁|给)/ },
   // 「升格成」「规格升格」是常用词；只有写成素材处理才是分镜。
   // 「把性子升格成了一种沉默」「规格升格」都是日常说法。只有明摆着在说素材/镜头才算。
-  { word: '升格', re: /升格(?:镜头|素材|处理)|素材升格|降格(?:镜头|素材|处理)|高帧率/ },
+  { word: '升格', re: /升格(?:镜头|素材|处理)|素材升格|降格(?:镜头|素材|处理)|高帧率|(?:^|[，。；])\s*(?:升格|降格)\s*[，。！？；]|^(?:△\s*)?(?:升格|降格)\s*[：:]/ },
   // 「他放慢动作」是戏（动词「放」+ 宾语「慢动作」），
   // 「用了个慢动作」「慢动作镜头」才是分镜写法。
   { word: '慢动作', re: /慢动作\s*[：:]|用了?(?:一个|个)?慢动作|慢动作(?:镜头|特效|处理)|高帧率|慢镜头/ },
@@ -1355,7 +1647,10 @@ const CAMERA_PATTERNS = [
  */
 // 旁白 / 画外音 / 画外 不在这一组：它们不会在现场出现成一样东西，写上就是镜头话。
 const AMBIGUOUS_WORDS = ['字幕', '背景音乐', 'BGM']
-const AMBIGUOUS_HINT = /(?:加|配|打上|配上|响起|插入|叠)\s*(?:字幕|背景音乐|BGM|旁白|画外音|画外)|^(?:字幕|背景音乐|BGM|旁白|画外音|画外)[：:]/
+// 「电视上在打上字幕，一行一行往上滚」是现场画面里的事，不是在写分镜。
+// 所以「打上」只认宾语紧跟的那种写法（`打上字幕：`、`配上字幕`），
+// 而且允许中间隔一个「在」：`在打上字幕` 里那个「上」是动词补语，不是数字幕。
+const AMBIGUOUS_HINT = /(?:加|配|配上|插入|叠)\s*(?:字幕|背景音乐|BGM|旁白|画外音|画外)|^(?:字幕|背景音乐|BGM|旁白|画外音|画外)[：:]/
 
 /**
  * 「秒」单独拿出来按样子判。
@@ -1376,14 +1671,16 @@ const SECONDS_HINT = new RegExp(
   + `|停留\\s*${SECONDS_NUM}\\s*秒`           // 停留 2 秒
   + `|本场.{0,6}${SECONDS_NUM}\\s*秒`          // 本场大约 30 秒
   + `|(?:镜头|画面|黑场|黑屏|定格|转场|字幕|空镜|特写|全景|近景|中景|远景|画外音)[^。！？\\n]{0,10}?${SECONDS_NUM}\\s*秒`  // 画面停住两秒
-  + `|(?:时长|片长|长度)\\s*[：:]?\\s*[^。！？\\n]{0,8}${SECONDS_NUM}`  // 时长：15 秒
+  + `|(?:时长|片长|长度)\\s*[：:]\\s*[^。！？\\n]{0,8}${SECONDS_NUM}`  // 时长：15 秒
   + `|(?:长达|持续|一共|共)\\s*${SECONDS_NUM}\\s*秒`  // 长达三秒钟
   + ')'
 )
 
 /** 这行里有没有镜头话。有就说中的是哪个词，没有回空串。 */
 function cameraWordIn(line) {
-  const text = String(line ?? '')
+  // 行首那对括号要先剥掉：`△（镜头拉远）`、`（特写：她的手）` 里的「镜头」「特写」
+  // 就这么被括号挡在行首之外，判据一条也命中不了。
+  const text = String(line ?? '').replace(/^\s*[（(]\s*/, '').replace(/\s*[）)]\s*$/, '')
   for (const word of CAMERA_WORDS) {
     if (text.includes(word)) return word
   }
@@ -1432,11 +1729,22 @@ export function scanScript(text) {
       const word = cameraWordIn(action)
       if (word !== '') cameraHits.push({ scene: scene.no, word, sample: `△${action}` })
     }
-    // 台词里也扫一遍：`甲说："镜头推近到脸上。"` 一样是镜头话，
-    // 只是它穿在台词的衣服里。旁白那句话也得管，提示词里明写着不许用。
-    for (const said of scene.dialogues) {
-      const word = cameraWordIn(said.text)
-      if (word !== '') cameraHits.push({ scene: scene.no, word, sample: `${said.who}：「${said.text}」` })
+    // 台词正文不再扫镜头词。角色张嘴说「你懂什么运镜」「旁白还没录呢」
+    // 是在说话，不是有人在写分镜；把这种句子报成「写了拍不出来的东西」，
+    // 人会以为这个检查在瞎报。真正不该出现的是「旁白：」这种当成台词写的说明行，
+    // 那条在上面的 narrators 里单独管。
+    // 「（镜头推近到她的脸）」「（心里想：镜头慢慢拉远）」一样是在写分镜。
+    // 以前这两栏一条都不扫，写了也零提示——最容易被当成「写对了」。
+    for (const beat of scene.beats) {
+      // 节拍本身就是一整行括注（`（镜头拉远）`）。剥掉外层那对括号再看，
+      // 不然「镜头」永远不在行首，判据一条也命中不了。
+      const inner = String(beat).replace(/^[（(]\s*/, '').replace(/\s*[）)]$/, '')
+      const word = cameraWordIn(inner)
+      if (word !== '') cameraHits.push({ scene: scene.no, word, sample: beat })
+    }
+    for (const thought of scene.thoughts) {
+      const word = cameraWordIn(String(thought?.text ?? ''))
+      if (word !== '') cameraHits.push({ scene: scene.no, word, sample: `（心里想：${thought.text}）` })
     }
     for (const line of scene.other) {
       // 旁白 / 画外音 / 字幕行：解析器已经不把它当台词了，这里单独说一句为什么不行，
@@ -1520,6 +1828,19 @@ export function scanScript(text) {
     })
   }
 
+  // 心里话一场最多一句：提示词里明写着，可一直没人查。
+  // 三句心里话连着排，演员只能站在那儿不动，把心里的事念出来——
+  // 那就不是戏了，是有声书。
+  const tooManyThoughts = parsed.scenes.filter((sc) => sc.thoughts.length > 1)
+  if (tooManyThoughts.length > 0) {
+    issues.push({
+      kind: 'too-many-thoughts',
+      label: `有 ${tooManyThoughts.length} 场心里话超过一句`,
+      detail: '心里话一场留一句就够，多出来的要么改成让人物说出来，要么改成一个动作演出来。',
+      samples: tooManyThoughts.slice(0, 3).map((sc) => `第 ${sc.no} 场：${sc.thoughts.length} 句`),
+    })
+  }
+
   const empty = parsed.scenes.filter((s) => s.empty)
   if (empty.length > 0) {
     issues.push({
@@ -1535,7 +1856,14 @@ export function scanScript(text) {
   // 「（他把碗放下）」是舞台提示，中文剧本传统里就是动作行。
   // 早先只认 △，于是写了动作的人被提示「这一场只有台词、没有动作」，
   // 他会去再补一个 △ 把同一件事写一遍。
-  const noAction = parsed.scenes.filter((sc) => sc.actions.length === 0 && sc.beats.length === 0 && sc.dialogues.length > 0)
+  // 「括号里写了动作」也算动作：`甲（把碗放下，站起来）说："我走了。"`
+  // 中文剧本里这就是在写动作，只不过写在了说的人旁边。
+  // 早先只认 △ 和整行括注，于是这种场被提示「只有台词、没有动作」，
+  // 人会去再补一个 △ 把同一件事写第二遍。
+  const noAction = parsed.scenes.filter((sc) => sc.actions.length === 0
+    && sc.beats.length === 0
+    && !sc.dialogues.some((d) => String(d?.paren ?? '').trim() !== '')
+    && sc.dialogues.length > 0)
   if (noAction.length > 0) {
     issues.push({
       kind: 'no-action',
@@ -1575,18 +1903,20 @@ export function stripFence(text) {
   let body = String(text ?? '').replace(/^\uFEFF/, '').trim()
   // 语言标记不一定是英文：模型写过 ```剧本、```txt、```markdown。
   // 只认 [a-zA-Z]* 的话，`剧本` 会留在正文第一行，整份剧本就多一行「第 1 场之前还有 1 行没进戏」。
-  const opened = /^```[^\n]{0,20}\r?\n?/.exec(body)
+  // 反引号围栏和波浪号围栏（`~~~`）都剥。早先只认反引号，
+  // 模型用 `~~~` 围起来的那份剧本一行都没剥掉，第一场之前凭空多一行。
+  const opened = /^(?:```|~~~)[^\n]{0,20}\r?\n?/.exec(body)
   if (opened === null) return body
   body = body.slice(opened[0].length)
   // 闭合围栏后面模型常补一句「以上是第 1 场，需要我再展开吗？」。
   // 那句不是剧本，但围栏本身会留下来变成一行「看起来像台词又不是」的东西。
   // 围栏闭上的那一刻，剧本就结束了；后面再说什么都不是剧本
   // （「以上是第 1 场，需要我再展开吗？」留在正文里，扫描器会把它算成一行没归位的东西）。
-  const closed = /\r?\n?```(?:[\s\S]*)$/.exec(body)
+  const closed = /\r?\n?(?:```|~~~)(?:[\s\S]*)$/.exec(body)
   if (closed !== null) body = body.slice(0, closed.index)
-  body = body.replace(/^```[^\n]{0,20}$/gm, '')
-  // 万一模型在围栏里又套了一层，末尾剩下的 ``` 也剪掉。
-  body = body.replace(/\r?\n?```\s*$/, '')
+  body = body.replace(/^(?:```|~~~)[^\n]{0,20}$/gm, '')
+  // 万一模型在围栏里又套了一层，末尾剩下的围栏也剪掉。
+  body = body.replace(/\r?\n?(?:```|~~~)\s*$/, '')
   return body.trim()
 }
 
@@ -1736,6 +2066,7 @@ export default {
   listScripts,
   parseDialogueLine,
   parseThoughtLine,
+  parseSceneHeadLine,
   parseScriptScenes,
   scanScript,
   scriptReportText,

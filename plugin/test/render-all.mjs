@@ -2123,7 +2123,7 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   const words = textOf(expand(tree))
   t('有「改成剧本」这一节', words.includes('改成剧本'), words.slice(0, 300))
   // 正文在 textarea 的 value 里，textOf 取不到，所以认带出来的字数和按钮。
-  t('剧本摆出来了（字数和「重改一份」都出来了）', words.includes('58 字') && words.includes('重改一份'), words.slice(-300))
+  t('剧本摆出来了（字数和「重改一份」都出来了）', words.includes('51 字') && words.includes('重改一份'), words.slice(-300))
   t('说清改出来的是什么', words.includes('能配音') || words.includes('△'), words.slice(-300))
   t('有存好的按钮', words.includes('存好这份剧本'), words.slice(-300))
   t('有删掉的按钮', words.includes('删掉这份'), words.slice(-300))

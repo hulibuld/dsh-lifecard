@@ -3549,7 +3549,11 @@ function buildApi(ctx, workspace, config, options) {
       }
       const saved = await novel.writeScript(ws, id, target.index, raw)
       if (saved.ok !== true) return saved
-      const scan = novel.scanScript(raw)
+      // 扫的是真正落盘的那一份（writeScript 会先剥掉 ``` 围栏）。
+      // 扫原文的话，回执里的场数、字数会和磁盘上那份对不上。
+      const stored = await novel.readScript(ws, id, target.index)
+      const storedText = stored.ok === true ? stored.text : raw
+      const scan = novel.scanScript(storedText)
       return { ...saved, scan, report: novel.scriptReportText(scan) }
     },
 
