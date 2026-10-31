@@ -805,5 +805,196 @@ console.log('\n=== 18. 落盘这一层：章号、重名、失败话术 ===')
 
 await fs.rm(ws, { recursive: true, force: true })
 
+// ── 审查员 ab79af5e 那一批的回归（他挑的都是「静默丢东西」）────────────
+// 这组的意义不在「修好了」，而在「以后谁再改坏，这里会红」。
+{
+  const kinds = (text) => novel.scanScript(text).issues.map((x) => x.kind)
+  const parse = (text) => novel.parseScriptScenes(text)
+
+  // ① 跨行续词不许吞掉后面的行：早先只要「冒号 + 开引号 + 行尾没闭引号」就一路吞，
+  //    最多吞掉整整一场，吞掉的东西哪一栏都不进，扫描器一条不报。
+  {
+    const t1 = '第1场\n旧书店　夜　内\n【出场人物】甲、乙\n△她把伞靠在门边。\n甲说："走。"（转身）\n乙说："别急。"'
+    const got = parse(t1).scenes[0].dialogues.map((d) => d.who)
+    t('台词后面带括注，下一句台词不许被吞', got.length === 2 && got[1] === '乙', JSON.stringify(got))
+    t('带括注的台词也不许报「没归位」', !kinds(t1).includes('stray'), JSON.stringify(kinds(t1)))
+  }
+  {
+    // 台词后面紧跟一句还没改成动作的叙述：那句叙述要报 stray（提醒人改），
+    // 但下一句台词一句都不许丢。
+    const t2 = '第1场\n旧书店　夜　内\n【出场人物】林小雨、陈默\n△她把伞靠在门边。\n林小雨说："我等了三个钟头。"她低着头，没看他。\n陈默说："我知道。"\n△陈默没有看她。'
+    const said = parse(t2).scenes[0].dialogues.map((d) => d.who)
+    t('台词后紧跟叙述，下一句台词不许被吞', said.includes('林小雨') && said.includes('陈默'), JSON.stringify(said))
+    t('没改成动作的叙述要报出来', kinds(t2).includes('stray'), JSON.stringify(kinds(t2)))
+  }
+  {
+    // 漏一个闭引号：以前会把下一整场（场号、场头、出场人物）并进这句台词。
+    const t3 = '第1场\n旧书店　夜　内\n【出场人物】甲\n△她把伞靠在门边。\n甲说："你听我说。\n第2场\n门外　夜　外\n【出场人物】乙\n乙说："开门。"'
+    t('漏闭引号不许把下一场并进来', parse(t3).counts.scenes === 2, JSON.stringify(parse(t3).counts))
+    t('下一场那句台词还在', parse(t3).scenes[1].dialogues.some((d) => d.who === '乙'), JSON.stringify(parse(t3).scenes[1].dialogues))
+  }
+  {
+    // 正常的跨行续词照样要能合起来，别为了修上面的把这条改坏。
+    const t4 = '第1场\n客厅　夜　内\n【出场人物】甲\n甲说："我跟你说，\n这事儿没完。"'
+    const said = parse(t4).scenes[0].dialogues
+    t('正常的跨行续词还能合起来', said.length === 1 && said[0].text.includes('这事儿没完'), JSON.stringify(said))
+  }
+
+  // ② 场头里带「里面 / 外头」：地名要留下，不许整段被当内外词吞掉。
+  {
+    const one = (h) => parse(`第1场\n${h}\n【出场人物】甲\n△站着。`).scenes[0]
+    t('「院子里面」地名留得住', one('院子里面 日 内').place === '院子', JSON.stringify(one('院子里面 日 内')))
+    t('「店外头」地名留得住', one('店外头 夜 外').place === '店', JSON.stringify(one('店外头 夜 外')))
+  }
+
+  // ③④ 镜头词：戏里的摄像机、升格成、黑场子不许报；真分镜一条都不许漏。
+  {
+    const on = (line) => kinds(`第1场\n客厅 日 内\n【出场人物】甲\n△他把碗放下。\n${line}`)
+    const noReport = [
+      '△婚礼上，他扛着摄像机满场跑。',
+      '△这几年的日子，把他的性子升格成了一种沉默。',
+      '△院里的黑场子里堆着煤。',
+      '△他把窗帘拉上，屋里暗下来，像淡入的夜。',
+    ]
+    for (const line of noReport) t(`戏里的东西不报成镜头话：${line.slice(0, 12)}`, !on(line).includes('camera'), JSON.stringify(on(line)))
+
+    const mustReport = [
+      '△特写她的手。',
+      '△近景：她的眼睛。',
+      '△俯拍：旧书店全貌。',
+      '△摇镜从书架扫到门口。',
+      '△推镜到伞尖。',
+      '△加一个定格。',
+      '△插一个回忆闪回。',
+      '△配乐起，BGM盖住雨声。',
+      '△光线：侧逆光，暖调。',
+      '△画面渐暗，转场。',
+      '△镜头从门外推进到脸上。',
+      '△切到陈默翻账本的手。',
+    ]
+    for (const line of mustReport) t(`真分镜要报出来：${line.slice(0, 12)}`, on(line).includes('camera'), JSON.stringify(on(line)))
+  }
+
+  // ⑤ 中文剧本最标准的不带引号台词，不许整行作废。
+  {
+    const one = parse('第1场\n客厅 日 内\n【出场人物】甲\n甲：走吧。\n△他推开门。').scenes[0]
+    t('不带引号的台词认得出', one.dialogues.length === 1 && one.dialogues[0].who === '甲', JSON.stringify(one.dialogues))
+    t('不带引号的台词不报「没归位」', !kinds('第1场\n客厅 日 内\n【出场人物】甲\n甲：走吧。\n△他推开门。').includes('stray'), '')
+    const paren = novel.parseDialogueLine('林小雨（低声）：走吧。')
+    t('不带引号也能带括注', paren !== null && paren.who === '林小雨' && paren.paren === '低声', JSON.stringify(paren))
+  }
+
+  // ⑥ 括注节拍算动作：写了「（他把碗放下）」就不该再说「这一场只有台词、没有动作」。
+  {
+    const beats = '第1场\n客厅 日 内\n【出场人物】甲\n（他把碗放下）\n甲说："吃吧。"'
+    t('括注节拍不算「没有动作」', !kinds(beats).includes('no-action'), JSON.stringify(kinds(beats)))
+  }
+
+  // ⑦ 场号：第1幕 / 幕1 / 场次3 都要认。
+  {
+    for (const head of ['第1幕', '幕1', '场次3', '1.']) {
+      const n = parse(`${head}\n客厅 日 内\n【出场人物】甲\n△站着。`).counts.scenes
+      t(`场号写法「${head}」认得出`, n === 1, String(n))
+    }
+    // 「1.」单独一行、场头下一行：不许把「1. 他推开门。」那种编号行也认了。
+    t('「1.」后面跟着真场头才算场号', parse('1.\n门外 夜 外\n【出场人物】乙\n△站着。').counts.scenes === 1, '')
+    t('「1. 他推开门。」不算场号', parse('第1场\n客厅 日 内\n【出场人物】甲\n1. 他推开门。').counts.scenes === 1, JSON.stringify(parse('第1场\n客厅 日 内\n【出场人物】甲\n1. 他推开门。').counts))
+  }
+
+  // ⑧ 【出场人物】写「无」或者空着，不算「写清了谁在这场」；「无」也不是人名。
+  {
+    for (const empty of ['', '无', '-', '（无）']) {
+      const text = `第1场\n客厅 日 内\n【出场人物】${empty}\n△站着。`
+      const scene = parse(text).scenes[0]
+      t(`出场人物写「${empty}」不算写清了`, scene.declared !== true, JSON.stringify(scene.cast))
+      t(`出场人物写「${empty}」要提示`, kinds(text).includes('no-cast'), JSON.stringify(kinds(text)))
+    }
+  }
+
+  // ⑨ 台词的两个硬上限以前是「整行作废」，现在是「照常认下来」。
+  {
+    const longParen = novel.parseDialogueLine(`林小雨（${'把伞收起来。'.repeat(20).slice(0, 80)}）说："你拿着吧。"`)
+    t('括注 80 字也照常认', longParen !== null && longParen.who === '林小雨' && longParen.text === '你拿着吧。', JSON.stringify(longParen && { who: longParen.who, text: longParen.text }))
+    const longName = novel.parseDialogueLine(`${'站在门口那个人'.repeat(4).slice(0, 28)}说："你来了。"`)
+    t('名字 28 字也照常认', longName !== null && longName.who.startsWith('站在门口'), JSON.stringify(longName && longName.who))
+    const halfParen = novel.parseDialogueLine('甲(低声)说："走吧。"')
+    t('半角括号进括注、不进人名', halfParen !== null && halfParen.who === '甲' && halfParen.paren === '低声', JSON.stringify(halfParen))
+    const tailed = novel.parseDialogueLine('甲说："好。"他转身走了。')
+    t('台词后面跟一句叙述，台词照样认得出', tailed !== null && tailed.text === '好。' && tailed.rest === '他转身走了。', JSON.stringify(tailed))
+  }
+
+  // ⑩ 日夜白名单：日间 / 晚间 / 早 都算。
+  {
+    for (const day of ['日间', '晚间', '早']) {
+      const scene = parse(`第1场\n客厅 ${day} 内\n【出场人物】甲\n△站着。`).scenes[0]
+      t(`日夜写法「${day}」认得出`, scene.dayNight === day && scene.place === '客厅', JSON.stringify({ place: scene.place, dayNight: scene.dayNight }))
+    }
+    const clock = parse('第1场\n客厅 深夜两点 内\n【出场人物】甲\n△站着。').scenes[0]
+    t('「深夜两点」当场头认得出', clock.dayNight === '深夜两点' && clock.place === '客厅', JSON.stringify({ place: clock.place, dayNight: clock.dayNight }))
+  }
+
+  // ⑪ 库函数层也校验这一章在不在，不然会写出一份永远显示不出来的孤儿剧本。
+  {
+    const ws4 = await fs.mkdtemp(path.join(tmpdir(), 'lc-script-target-'))
+    await store.openWorkspace(ws4, { create: true })
+    const made = await novel.createBook(ws4, { title: '孤儿排查' })
+    await novel.writeChapter(ws4, made.id, 1, '正文')
+    const orphan = await novel.writeScript(ws4, made.id, 7, '第1场\n客厅 日 内\n△站着。')
+    t('写不存在的第 7 章会被挡下', orphan.ok !== true, JSON.stringify(orphan).slice(0, 120))
+    const orphanPath = path.join(ws4, 'books', novel.bookFolderName(made.id), 'scripts', '007.md')
+    t('挡下来之后不留孤儿文件', !(await fs.stat(orphanPath).catch(() => null)), '')
+    await fs.rm(ws4, { recursive: true, force: true })
+  }
+
+  // ⑫ 写盘失败真的会留下 `.tmp-` 的那条路径：上面「写失败不留临时文件」用的是
+  //    「拿文件当 scripts 目录」，`mkdir` 就先炸了，tmp 根本没被创建，那条断言是空转的。
+  //    这里让目标 001.md 变成目录：写入成功、rename 失败，残骸才真会出现。
+  {
+    const ws5 = await fs.mkdtemp(path.join(tmpdir(), 'lc-script-tmp-'))
+    await store.openWorkspace(ws5, { create: true })
+    const made = await novel.createBook(ws5, { title: '残骸排查' })
+    await novel.writeChapter(ws5, made.id, 1, '正文')
+    const scripts = path.join(ws5, 'books', novel.bookFolderName(made.id), 'scripts')
+    await fs.mkdir(path.join(scripts, '001.md'), { recursive: true })
+    const failed = await novel.writeScript(ws5, made.id, 1, '第1场\n客厅 日 内\n△站着。')
+    t('rename 失败要说得清', failed.ok !== true, JSON.stringify(failed).slice(0, 120))
+    const left = await fs.readdir(scripts).catch(() => [])
+    t('rename 失败之后不留 .tmp- 残骸', left.every((x) => !x.includes('.tmp-')), JSON.stringify(left))
+    await fs.rm(ws5, { recursive: true, force: true })
+  }
+
+  // ⑬ readScript 的坏内容分支：非法 UTF-8 不许当成一份正常剧本摆出来。
+  {
+    const ws6 = await fs.mkdtemp(path.join(tmpdir(), 'lc-script-bad-'))
+    await store.openWorkspace(ws6, { create: true })
+    const made = await novel.createBook(ws6, { title: '坏文件排查' })
+    await novel.writeChapter(ws6, made.id, 1, '正文')
+    await novel.writeScript(ws6, made.id, 1, '第1场\n客厅 日 内\n△站着。')
+    const file = path.join(ws6, 'books', novel.bookFolderName(made.id), 'scripts', '001.md')
+    await fs.writeFile(file, Buffer.from([0xff, 0xfe, 0x41, 0x00, 0x00]))
+    const bad = await novel.readScript(ws6, made.id, 1)
+    t('读不出来的剧本不许当成正常的一份', bad.ok !== true, JSON.stringify(bad).slice(0, 120))
+    t('坏文件要说出「内容坏了」', String(bad.error ?? '').includes('坏'), String(bad.error ?? ''))
+    await fs.rm(ws6, { recursive: true, force: true })
+  }
+
+  // ⑯ △ 的同义字形：模型偶尔把希腊字母 Δ 或者 ▵ 当三角号打出来。
+  //    认不出来的话整场变成「空场 + 没归位」两条提示，而人明明写了动作。
+  {
+    for (const mark of ['▵', 'Δ']) {
+      const text = `第1场\n客厅 日 内\n【出场人物】甲\n${mark}他把碗放下。`
+      const scene = parse(text).scenes[0]
+      t(`「${mark}」也当动作行`, scene.actions.length === 1, JSON.stringify(scene.actions))
+    }
+  }
+
+  // ⑮ 几条以前只有反向断言、改坏也不会红的：这里补正例。
+  {
+    t('只缺内外时必须报「没写场头」', kinds('第1场\n客厅 日\n【出场人物】甲\n△站着。').includes('no-head'), JSON.stringify(kinds('第1场\n客厅 日\n【出场人物】甲\n△站着。')))
+    t('空场必须报「空场」', kinds('第1场\n客厅 日 内\n【出场人物】甲').includes('empty-scene'), JSON.stringify(kinds('第1场\n客厅 日 内\n【出场人物】甲')))
+    t('只有台词没有动作必须报', kinds('第1场\n客厅 日 内\n【出场人物】甲\n甲说："走。"').includes('no-action'), '')
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)
