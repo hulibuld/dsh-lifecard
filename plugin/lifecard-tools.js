@@ -899,47 +899,64 @@ export function registerTools(ctx, config) {
         return `这一天读不出来，为了不把原来的东西弄丢，这次没写：${String(existing.error ?? '')}`
       }
 
-      // 用户手改过这篇：多出来的小节我们存回去时会丢。宁可停下来说清楚。
-      // `今天这四样` 是我们自己写出来的那一段打分，不是用户手加的。
+      const before = existing.data === null ? {} : existing.data
+      // 用户手改过这篇：多出来的小节、自己在 frontmatter 里加的键，写回去都会原样
+      // 带着走（这一层在 writeDiary 里），所以不再为这个拦人，只在结果里说一句。
       const known = new Set([...DIARY_SECTIONS, '今天这四样'])
       const extra = (existing.sections ?? [])
         .filter((s) => s?.title !== '_intro' && !known.has(String(s?.title ?? '')) && String(s?.body ?? '').trim() !== '')
         .map((s) => String(s.title))
-      const intro = (existing.sections ?? []).find((s) => s?.title === '_intro')
-      if (String(intro?.body ?? '').trim() !== '') extra.unshift('开头那段')
 
-      const before = existing.data === null ? {} : existing.data
-      // 只有「这次明确写了这一节、而且写的是空」才算要弄空。没提到的那几节
-      // 是「接着写」，下面会原样留着——把「没提到」当成「要删」，接一句就拦一次。
-      const losing = DIARY_SECTIONS.filter((title) => {
-        if (!Object.hasOwn(wanted, title)) return false
+      // 会动到旧内容的三件事都得先问用户：
+      // ① 把一节弄空 ② 一节这次写了另一段（旧那段会被换掉）③ 改掉原来打的分
+      const losing = []
+      const replacing = []
+      for (const title of DIARY_SECTIONS) {
+        if (!Object.hasOwn(wanted, title)) continue
         const old = before[title]
-        const oldText = Array.isArray(old) ? old.join('') : String(old ?? '')
-        return oldText.trim() !== '' && String(wanted[title]).trim() === ''
-      })
+        const oldText = Array.isArray(old) ? old.join('\n') : String(old ?? '')
+        const newText = Array.isArray(wanted[title]) ? wanted[title].join('\n') : String(wanted[title] ?? '')
+        if (oldText.trim() === '') continue
+        if (newText.trim() === '') { losing.push(title); continue }
+        // 接着往下写（新内容把原来那段原样带在开头、后面又加了几句）不算换掉，
+        // 那正是「一天里接着写」该有的样子；整段重写才拦。
+        if (squash(newText).startsWith(squash(oldText))) continue
+        replacing.push(title)
+      }
+      const oldScores = before.scores !== null && typeof before.scores === 'object' ? before.scores : {}
+      const rescoring = Object.keys(scores).filter((name) => oldScores[name] !== undefined && Number(oldScores[name]) !== Number(scores[name]))
 
-      if ((extra.length > 0 || losing.length > 0) && args.confirm_overwrite !== true) {
+      if ((losing.length > 0 || replacing.length > 0 || rescoring.length > 0) && args.confirm_overwrite !== true) {
         const lines = [`${date} 这一天已经有内容了，这次没写：`]
         if (losing.length > 0) lines.push(`会弄空这几节：${losing.join('、')}`)
-        if (extra.length > 0) lines.push(`这一篇里还有我认不出的小节：${extra.join('、')}——写回去会把它丢掉`)
-        lines.push('先问一句用户：是改这一天，还是另起一天。他确认要删再带 confirm_overwrite: true。')
+        if (replacing.length > 0) lines.push(`会换掉这几节原来写的：${replacing.join('、')}`)
+        if (rescoring.length > 0) lines.push(`会改掉这几样原来的分：${rescoring.join('、')}`)
+        lines.push('先问一句用户：是改这一天，还是另起一天。他确认要改，再带 confirm_overwrite: true 重调一次。')
+        lines.push('想保留原来那段就接着写、把新内容接在后面，别整段重写。')
         return lines.join('\n')
       }
 
       const payload = { ...wanted, date }
-      if (Object.keys(scores).length > 0) payload.scores = scores
+      // 分数一格一格地算：这次只说了两个格子，另外两个不该被抹掉。
+      const mergedScores = { ...oldScores, ...scores }
+      if (Object.keys(mergedScores).length > 0) payload.scores = mergedScores
       // 已经写过、这次没提到的节，把原来的留着——「接着写」不该把上午写的删掉。
       for (const title of DIARY_SECTIONS) {
         if (payload[title] !== undefined) continue
         const old = before[title]
         if (Array.isArray(old) ? old.length > 0 : String(old ?? '').trim() !== '') payload[title] = old
       }
-      if (Object.keys(scores).length === 0 && before.scores !== null && typeof before.scores === 'object') {
-        payload.scores = before.scores
-      }
 
-      const saved = await writeDiary(dir, payload)
-      if (saved.ok !== true) return `没能存下来：${String(saved.error ?? '写盘失败')}`
+      const saved = await writeDiary(dir, payload, new Date(), { expect: { text: existing.text } })
+      if (saved.ok !== true) {
+        if (saved.conflict === true) {
+          return [
+            '这一天在我们说话的时候被改过了（可能是你自己在访达里动的）。',
+            '为了不把你外面改的内容盖掉，这次没存。重新打开这一篇、把要补的那几节再说一遍就行。',
+          ].join('\n')
+        }
+        return `没能存下来：${String(saved.error ?? '写盘失败')}`
+      }
       const wrote = DIARY_SECTIONS.filter((title) => {
         const value = payload[title]
         return Array.isArray(value) ? value.length > 0 : String(value ?? '').trim() !== ''
@@ -948,6 +965,8 @@ export function registerTools(ctx, config) {
         `${existing.data === null ? '存好了' : '这一篇更新好了'}：${path.join(dir, saved.path)}`,
         `写了 ${wrote.length} 节：${wrote.join('、')}`,
         existing.data === null ? '' : '这一篇原来写的内容，这次没提到的都留着。',
+        extra.length > 0 ? `你自己在这一篇里加的那几节（${extra.join('、')}）原样留着，没动。` : '',
+        saved.snapshot !== '' ? '改之前的旧版本另存了一份，在同一个文件夹的「.lifecard/旧版本」里。' : '',
         '用户自己用访达就能打开改；下次再点「写日记」会接着这一篇。',
       ].filter((x) => x !== '').join('\n')
     },

@@ -2098,6 +2098,7 @@ for (const [label, tree] of [
 // 先把这几个组件注册进 seen（它们只在对应那一屏才被渲染到）。
 renderRoot('书（逐章写，先注册组件）', base('book', { 25: { id: 'demo', title: '示范' } }))
 renderRoot('简历与规划（先注册组件）', base('career'))
+renderRoot('写日记（先注册组件）', base('diary'))
 renderRoot('玩一段（先注册组件）', base('game', { 25: { id: 'demo', title: '示范' } }))
 renderRoot('导入（先注册组件）', base('import'))
 renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
@@ -2345,6 +2346,61 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   const tree = renderRoot('写小说门（书架上有书）', base('novel', { 2: SHELF, 26: [{ id: 'b1', title: '长夜' }] }))
   const words = textIn(expand(tree))
   t('书架上每本书都有「不要这本了」', words.includes('不要这本了'), words.slice(0, 400))
+}
+
+{
+  // 写日记那一屏：这一屏以前一条测试都没有（grep diary 在 render-all 里零命中），
+  // 于是「第一次进来按钮是灰的走不下去」「文件夹被挪走了还装作没事」这两个
+  // 真问题全是靠人工点才发现的。
+  const Diary = seen.get('DiaryView')
+  t('写日记那一屏注册上了', Diary !== undefined)
+
+  const READY = { ok: true, dir: '/Users/x/Documents/我的日记', ready: true, today: '2026-10-31', todayDone: false, count: 3, recent: [{ date: '2026-10-30', chars: 300 }] }
+  const FIRST = { ok: true, dir: '', ready: false, today: '2026-10-31', todayDone: false, count: 0, recent: [], suggest: '/Users/x/Documents/我的日记' }
+
+  // hook 槽：0 info / 1 dir / 2 editing / 3 saving / 4 err / 5 opened
+  const first = renderOne('写日记（第一次进来）', Diary, { onBack: () => {}, flash: () => {}, onStart: () => {}, busy: '' }, { 0: FIRST, 1: '/Users/x/Documents/我的日记', 2: true })
+  const firstText = textOf(expand(first))
+  t('第一次进来直接落在「日记放在哪个文件夹」', firstText.includes('日记放在哪个文件夹'), firstText.slice(0, 300))
+  t('标题说清已经替你填好了', firstText.includes('已经替你填好一个位置'), firstText.slice(0, 300))
+  t('「就用这个文件夹」是能点的', collectIn(expand(first), (n) => n.type === 'button' && textOf(n).includes('就用这个文件夹')).some((b) => b.props?.disabled !== true), firstText.slice(0, 300))
+
+  const noSuggest = renderOne('写日记（连建议位置都没有）', Diary, { onBack: () => {}, flash: () => {}, onStart: () => {}, busy: '' }, { 0: { ...FIRST, suggest: '' }, 1: '', 2: true })
+  t('位置是空的时候按钮是灰的', collectIn(expand(noSuggest), (n) => n.type === 'button' && textOf(n).includes('就用这个文件夹')).every((b) => b.props?.disabled === true))
+
+  const ready = renderOne('写日记（今天还没写）', Diary, { onBack: () => {}, flash: () => {}, onStart: () => {}, busy: '' }, { 0: READY, 1: READY.dir, 2: false })
+  const readyText = textOf(expand(ready))
+  t('说清存在哪个文件夹（只给最后一段）', readyText.includes('我的日记') && !readyText.includes('/Users/x'), readyText.slice(0, 300))
+  t('今天没写就说「今天还没写」', readyText.includes('今天还没写'), readyText.slice(0, 300))
+  t('主按钮是「今天就写这一篇」', readyText.includes('今天就写这一篇'), readyText.slice(0, 300))
+  t('写过的日子点得动', collectIn(expand(ready), (n) => typeof n.props?.onClick === 'function' && textOf(n).includes('2026-10-30')).length > 0, readyText.slice(0, 300))
+
+  const done = renderOne('写日记（今天写过了）', Diary, { onBack: () => {}, flash: () => {}, onStart: () => {}, busy: '' }, { 0: { ...READY, todayDone: true }, 1: READY.dir, 2: false })
+  const doneText = textOf(expand(done))
+  t('写过了就说「接着写」', doneText.includes('接着写今天这一篇'), doneText.slice(0, 300))
+  // 以前这里写「前面写的不会丢」，而实际写盘时整节会被换掉——不许再这么保证。
+  t('不再空口保证「前面写的不会丢」', !doneText.includes('前面写的不会丢'), doneText.slice(0, 300))
+
+  const opening = renderOne('写日记（正在开）', Diary, { onBack: () => {}, flash: () => {}, onStart: () => {}, busy: 'diary' }, { 0: READY, 1: READY.dir, 2: false })
+  const openText = textOf(expand(opening))
+  t('开着的时候按钮写「正在开…」', openText.includes('正在开…'), openText.slice(0, 300))
+  t('开着的时候按钮点不动', collectIn(expand(opening), (n) => n.type === 'button' && textOf(n).includes('正在开')).every((b) => b.props?.disabled === true))
+
+  const broken = renderOne('写日记（文件夹被挪走了）', Diary, { onBack: () => {}, flash: () => {}, onStart: () => {}, busy: '' }, { 0: { ...READY, broken: true, error: '那个日记文件夹读不出来。检查一下权限。', count: 0, recent: [] }, 1: READY.dir, 2: false })
+  const brokenText = textOf(expand(broken))
+  t('文件夹读不出来时照实说', brokenText.includes('读不出来'), brokenText.slice(0, 400))
+  t('并说日记本身还在', brokenText.includes('还在'), brokenText.slice(0, 400))
+
+  const opened = renderOne('写日记（翻看某一天）', Diary, { onBack: () => {}, flash: () => {}, onStart: () => {}, busy: '' }, {
+    0: READY, 1: READY.dir, 2: false, 5: { date: '2026-10-30', data: { date: '2026-10-30', 今天最值得讲的一件事: '去看了牙。', 下一步: ['下周复诊'], scores: { 健康: 6 } } },
+  })
+  const openedText = textOf(expand(opened))
+  t('翻开某一天能看到那一节正文', openedText.includes('去看了牙'), openedText.slice(0, 400))
+  t('那天打的分也看得见', openedText.includes('健康 6'), openedText.slice(0, 400))
+  t('翻看页有「回去」', openedText.includes('回去'), openedText.slice(0, 400))
+
+  const emptyDay = renderOne('写日记（那天没写正文）', Diary, { onBack: () => {}, flash: () => {}, onStart: () => {}, busy: '' }, { 0: READY, 1: READY.dir, 2: false, 5: { date: '2026-10-29', data: { date: '2026-10-29' } } })
+  t('那天没写正文就直说', textOf(expand(emptyDay)).includes('没有写正文'), textOf(expand(emptyDay)).slice(0, 300))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

@@ -157,11 +157,17 @@ export async function readConfigState(root) {
  *
  * 先建目录：还没选文件夹（或选的那个被删了）时直接写文件会抛 ENOENT，
  * 界面拿到的是一句英文报错，人看不出「你还没选文件夹」。
+ *
+ * 返回值一定带 `ok`。以前成功和失败回的是同一个对象形状，调用方判
+ * `saved?.ok === false` 永远不成立，「位置没记住」也就永远报不出来——
+ * 用户以为存上了，重启一次才发现又要重挑一遍文件夹。
  */
 export async function writeConfig(root, patch) {
   const state = await readConfigState(root)
   // 「读不出来」不等于「还没有」：这时候照写会把整份设置按默认值重刷一遍。
-  if (state.ok !== true) return state.config
+  if (state.ok !== true) {
+    return { ok: false, config: state.config, error: state.error ?? '这个文件夹里的设置读不出来，为了不按默认值重刷一遍，这次没写。' }
+  }
   const next = { ...state.config, ...patch }
   const abs = path.join(root, CONFIG_NAME)
   const tmp = `${abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
@@ -171,8 +177,9 @@ export async function writeConfig(root, patch) {
     await fs.rename(tmp, abs)
   } catch {
     await fs.rm(tmp, { force: true }).catch(() => {})
+    return { ok: false, config: state.config, error: '设置没能写进磁盘。检查一下那个文件夹是不是满了、有没有写的权限。' }
   }
-  return next
+  return { ok: true, config: next }
 }
 
 /**

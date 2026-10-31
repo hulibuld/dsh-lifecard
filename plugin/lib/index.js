@@ -1079,7 +1079,8 @@ function buildApi(ctx, workspace, config, options) {
       if (cfg.ok !== true) return { ok: false, error: cfg.error ?? '这个文件夹里的设置读不出来。' }
       const pins = { real: '', tavern: '', novel: '', diary: '', ...(cfg.config?.default_cards ?? {}) }
       pins[mode] = id
-      await store.writeConfig(ws, { default_cards: pins })
+      const saved = await store.writeConfig(ws, { default_cards: pins })
+      if (saved?.ok !== true) return { ok: false, error: saved?.error ?? '这一张没能记住，下次还得再挑一次。', cards: pins }
       return { ok: true, cards: pins }
     },
       /**
@@ -3233,17 +3234,28 @@ function buildApi(ctx, workspace, config, options) {
       const where = await diaryDirOf(ws)
       if (where.ok !== true) return where
       const today = store.localDate()
-      if (where.dir === '') return { ok: true, dir: '', ready: false, today, todayDone: false, count: 0 }
-      const listed = await diary.listDiaries(where.dir, { limit: 400 })
-      const recent = listed.ok === true ? listed.diaries.slice(0, 7) : []
+      // 第一次用的时候得给个能直接点的位置。客户端不知道用户家目录在哪儿
+      // （宿主交给插件的作用域里没有这一层），所以在这儿算一句带回去。
+      const suggested = path.join(homedir(), 'Documents', '我的日记')
+      if (where.dir === '') return { ok: true, dir: '', ready: false, today, todayDone: false, count: 0, suggest: suggested, recent: [] }
+      // 列最近 40 篇够看「今天写了没有」，但「写过多少天」得用总数报：
+      // 拿列表长度当总数，写到第 401 天起数字就不动了。
+      const listed = await diary.listDiaries(where.dir, { limit: 40 })
+      // 文件夹被删掉 / 挪走 / 没权限时不能装作一切正常：用户会看到
+      // 「今天还没写」，写的时候才发现存不进去。这两种情况如实说。
+      if (listed.ok !== true) {
+        return { ok: true, dir: where.dir, ready: true, today, todayDone: false, count: 0, recent: [], broken: true, error: listed.error ?? '那个文件夹读不出来。' }
+      }
+      const recent = listed.diaries.slice(0, 7)
       return {
         ok: true,
         dir: where.dir,
         ready: true,
         today,
         todayDone: recent.some((d) => d.date === today),
-        count: listed.ok === true ? listed.diaries.length : 0,
+        count: Number(listed.total ?? listed.diaries.length),
         recent,
+        missing: listed.missing === true,
       }
     },
 
@@ -3253,15 +3265,19 @@ function buildApi(ctx, workspace, config, options) {
       const raw = String(body?.dir ?? '').trim()
       if (raw === '') return { ok: false, error: '没有说是哪个文件夹。' }
       const dir = diary.diaryRootFrom({ diary_dir: raw })
+      if (dir === '' || dir === path.parse(dir).root) return { ok: false, error: '不能整个磁盘根目录都当日记文件夹。换一个位置。' }
       const made = await fs.mkdir(dir, { recursive: true }).then(() => true).catch(() => false)
       if (!made) return { ok: false, error: '这个文件夹建不出来。换一个位置，或者检查一下有没有写的权限。' }
-      const writable = await fs.writeFile(path.join(dir, '.lifecard-diary-probe'), 'x', 'utf8')
-        .then(() => fs.rm(path.join(dir, '.lifecard-diary-probe'), { force: true }))
-        .then(() => true)
+      // 探针文件用完就删，但**先看它原本存不存在**：用户文件夹里真有个同名文件时，
+      // 我们既不该覆盖它，也不该删掉它。
+      const probe = path.join(dir, '.lifecard-diary-probe')
+      const hadProbe = await fs.lstat(probe).then(() => true).catch(() => false)
+      const writable = await fs.writeFile(probe, hadProbe ? undefined : 'x', { encoding: 'utf8', flag: hadProbe ? 'a' : 'w' })
+        .then(async () => { if (!hadProbe) await fs.rm(probe, { force: true }); return true })
         .catch(() => false)
       if (writable !== true) return { ok: false, error: '这个文件夹写不进去。换一个位置，或者检查一下有没有写的权限。' }
       const saved = await store.writeConfig(ws, { diary_dir: dir })
-      if (saved?.ok === false) return { ok: false, error: saved.error ?? '位置没记住，下次还得再挑一次。' }
+      if (saved?.ok !== true) return { ok: false, error: saved?.error ?? '位置没记住，下次还得再挑一次。' }
       return { ok: true, dir }
     },
 
@@ -3286,9 +3302,18 @@ function buildApi(ctx, workspace, config, options) {
       if (where.dir === '') return { ok: false, error: '还没有定日记放在哪个文件夹。' }
       const date = String(body?.date ?? '').trim() === '' ? store.localDate() : String(body.date).trim()
       if (diary.dateFileName(date) === '') return { ok: false, error: '日期看起来不对，应该是 2026-10-31 这种样子。' }
-      const saved = await diary.writeDiary(where.dir, { ...(body?.data ?? {}), date })
+      // 先读一遍再写：写过的那一天，读出来是什么样，写的时候就得还是那个样子。
+      // 中间被别处改过（用户自己在访达里动了），这次一个字节都不写。
+      // 这条路由以前是裸写，谁调它都能把一整天整篇盖掉。
+      const existing = await diary.readDiary(where.dir, date)
+      if (existing.ok !== true) {
+        return { ok: false, error: `这一天读不出来，为了不覆盖掉原来的东西，这次没存：${String(existing.error ?? '')}` }
+      }
+      const saved = await diary.writeDiary(where.dir, { ...(body?.data ?? {}), date }, new Date(), {
+        expect: typeof existing.text === 'string' ? { text: existing.text } : {},
+      })
       if (saved.ok !== true) return saved
-      return { ok: true, dir: where.dir, date, path: saved.path }
+      return { ok: true, dir: where.dir, date, path: saved.path, mode: saved.mode }
     },
 
     /** 最近写过哪几天。 */
@@ -3315,10 +3340,17 @@ function buildApi(ctx, workspace, config, options) {
       const today = store.localDate()
       let recent = ''
       let todayDone = false
+      let draft = ''
       if (where.dir !== '') {
         const listed = await diary.listDiaries(where.dir, { limit: 40 })
         if (listed.ok === true) {
           todayDone = listed.diaries.some((d) => d.date === today)
+          // 今天已经写过的，把正文带上。不带的话模型看不见上午写的那几节，
+          // 只好从头重问一遍；存盘时它照着新问出来的整节重写，上午写的就没了。
+          if (todayDone) {
+            const got = await diary.readDiary(where.dir, today)
+            if (got.ok === true && got.data !== null) draft = diary.diaryBlock(got.data)
+          }
           const picked = listed.diaries.filter((d) => d.date !== today).slice(0, 3)
           const texts = []
           for (const item of picked) {
@@ -3345,10 +3377,17 @@ function buildApi(ctx, workspace, config, options) {
           }
         }
       }
-      const text = ['/lifecard-diary', `今天是 ${today}。带我写今天这一篇。`, recent === '' ? '' : `\n前几天写过这些：\n${recent}`]
+      const text = [
+        '/lifecard-diary',
+        `今天是 ${today}。带我写今天这一篇。`,
+        draft === '' ? '' : `\n今天已经写下这些了：\n${draft}`,
+        draft === '' ? '' : '\n接着往下问，别把已经写过的重问一遍。要改哪一节先说清改成什么，我点头了再改。',
+        persona === '' ? '' : `\n带着这张卡里的人来问（${cardName}）：\n${persona}`,
+        recent === '' ? '' : `\n前几天写过这些：\n${recent}`,
+      ]
         .filter((line) => line !== '')
         .join('\n')
-      return { ok: true, preset: 'lc-diary', date: today, dir: where.dir, todayDone, cardName, personaChars: persona.length, text }
+      return { ok: true, preset: 'lc-diary', date: today, dir: where.dir, todayDone, cardName, personaChars: persona.length, draftChars: draft.length, text }
     },
 
     /** 把某一天写下的东西整理成「关于这个人的几条事实」，给改卡用。 */

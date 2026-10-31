@@ -233,6 +233,106 @@ try {
     t('不挑卡也能开始', cleared.ok === true && cleared.cardName === '', cleared.cardName)
   }
 
+  console.log('\n=== 9. 写的时候不许把人写进去的东西弄丢 ===')
+  {
+    // 这一组盯的是「用户手改过之后，插件还敢不敢写」。审查员审出来的几条
+    // 全在这里：frontmatter 自加的键、自己加的小节、正文里的 ## 标题、
+    // 认不出的打分行、空小节、小数分数、列表里的反斜杠、覆盖前留底。
+    const dir = await fs.mkdtemp(path.join(tmpdir(), 'lc-diary-safe-'))
+    try {
+      const hand = [
+        '---',
+        'lifecard: 1',
+        'kind: lifecard-diary',
+        'date: 2026-10-20',
+        'mood: 低',
+        'weather: 阴',
+        '---',
+        '',
+        '前面随手写的两句，没挂在小节下面。',
+        '',
+        '## 今天最值得讲的一件事',
+        '',
+        '在楼下碰见了老周，他说他退休了。',
+        '## 周三那天补记',
+        '这是他手写的小标题，不是我们的五节之一。',
+        '',
+        '## 情绪往下三层',
+        '',
+        '有点慌。',
+        '',
+        '## 今天这四样',
+        '',
+        '- 健康 6.5',
+        '- 工作：3',
+        '- 心情不错',
+        '',
+      ].join('\n')
+      await fs.writeFile(path.join(dir, '2026-10-20.md'), hand, 'utf8')
+
+      const got = await diary.readDiary(dir, '2026-10-20')
+      t('手改过的篇照样读得回来', got.ok === true && got.data !== null, got)
+      t('小数分认得了', got.data?.scores?.健康 === 6.5, JSON.stringify(got.data?.scores))
+      t('全角冒号也认', got.data?.scores?.工作 === 3, JSON.stringify(got.data?.scores))
+      t('认不出的打分行留着没吃', Array.isArray(got.scoreLines) && got.scoreLines.some((l) => l.includes('心情不错')), got.scoreLines)
+      t('自己加的 frontmatter 键留着', got.headExtras?.weather === '阴', got.headExtras)
+      t('自己加的小节留着', (got.extraSections ?? []).some((x) => String(x.title).includes('周三那天补记')), got.extraSections)
+      t('开头那段话留着', String(got.intro ?? '').includes('随手写的两句'), got.intro)
+
+      const text = diary.renderDiaryMarkdown(got.data, {
+        headExtras: got.headExtras, extraSections: got.extraSections, scoreLines: got.scoreLines, intro: got.intro,
+      })
+      t('写回去还带着天气那个键', text.includes('weather: 阴'), text)
+      t('写回去还带着他加的那一节', text.includes('周三那天补记'), text)
+      t('写回去还带着认不出的打分行', text.includes('心情不错'), text)
+      t('写回去还带着开头那段', text.includes('随手写的两句'), text)
+
+      // 空小节：用户把它删了，就别每次又长回来。
+      const bare = diary.renderDiaryMarkdown({ date: '2026-10-21', 今天最值得讲的一件事: '只写了一节。' })
+      t('空小节不再写出一个光标题', !bare.includes('## 当时在想什么'), bare)
+
+      // 覆盖前留底：这是「敢写」的前提。
+      const first = await diary.writeDiary(dir, { date: '2026-10-22', 今天最值得讲的一件事: '第一版。' })
+      t('第一版写进去了', first.ok === true && first.mode === 'created', first)
+      const second = await diary.writeDiary(dir, { date: '2026-10-22', 今天最值得讲的一件事: '第二版。' }, new Date(), { expect: { text: first.text } })
+      t('接着改得动', second.ok === true && second.mode === 'updated', second)
+      t('改之前那一版留了底', typeof second.snapshot === 'string' && second.snapshot !== '' && await exists(second.snapshot), second.snapshot)
+
+      // 别人（或用户自己）在我们两次写之间动过文件：不许覆盖。
+      const stale = await diary.writeDiary(dir, { date: '2026-10-22', 今天最值得讲的一件事: '第三版。' }, new Date(), { expect: { text: first.text } })
+      t('外面改过就不写，并说清是冲突', stale.ok === false && stale.conflict === true, stale)
+      t('冲突时磁盘上还是外面那份', String((await diary.readDiary(dir, '2026-10-22')).data?.['今天最值得讲的一件事'] ?? '').includes('第二版'), '')
+
+      // 读不出来就不写（比如那一天变成了一个目录）。
+      await fs.mkdir(path.join(dir, '2026-10-23.md'), { recursive: true })
+      const blocked = await diary.writeDiary(dir, { date: '2026-10-23', 今天最值得讲的一件事: '不该写进去。' })
+      t('读不出来时拒绝写入', blocked.ok === false, blocked)
+
+      // 软链不当日记：读会跑到文件夹外面去。
+      await fs.writeFile(path.join(tmpdir(), 'lc-diary-outside.md'), '---\nlifecard: 1\nkind: lifecard-diary\ndate: 2026-10-24\n---\n\n## 今天最值得讲的一件事\n\n外面那份。\n', 'utf8')
+      await fs.symlink(path.join(tmpdir(), 'lc-diary-outside.md'), path.join(dir, '2026-10-24.md'))
+      const linked = await diary.readDiary(dir, '2026-10-24')
+      t('软链不当日记读，直接说清不读', linked.ok === false && String(linked.error ?? '').includes('快捷方式'), linked)
+      const listLink = await diary.listDiaries(dir)
+      t('软链也不列进写过几天', !listLink.diaries.some((d) => d.date === '2026-10-24'), listLink.diaries.map((d) => d.date))
+      await fs.rm(path.join(tmpdir(), 'lc-diary-outside.md'), { force: true })
+
+      // 文件权限：不该因为写一次就从 600 变成谁都能看。
+      await fs.writeFile(path.join(dir, '2026-10-25.md'), '---\nlifecard: 1\nkind: lifecard-diary\ndate: 2026-10-25\n---\n\n## 今天最值得讲的一件事\n\n原来那段。\n', { encoding: 'utf8', mode: 0o600 })
+      await diary.writeDiary(dir, { date: '2026-10-25', 今天最值得讲的一件事: '原来那段。又补一句。' })
+      const mode = (await fs.stat(path.join(dir, '2026-10-25.md'))).mode & 0o777
+      t('写一次之后权限还是 600', mode === 0o600, mode.toString(8))
+
+      // 列表里的反斜杠：写一次不该多一层。
+      const esc = await diary.writeDiary(dir, { date: '2026-10-26', 今天最值得讲的一件事: '走了 C:\\Users\\me 那条路。', 下一步: ['a\\b'] })
+      t('带反斜杠的正文写得进去', esc.ok === true, esc)
+      const escBack = await diary.readDiary(dir, '2026-10-26')
+      t('反斜杠没被翻倍', escBack.data?.['下一步']?.[0] === 'a\\b', JSON.stringify(escBack.data?.['下一步']))
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
+    }
+  }
+
   console.log('\n=== 8. 键都齐了 ===')
   {
     const want = ['DIARY_SECTIONS', 'DIARY_LIST_SECTIONS', 'DIMENSIONS', 'dateFileName', 'diaryFileName', 'diaryRootFrom',
