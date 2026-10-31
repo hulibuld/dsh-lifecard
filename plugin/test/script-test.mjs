@@ -132,14 +132,31 @@ console.log('\n=== 5. 提示词：把原著改编的规矩写进去 ===')
   t('带上了人物', prompt.includes('林小雨'), '')
   t('带上了设定', prompt.includes('四个月的雨'), '')
   t('带上了上一章最后一场（接得住位置和道具）', prompt.includes('她的伞还攥在手里'), '')
-  t('要求叙述转 △ 动作', prompt.includes('△'), '')
-  t('钉死了台词格式', prompt.includes('说：'), '')
-  t('不许写镜头景别机位', prompt.includes('景别') && prompt.includes('机位'), '')
-  t('不许写秒数时长', prompt.includes('秒'), '')
-  t('忠于原著：不许加人改结局', prompt.includes('结局'), '')
-  t('人物只能说自己知道的事', prompt.includes('知道'), '')
-  t('有输出格式的样例', prompt.includes('第1场') || prompt.includes('第 1 场'), '')
-  t('自检要内部做完不输出', prompt.includes('不要') || prompt.includes('不许'), '')
+  // 这几条以前是拿单字包含当断言的（`includes('△')`、`includes('秒')`）——
+  // 把整行规矩改坏，甚至把这一条删掉，测试照样全绿。断言整句，才拦得住。
+  t('要求叙述转 △ 动作', prompt.includes('以「△」开头') && prompt.includes('一行一个连续的动作'), '')
+  t('动作行要写清位置朝向和结果', prompt.includes('写清位置、朝向、谁对谁、手上拿着什么、结果怎么样'), '')
+  t('钉死了台词格式', prompt.includes('`角色名（情绪或动作）说："台词。"`'), '')
+  t('括号里只写演得出来的东西', prompt.includes('不写「心里一沉」'), '')
+  t('心理的三优先顺序', prompt.includes('先看能不能用表情和动作演出来'), '')
+  t('心里话要带括号写成一行', prompt.includes('（心里想：……）'), '')
+  t('标点分工说清了', prompt.includes('`！？`') && prompt.includes('`……`'), '')
+  t('不许写镜头景别机位', prompt.includes('镜号、景别、机位、运镜'), '')
+  t('不许写秒数时长', prompt.includes('不写：秒数、时长'), '')
+  t('不许写字幕旁白音乐', prompt.includes('字幕、旁白'), '')
+  t('忠于原著：不许加人改结局', prompt.includes('不加原著里没有的人和事') && prompt.includes('不改结局'), '')
+  t('关键台词伏笔道具不许丢', prompt.includes('伏笔、反转、道具'), '')
+  t('人物只能说自己知道的事', prompt.includes('人物只能说自己知道的事'), '')
+  t('连续性要接住道具和伤', prompt.includes('信在谁兜里'), '')
+  t('不许替作者往下编', prompt.includes('不许替作者往下编'), '')
+  t('有输出格式的样例', prompt.includes('第1场') && prompt.includes('【出场人物】'), '')
+  t('自检要内部做完不输出', prompt.includes('这些检查的话不要写出来'), '')
+  t('不要解释也不要反问', prompt.includes('不要解释怎么改的') && prompt.includes('问我满不满意'), '')
+
+  // 结构断言：规矩是一条条列的，把这些条删掉一半，测试必须红。
+  const howSection = prompt.split('【怎么改】')[1]?.split('【输出格式】')[0] ?? ''
+  const bullets = howSection.split('\n').filter((line) => line.trim().startsWith('- '))
+  t('「怎么改」是逐条列的', bullets.length >= 16, `只有 ${bullets.length} 条`)
 
   const note = novel.buildScriptSystemNote()
   t('系统提示钉住位置：是编剧', note.includes('编剧'), note.slice(0, 60))
@@ -337,16 +354,86 @@ console.log('\n=== 10. 空白剧本不落盘 ===')
   const made = await table['novel.create']({ title: '空白的那本' })
   const id = made.id
   await table['novel.chapter.save']({ id, index: 1, body: '第一章。' })
+  // 存进来是空壳：以前直接删文件、回话还说「存好了」，磁盘上那份就再也找不回来。
+  // 现在只回一句「空的，没往里存」，原来那份一动不动。
   const blank = await table['novel.script.save']({ id, index: 1, text: '   \n\n  ' })
-  t('存进来是空壳就当没存过', blank.ok === true && blank.empty === true, JSON.stringify(blank).slice(0, 160))
+  t('存空壳会被挡下来', blank.ok !== true && blank.blank === true, JSON.stringify(blank).slice(0, 160))
+  t('挡下来的时候话说清楚了', String(blank.error ?? '').includes('空的'), String(blank.error ?? ''))
   const listed = await table['novel.script.list']({ id })
   t('书里不会留一个 0 场的空文件', listed.ok === true && listed.scripts.length === 0, JSON.stringify(listed).slice(0, 160))
+
+  // 有内容的那份存下去之后，再存一次空壳，原来那份必须还在。
+  await table['novel.script.save']({ id, index: 1, text: '第1场\n客厅 日 内\n【出场人物】甲\n△ 甲走进来。' })
+  const kept = await table['novel.script.save']({ id, index: 1, text: '\u3000 \n' })
+  t('全角空格也算空壳', kept.ok !== true && kept.blank === true, JSON.stringify(kept).slice(0, 160))
+  const still = await table['novel.script.get']({ id, index: 1 })
+  t('存空壳不许把原来那份抹掉', String(still.text).includes('甲走进来'), String(still.text).slice(0, 80))
+
+  // 章号不对：0、负数、非数字、不存在的章，都不许悄悄盖到第 1 章去。
+  for (const bad of [0, -1, 'abc', 9]) {
+    const r = await table['novel.script.save']({ id, index: bad, text: '第1场\n客厅 日 内\n【出场人物】乙\n△ 有人进来。' })
+    t(`章号 ${JSON.stringify(bad)} 会被挡下来`, r.ok !== true, JSON.stringify(r).slice(0, 160))
+  }
+  const untouched = await table['novel.script.get']({ id, index: 1 })
+  t('章号不对的时候第 1 章没被盖掉', String(untouched.text).includes('甲走进来'), String(untouched.text).slice(0, 60))
+
+  const noBook = await table['novel.script.get']({ id: '根本没有这本书', index: 1 })
+  t('书不存在时说书不在了', noBook.ok !== true && String(noBook.error ?? '').includes('不在'), JSON.stringify(noBook).slice(0, 160))
   // 存完再存一次，覆盖而不是追加。
   await table['novel.script.save']({ id, index: 1, text: '第1场\n客厅 日 内\n【出场人物】甲\n△ 甲走进来。' })
   await table['novel.script.save']({ id, index: 1, text: '第1场\n客厅 夜 内\n【出场人物】甲\n△ 甲退出去。' })
   const again = await table['novel.script.get']({ id, index: 1 })
   t('再存一次是覆盖，不是追加', String(again.text).includes('退出去') && !String(again.text).includes('走进来'), String(again.text).slice(0, 80))
   t('存完只有一份', (await table['novel.script.list']({ id })).scripts.length === 1, '')
+}
+
+console.log('\n=== 10.5 删章的时候，那一章的剧本跟着走 ===')
+{
+  const ws2 = path.join(tmpdir(), `lc-script-del-${process.pid}-${Date.now()}`)
+  await fs.mkdir(ws2, { recursive: true })
+  await store.openWorkspace(ws2, { create: true })
+  const ctx2 = {
+    logger: { warn: () => {} },
+    get: () => undefined,
+  }
+  const table2 = api.buildApi(ctx2, async () => ws2, { workspace: ws2 })
+  const made = await table2['novel.create']({ title: '删章那本' })
+  const id = made.id
+  await table2['novel.chapter.save']({ id, index: 1, body: '第一章。' })
+  await table2['novel.chapter.save']({ id, index: 2, body: '第二章。' })
+  await table2['novel.script.save']({ id, index: 1, text: '第1场\n客厅 日 内\n【出场人物】甲\n△ 甲走进来。' })
+  await table2['novel.script.save']({ id, index: 2, text: '第1场\n厨房 夜 内\n【出场人物】乙\n△ 乙站住。' })
+  await table2['novel.chapter.delete']({ id, index: 1 })
+  const left = await table2['novel.script.list']({ id })
+  t('删掉的那一章，剧本也不留', left.ok === true && left.scripts.every((x) => x.index !== 1), JSON.stringify(left.scripts))
+  t('别的章剧本还在', left.ok === true && left.scripts.some((x) => x.index === 2), JSON.stringify(left.scripts))
+  await fs.rm(ws2, { recursive: true, force: true })
+}
+
+console.log('\n=== 10.6 场号的各种写法（从别处粘回来也要认） ===')
+{
+  const plan = (head) => {
+    const p = novel.parseScriptScenes([head, '客厅 日 内', '【出场人物】甲', '△ 站着。'].join('\n'))
+    return { n: p.counts.scenes, no: p.scenes[0]?.no ?? 0, place: p.scenes[0]?.place ?? '' }
+  }
+  const cases = [
+    ['第3场', 3], ['第 3 场', 3], ['【第3场】', 3], ['场景3', 3], ['场3', 3],
+    ['SCENE 3', 3], ['三、', 3], ['## 第3场', 3], ['**第3场**', 3], ['第一章 第3场', 3],
+    ['第1章·第2场', 2], ['第１场', 1],
+  ]
+  for (const [head, want] of cases) {
+    const got = plan(head)
+    t(`场号「${head}」认得出是第 ${want} 场`, got.n === 1 && got.no === want && got.place === '客厅', JSON.stringify(got))
+  }
+  // 反过来：场内清单号不能被当成场号，否则一份好剧本被切成十几个假场。
+  const inScene = novel.parseScriptScenes([
+    '第1场', '客厅 日 内', '【出场人物】甲',
+    '1. 他推开门。', '2. 他把伞放下。', '3.15 米宽的门。', '△ 站着。',
+  ].join('\n'))
+  t('场内清单号不切场', inScene.counts.scenes === 1, JSON.stringify(inScene.counts))
+  // 「1.」当第一场也照样认——但点后面得真像场头。
+  const numbered = novel.parseScriptScenes(['1. 客厅 日 内', '【出场人物】甲', '△ 站着。', '2. 门外 夜 外', '△ 走了。'].join('\n'))
+  t('纯编号场头也认', numbered.counts.scenes === 2 && numbered.scenes[1].no === 2, JSON.stringify(numbered.counts))
 }
 
 console.log('\n=== 11. 提示词自己的样例，必须能被解析器原样吃下去 ===')
@@ -411,7 +498,11 @@ console.log('\n=== 15. 镜头词：戏里出现的东西不算，写成说明才
   t('电视上滚过字幕是戏', cam('△ 电视屏幕上滚过一行字幕：明早停水。') === false, '')
   t('隔壁放背景音乐是戏', cam('△ 隔壁在放背景音乐，很轻。') === false, '')
   t('「加字幕」是镜头话', cam('△ 加字幕：三年后。') === true, '')
-  t('单独一行「字幕：三年后」是镜头话', cam('字幕：三年后。') === true, '')
+  // 「字幕：三年后」以前报镜头话。现在它算旁白那一类——同一个毛病报一次就够，
+  // 报成两条只会让人觉得这个检查在乱咬。
+  const sub = novel.scanScript(head + '字幕：三年后。')
+  t('单独一行「字幕：三年后」算旁白', sub.issues.some((i) => i.kind === 'narrator'), sub.issues.map((i) => i.kind))
+  t('它不再重复报成镜头话', sub.issues.every((i) => i.kind !== 'camera'), sub.issues.map((i) => i.kind))
   t('旁白直接报', cam('△ 旁白响起。') === true, '')
   t('镜头推近直接报', cam('△ 镜头推近。') === true, '')
   // 常见时刻也得认，不然好端端的场头被当成没写日夜。

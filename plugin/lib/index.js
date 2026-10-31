@@ -2917,7 +2917,12 @@ function buildApi(ctx, workspace, config, options) {
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '没有说是哪本书' }
-      return await novel.deleteChapter(ws, id, body?.index)
+      const gone = await novel.deleteChapter(ws, id, body?.index)
+      if (gone.ok !== true) return gone
+      // 这一章没了，它上面那份剧本留着就是一份谁也点不到的孤儿——
+      // 界面上只能按章翻，第 N 章都不存在了，那份剧本永远打不开也删不掉。
+      const script = await novel.deleteScript(ws, id, body?.index)
+      return script.ok === true ? gone : { ...gone, scriptKept: true }
     },
 
     /** 整本书不要了。 */
@@ -3518,7 +3523,9 @@ function buildApi(ctx, workspace, config, options) {
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '没有说是哪本书' }
-      const got = await novel.readScript(ws, id, body?.index)
+      const target = await scriptTarget(ws, id, body?.index)
+      if (target.error !== undefined) return { ok: false, error: target.error }
+      const got = await novel.readScript(ws, id, target.index)
       if (got.ok !== true) return got
       const scan = novel.scanScript(got.text)
       return { ...got, scan, report: novel.scriptReportText(scan) }
@@ -3530,16 +3537,19 @@ function buildApi(ctx, workspace, config, options) {
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '没有说是哪本书' }
-      // 存进来是个空壳（只剩空格和换行），就当没存过：删掉那一份，别在书里留个 0 场的文件。
-      if (String(body?.text ?? '').trim() === '') {
-        const gone = await novel.deleteScript(ws, id, body?.index)
-        if (gone.ok !== true) return gone
+      const target = await scriptTarget(ws, id, body?.index)
+      if (target.error !== undefined) return { ok: false, error: target.error }
+      const raw = String(body?.text ?? '')
+      // 只剩空格（含全角空格）和换行：这人不小心清空了。
+      // 以前这里直接删文件，回话还说「存好了」——磁盘上那份就再也找不回来。
+      // 现在只回一句「空的，没往里存」，原来的那份一动不动。
+      if (raw.replace(/[\s\u3000]/g, '') === '') {
         const scan = novel.scanScript('')
-        return { ok: true, index: Number(body?.index) || 1, empty: true, scan, report: novel.scriptReportText(scan) }
+        return { ok: false, blank: true, index: target.index, error: '这一份是空的，没往里存。原来那一份还在。' }
       }
-      const saved = await novel.writeScript(ws, id, body?.index, String(body?.text ?? ''))
+      const saved = await novel.writeScript(ws, id, target.index, raw)
       if (saved.ok !== true) return saved
-      const scan = novel.scanScript(String(body?.text ?? ''))
+      const scan = novel.scanScript(raw)
       return { ...saved, scan, report: novel.scriptReportText(scan) }
     },
 
@@ -3549,6 +3559,8 @@ function buildApi(ctx, workspace, config, options) {
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '没有说是哪本书' }
+      const book = await novel.readBook(ws, id)
+      if (book.ok !== true) return { ok: false, error: '这本书不在了。回到书架看一眼，可能被移走了。' }
       return await novel.listScripts(ws, id)
     },
 
@@ -3558,7 +3570,9 @@ function buildApi(ctx, workspace, config, options) {
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '没有说是哪本书' }
-      return await novel.deleteScript(ws, id, body?.index)
+      const target = await scriptTarget(ws, id, body?.index)
+      if (target.error !== undefined) return { ok: false, error: target.error }
+      return await novel.deleteScript(ws, id, target.index)
     },
 
     /**
@@ -3657,6 +3671,32 @@ function buildApi(ctx, workspace, config, options) {
  * 它才不会把「说话很冲的那个人」写成温和的——那是长篇最容易崩的地方。
  * 每张卡只取前 500 字：卡可能写得很长，全贴会把大纲和上一章挤掉。
  */
+/**
+ * 章号闸。
+ *
+ * `chapterFileName` 里有 `Math.max(1, Math.min(999, Math.floor(Number(index) || 1)))`
+ * —— 它把 0、-1、'abc'、null 一律**悄悄**夹成 1。对「读」来说没问题，
+ * 对「写」就是灾难：`novel.script.save({index:0})` 会盖掉第 1 章原来那份剧本，
+ * 而且回话说的是「存好了」。
+ *
+ * 所以写之前先在这里拦一道：章号得是正整数，而且这一章得真的存在。
+ * 返回 `{ index }` 或者 `{ error }`。
+ */
+async function scriptTarget(ws, id, rawIndex) {
+  const text = String(rawIndex ?? '').trim()
+  const index = Number(text)
+  if (text === '' || !Number.isInteger(index) || index < 1) {
+    return { error: '章号不对，没法知道你说的是哪一章。' }
+  }
+  const book = await novel.readBook(ws, id)
+  if (book.ok !== true) return { error: '这本书不在了。回到书架看一眼，可能被移走了。' }
+  const exists = Array.isArray(book.chapters) && book.chapters.some((c) => Number(c.index) === index)
+  if (!exists) {
+    return { error: `这本书没有第 ${index} 章。先翻到真正的那一章再存。` }
+  }
+  return { index }
+}
+
 async function gatherCast(ws, wants) {
   const out = []
   const list = Array.isArray(wants) ? wants.slice(0, 8) : []
