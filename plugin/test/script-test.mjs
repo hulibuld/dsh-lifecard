@@ -557,6 +557,83 @@ console.log('\n=== 10.11 markdown 列表符与箭头 ===')
   t('箭头行里的心里话拆得出来', both.thoughts === 1 && both.actions === 1, JSON.stringify(both))
 }
 
+console.log('\n=== 10.12 模型真会写出来的那些样子（审查员 49f9a6d8 的十二条） ===')
+{
+  const S = (raw) => novel.scanScript(raw)
+  const kinds = (raw) => S(raw).issues.map((i) => i.kind)
+  const base = (body) => `第1场\n客厅 日 内\n【出场人物】甲\n${body}`
+
+  // ① 整行加粗的台词：以前 dialogues=0、报「没归位」。
+  {
+    const sc = novel.parseScriptScenes(base('△ 他把碗放下。\n**甲（没抬头）说："走。"**'))
+    t('加粗的台词照样读得出来', sc.scenes[0].dialogues.length === 1, String(sc.scenes[0].dialogues.length))
+    t('加粗台词不报没归位', !kinds(base('△ 他把碗放下。\n**甲（没抬头）说："走。"**')).includes('stray'), JSON.stringify(kinds(base('△ 他把碗放下。\n**甲（没抬头）说："走。"**'))))
+  }
+
+  // ② 场头单独一行加粗 / 井号。
+  for (const head of ['**客厅 日 内**', '## 客厅 日 内', '*客厅 日 内*']) {
+    const sc = novel.parseScriptScenes(`第1场\n${head}\n【出场人物】甲\n△ 站着。`)
+    t(`单独一行的场头读得出来：${head}`, sc.scenes[0].place === '客厅' && sc.scenes[0].inOut === '内', JSON.stringify({ place: sc.scenes[0].place, inOut: sc.scenes[0].inOut }))
+  }
+
+  // ③ 场头后面跟一句备注。
+  {
+    const sc = novel.parseScriptScenes('第1场\n客厅 日 内（回忆场，可加旧滤镜）\n【出场人物】甲\n△ 站着。')
+    t('场头后面带备注，地点还是干净的', sc.scenes[0].place === '客厅' && sc.scenes[0].dayNight === '日', JSON.stringify({ place: sc.scenes[0].place, dayNight: sc.scenes[0].dayNight }))
+    t('场头带备注不报没场头', !kinds('第1场\n客厅 日 内（回忆场，可加旧滤镜）\n【出场人物】甲\n△ 站着。').includes('no-head'), '')
+  }
+
+  // ④ 台词后面紧跟一个括注。
+  {
+    const said = novel.parseDialogueLine('甲说："走。"（把门带上）')
+    t('台词后面的括注并进这一句', said !== null && said.text === '走。' && said.paren === '把门带上', JSON.stringify(said))
+    t('台词后括注不报没归位', !kinds(base('△ 站着。\n甲说："走。"（把门带上）')).includes('stray'), '')
+  }
+
+  // ⑤ 一个人跨行说两段。
+  {
+    const sc = novel.parseScriptScenes(base('△ 站着。\n甲说："我跟你说，\n这事儿没完。"'))
+    t('跨行的两段话并成一句', sc.scenes[0].dialogues.length === 1 && sc.scenes[0].dialogues[0].text === '我跟你说，这事儿没完。', JSON.stringify(sc.scenes[0].dialogues))
+  }
+
+  // ⑥ 名字里带空格。
+  {
+    const sc = novel.parseScriptScenes('第1场\n客厅 日 内\n【出场人物】林 小雨、甲\n△ 站着。')
+    t('有顿号时名字里的空格不当分隔', sc.scenes[0].cast[0] === '林 小雨' && sc.scenes[0].cast.length === 2, JSON.stringify(sc.scenes[0].cast))
+    const sc2 = novel.parseScriptScenes('第1场\n客厅 日 内\n【出场人物】林小雨 甲 乙\n△ 站着。')
+    t('没有分隔符时空格照旧当分隔', sc2.scenes[0].cast.length === 3, JSON.stringify(sc2.scenes[0].cast))
+  }
+
+  // 「甲又说」不能变成一个人叫「甲又」。
+  t('「甲又说」读成甲', (novel.parseDialogueLine('甲又说："我等你。"') ?? {}).who === '甲', JSON.stringify(novel.parseDialogueLine('甲又说："我等你。"')))
+
+  // ⑦ 括注节拍行。
+  for (const beat of ['（沉默）', '（他站起来）']) {
+    t(`括注节拍不当没归位：${beat}`, !kinds(base(`△ 他把碗放下。\n${beat}`)).includes('stray'), JSON.stringify(kinds(base(`△ 他把碗放下。\n${beat}`))))
+  }
+
+  // ⑧ 只有心里话的一场不算空场。
+  t('只有一句心里话不算空场', !kinds(base('（心里想：他不会回来了。）')).includes('empty-scene'), JSON.stringify(kinds(base('（心里想：他不会回来了。）'))))
+
+  // ⑨ 「停留 3 分钟」不是秒，「停留 2 秒」才是。
+  t('停留 3 分钟不算时长', !kinds(base('△ 队伍在门口停留 3 分钟才挪一步。')).includes('camera'), JSON.stringify(kinds(base('△ 队伍在门口停留 3 分钟才挪一步。'))))
+  t('停留 2 秒算时长', kinds(base('△ 他在门口停留 2 秒才挪一步。')).includes('camera'), JSON.stringify(kinds(base('△ 他在门口停留 2 秒才挪一步。'))))
+
+  // ⑩ 「他放慢动作」是戏，「用慢动作」是分镜。
+  t('放慢动作不误报', !kinds(base('△ 他放慢动作，把碗轻轻放下。')).includes('camera'), JSON.stringify(kinds(base('△ 他放慢动作，把碗轻轻放下。'))))
+  t('用慢动作要报', kinds(base('△ 这段用慢动作。')).includes('camera'), JSON.stringify(kinds(base('△ 这段用慢动作。'))))
+
+  // ⑪ 中文语言标记的围栏。
+  t('认中文语言标记的围栏', novel.stripFence('```剧本\n第1场\n客厅 日 内\n△ 站着。\n```') === '第1场\n客厅 日 内\n△ 站着。', JSON.stringify(novel.stripFence('```剧本\n第1场\n客厅 日 内\n△ 站着。\n```')))
+
+  // ⑫ 围栏后面多说的话要丢掉。
+  {
+    const got = novel.stripFence('```\n第1场\n客厅 日 内\n【出场人物】甲\n△ 站着。\n```\n以上是第1场，需要我再展开吗？')
+    t('围栏后面多说的话不留在正文里', !got.includes('以上是第1场'), JSON.stringify(got))
+    t('围栏后面多说的话不产生没归位', !kinds('```\n第1场\n客厅 日 内\n【出场人物】甲\n△ 站着。\n```\n以上是第1场，需要我再展开吗？').includes('stray'), '')
+  }
+}
+
 console.log('\n=== 11. 提示词自己的样例，必须能被解析器原样吃下去 ===')
 {
   // 以前样例里写的是占位符「场景名 日/夜 内/外」，模型照抄就写成
