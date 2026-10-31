@@ -520,6 +520,21 @@ console.log('\n=== 10.9 中文输入法下那些写法 ===')
   t('外国名字整个算一个人', foreign !== null && foreign.who === '迈克尔·柯里昂', JSON.stringify(foreign))
 }
 
+console.log('\n=== 10.10 镜头话的两难：什么算分镜，什么是戏里的人手里有台相机 ===')
+{
+  const issue = (line) => novel.scanScript('第1场\n客厅 日 内\n【出场人物】甲\n' + line).issues.map((i) => i.kind)
+
+  // 该报：行首就是「镜头」，后面跟的是运镜动作。
+  for (const line of ['△ 镜头慢慢拉开。', '△ 镜头缓缓推近。', '△ 镜头对准门口。', '△ 镜头一转。', '△ 镜头一路跟着他出了门。', '△ 摄像机跟着他走。', '△ 镜头：他背对着门。']) {
+    t(`分镜写法报得出来：${line}`, issue(line).includes('camera'), JSON.stringify(issue(line)))
+  }
+
+  // 不该报：同几个字出现在戏里。
+  for (const line of ['△ 他举起相机，镜头对准窗外。', '△ 拉开镜头盖。', '△ 他对着镜头笑了一下。', '△ 她一秒都没停。', '△ 收音机里在念旁白。', '△ 桌上摊着一叠分镜稿。']) {
+    t(`正常戏份不误报：${line}`, !issue(line).includes('camera'), JSON.stringify(issue(line)))
+  }
+}
+
 console.log('\n=== 11. 提示词自己的样例，必须能被解析器原样吃下去 ===')
 {
   // 以前样例里写的是占位符「场景名 日/夜 内/外」，模型照抄就写成
