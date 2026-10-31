@@ -275,5 +275,67 @@ if (typeof BookView === 'function') {
   globalThis.fetch = realFetch
 }
 
+// ── 点顶上返回离开这一屏：组件直接卸载，没机会弹窗问「还没存，走不走」 ──────
+// 现场：改完剧本，不点「存好这份剧本」，直接点顶上那个返回箭头回书架。
+// BookView 卸载，scriptText 跟着没了——手改的那几场静静消失，一句提示都没有。
+if (typeof BookView === 'function') {
+  stores.clear()
+  calls.length = 0
+  SCRIPT_OF.x = SCRIPT_OF.a
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, opts = {}) => {
+    const method = String(url).split('/').pop()
+    const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : {}
+    const reply = (payload) => ({ ok: true, status: 200, json: async () => payload })
+    if (method === 'novel.get') return reply({ ok: true, data: { title: '雨里的门' }, idea: '', chapters: [{ index: 1 }] })
+    if (method === 'novel.outline.get') return reply({ ok: true, text: '', chapters: [] })
+    if (method === 'novel.chapter.get') return reply({ ok: true, body: '第一章的正文。' })
+    if (method === 'novel.script.get') {
+      const text = SCRIPT_OF.x ?? ''
+      calls.push({ method, body })
+      return reply({ ok: true, text, report: '' })
+    }
+    calls.push({ method, body })
+    return reply({ ok: true })
+  }
+
+  const propsU = { bookId: 'x', onBack: () => {}, flash: () => {} }
+  let treeU = renderComponent(BookView, propsU)
+  await settle()
+  treeU = renderComponent(BookView, propsU)
+  await settle()
+
+  const areasU = collect(treeU, (n) => n.type === 'textarea')
+  const boxU = areasU.find((n) => String(n.props?.value ?? '').includes('他把碗放下'))
+  t('找得到剧本框（卸载那一组）', boxU !== undefined, areasU.map((n) => String(n.props?.value ?? '').slice(0, 20)))
+
+  if (boxU !== undefined) {
+    // 什么都没改就先卸载：不该冒出任何保存请求。
+    calls.length = 0
+    for (const slot of storeFor(BookView).slots) {
+      if (slot !== null && typeof slot === 'object' && slot.type === 'effect' && typeof slot.cleanup === 'function') slot.cleanup()
+    }
+    await settle()
+    t('没改过就离开，不写盘', calls.filter((c) => c.method === 'novel.script.save').length === 0, JSON.stringify(calls.map((c) => c.method)))
+
+    // 手改一处，还是不点「存好」，直接离开。
+    boxU.props.onChange({ target: { value: boxU.props.value + '\n△ 他抬头看了一眼。' } })
+    treeU = renderComponent(BookView, propsU)
+    await settle()
+    calls.length = 0
+    for (const slot of storeFor(BookView).slots) {
+      if (slot !== null && typeof slot === 'object' && slot.type === 'effect' && typeof slot.cleanup === 'function') slot.cleanup()
+    }
+    await settle()
+
+    const savesU = calls.filter((c) => c.method === 'novel.script.save')
+    t('离开这一屏时替人把没存的剧本收好了', savesU.length === 1, JSON.stringify(calls.map((c) => c.method)))
+    t('收好的是这本书这一章', savesU.length === 1 && savesU[0].body.id === 'x' && Number(savesU[0].body.index) === 1, savesU.length === 1 ? JSON.stringify(savesU[0].body).slice(0, 120) : '')
+    t('收好的是手改过的那一版', savesU.length === 1 && String(savesU[0].body.text).includes('他抬头看了一眼'), savesU.length === 1 ? String(savesU[0].body.text).slice(-40) : '')
+  }
+
+  globalThis.fetch = realFetch
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

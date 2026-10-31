@@ -3540,6 +3540,18 @@ function BookView({ bookId, onBack, flash }) {
     load(0)
   }, [bookId])
 
+  // 离开这一屏时（点顶上那个返回、换门、切到别的页）组件直接卸载，
+  // 没有第二次机会弹窗问「剧本还没存，现在走吗」——上面那个 effect 只在换书时跑。
+  // 所以卸载这一刻自己把没存的剧本收好：人没按「存好这份剧本」，
+  // 不等于想把它丢掉。
+  const leaveRef = useRef({ id: '', index: 0, text: '', dirty: false })
+  leaveRef.current = { id: bookId, index: chapterIndex, text: scriptText, dirty: scriptDirty }
+  useEffect(() => () => {
+    const now = leaveRef.current
+    if (now.dirty !== true || String(now.text).trim() === '') return
+    call('novel.script.save', { id: now.id, index: now.index, text: now.text }).catch(() => null)
+  }, [])
+
   const doPlan = async () => {
     setBusy('plan'); setErr(null)
     try {
