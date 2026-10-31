@@ -960,10 +960,11 @@ export function parseScriptScenes(text) {
     // 还有 markdown 和加粗壳子（`## 第3场`、`**第3场**`）——模型爱把标题加粗。
     // 一起认了，不然从别处粘回来的剧本整份读成 0 场。
     const sceneHit = SCENE_NO_RE.exec(raw)
-    // 「1.」「2、」这种只在**整份还没有一场**的时候当场号。
+    // 「1.」「2、」这种要先看后面是不是真场头。
     // 场内容里模型的编号行（`1. 他推开门。`、`1. 甲说："走。"`、人物清单）到处都是，
     // 一律当场号会把一份好剧本切成十几个假场，再连报三条误报。
-    // 判据只有一条：点后面得真像一行场头（写了日夜或内外）。
+    // 判据只有一条：点后面得真像一行场头（写了日夜或内外），
+    // 或者这一行只剩编号、场头写在下一行。
     // 捕获组：1 第N场/第N幕、2 场景N、3 场次N、4 场N/幕N、5 SCENE N、6 N.、7 中文数字、8 同行场头。
     // `1.` 单独一行、场头写在下一行（`## 第3场` 那种只差一个 #）：
     // 下一行真像场头的话，这一行的编号就认。
@@ -1460,6 +1461,23 @@ export function scanScript(text) {
       label: `有 ${noCast.length} 场没写谁在这场里`,
       detail: '【出场人物】空着，演员表就排不出来。',
       samples: noCast.slice(0, 3).map((s) => `第 ${s.no} 场`),
+    })
+  }
+
+  // 场号重复：两场都叫「第1场」，排班和配音会直接对上错的那一场。
+  // 解析器不替人改号（改了就不是作者写的号了），但要说出来。
+  const seenNo = new Set()
+  const dupNo = []
+  for (const sc of parsed.scenes) {
+    if (seenNo.has(sc.no)) dupNo.push(sc.no)
+    seenNo.add(sc.no)
+  }
+  if (dupNo.length > 0) {
+    issues.push({
+      kind: 'dup-scene',
+      label: `有 ${dupNo.length} 个场号重了`,
+      detail: '场号是拿来对场次的：重了，排班和配音就会对上另一场。往下顺一遍号。',
+      samples: dupNo.slice(0, 3).map((n) => `第 ${n} 场`),
     })
   }
 

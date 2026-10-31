@@ -978,6 +978,15 @@ await fs.rm(ws, { recursive: true, force: true })
     await fs.rm(ws6, { recursive: true, force: true })
   }
 
+  // ⑱ 场号重了要说出来：排班和配音靠它对场次。
+  {
+    const dup = '第1场\n客厅 日 内\n【出场人物】甲\n△站着。\n第1场\n门外 夜 外\n【出场人物】乙\n△走着。'
+    const got = novel.scanScript(dup)
+    t('场号重了要报', got.issues.some((x) => x.kind === 'dup-scene'), JSON.stringify(got.issues.map((x) => x.kind)))
+    const okText = '第1场\n客厅 日 内\n【出场人物】甲\n△站着。\n第2场\n门外 夜 外\n【出场人物】乙\n△走着。'
+    t('场号不重就不报', !novel.scanScript(okText).issues.some((x) => x.kind === 'dup-scene'), '')
+  }
+
   // ⑰ 「秒」这一档：戏里的秒不许报，镜头话的秒必须报。
   //    判据是「谁在停」——主语是镜头/画面/黑场/定格这一类的才是在写时长。
   {
