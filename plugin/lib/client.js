@@ -1987,7 +1987,11 @@ function LifeCardTab(props) {
       // 不静默失败——点了没反应，比说清「这一步要你手动搬一下」更让人困惑。
       handoff === null || handoff.ok === true ? null : h('div', { style: { padding: '10px 12px 0' }, 'data-interview-handoff': '1' },
         h(Note, { tone: 'warn', icon: 'warning' },
-          h('div', null, '这个版本不支持直接开会话，把下面这句复制到新对话里：'),
+          // 有真原因就说真原因：以前这里写死一句「这个版本不支持」，
+          // 而真正卡住的地方（预设没认出来、第一句没发出去）一句都没露出来。
+          h('div', null, String(handoff.reason ?? '').trim() === ''
+            ? '这一下没能直接开新对话，把下面这句复制到新对话里也一样能用：'
+            : `${String(handoff.reason).trim()}　把下面这句复制到新对话里也一样能用：`),
           h('textarea', {
             readOnly: true,
             rows: 3,

@@ -276,7 +276,9 @@ try {
       t('全角冒号也认', got.data?.scores?.工作 === 3, JSON.stringify(got.data?.scores))
       t('认不出的打分行留着没吃', Array.isArray(got.scoreLines) && got.scoreLines.some((l) => l.includes('心情不错')), got.scoreLines)
       t('自己加的 frontmatter 键留着', got.headExtras?.weather === '阴', got.headExtras)
-      t('自己加的小节留着', (got.extraSections ?? []).some((x) => String(x.title).includes('周三那天补记')), got.extraSections)
+      // 自己写的小标题不再被拎成「额外小节」，而是原样留在它所在那一节的正文里。
+      t('手写的小标题留在正文里，没被搬到别处', String(got.data?.['今天最值得讲的一件事'] ?? '').includes('周三那天补记'), got.data?.['今天最值得讲的一件事'])
+      t('手写的小标题下面的话也留着', String(got.data?.['今天最值得讲的一件事'] ?? '').includes('这是他手写的小标题'), got.data?.['今天最值得讲的一件事'])
       t('开头那段话留着', String(got.intro ?? '').includes('随手写的两句'), got.intro)
 
       const text = diary.renderDiaryMarkdown(got.data, {
@@ -328,6 +330,64 @@ try {
       t('带反斜杠的正文写得进去', esc.ok === true, esc)
       const escBack = await diary.readDiary(dir, '2026-10-26')
       t('反斜杠没被翻倍', escBack.data?.['下一步']?.[0] === 'a\\b', JSON.stringify(escBack.data?.['下一步']))
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
+    }
+  }
+
+  console.log('\n=== 9b. 他自己写的东西：不改名、不搬家、不吞掉 ===')
+  {
+    const dir = await fs.mkdtemp(path.join(tmpdir(), 'lc-diary-own-'))
+    try {
+      const wrap = (date, body) => `---\nlifecard: "0.1"\nkind: lifecard-diary\ndate: ${date}\n---\n\n${body}\n`
+
+      // 用户在访达里给这一天起了个名字（加「周五」、后缀变大写）：那不是没写。
+      await fs.writeFile(path.join(dir, '2026-10-30 周五.md'), wrap('2026-10-30', '## 今天最值得讲的一件事\n\n改了名的这一篇'), 'utf8')
+      await fs.writeFile(path.join(dir, '2026-10-29.MD'), wrap('2026-10-29', '## 今天最值得讲的一件事\n\n后缀大写的那一篇'), 'utf8')
+      const listed = await diary.listDiaries(dir)
+      t('改过名的日记照样列得出来', listed.diaries.some((d) => d.date === '2026-10-30'), listed.diaries.map((d) => d.file))
+      t('后缀大写也认', listed.diaries.some((d) => d.date === '2026-10-29'), listed.diaries.map((d) => d.file))
+      const renamed = await diary.readDiary(dir, '2026-10-30')
+      t('改过名的那一篇读得到', renamed.ok === true && renamed.data !== null, renamed)
+      t('读的时候给出的是他那个文件名', renamed.path === '2026-10-30 周五.md', renamed.path)
+      const wroteRenamed = await diary.writeDiary(dir, { date: '2026-10-30', 今天最值得讲的一件事: '改了名的这一篇\n\n又补一句。' })
+      t('接着写还写进他那个文件', wroteRenamed.ok === true && wroteRenamed.path === '2026-10-30 周五.md', wroteRenamed)
+      t('没有另建一个同日期文件', (await diary.listDiaries(dir)).diaries.filter((d) => d.date === '2026-10-30').length === 1, '')
+
+      // 他自己在某一节里写一行小标题：那一行和他下面的话都得留在原地。
+      const sub = await diary.parseDiaryText(wrap('2026-10-31', '## 今天最值得讲的一件事\n\n上午开会。\n\n## 楼梯间那十分钟\n\n我一句话没说。\n\n## 当时在想什么\n\n有点慌。'))
+      t('手写的小标题留在那一节正文里', String(sub.data['今天最值得讲的一件事'] ?? '').includes('## 楼梯间那十分钟'), sub.data['今天最值得讲的一件事'])
+      t('小标题下面的话也留着', String(sub.data['今天最值得讲的一件事'] ?? '').includes('我一句话没说'), sub.data['今天最值得讲的一件事'])
+      t('它后面那一节照样认得出来', String(sub.data['当时在想什么'] ?? '').includes('有点慌'), sub.data['当时在想什么'])
+      t('不再把它当成「额外小节」搬出去', (sub.extraSections ?? []).length === 0, sub.extraSections)
+
+      // 手打了一个没闭合的 ```：后面的节不能被整片吞掉。
+      const fence = await diary.parseDiaryText(wrap('2026-10-28', '## 今天最值得讲的一件事\n\n上午。\n\n```\ncode\n\n## 当时在想什么\n\n想了。\n\n## 情绪往下三层\n\n累。'))
+      t('没闭合的围栏不吞后面的节（想什么）', String(fence.data['当时在想什么'] ?? '').includes('想了'), fence.data['当时在想什么'])
+      t('没闭合的围栏不吞后面的节（三层）', String(fence.data['情绪往下三层'] ?? '').includes('累'), fence.data['情绪往下三层'])
+
+      // 同一节写两遍（早上写一段、晚上又起一个同名标题）：两份都得留。
+      const twice = await diary.parseDiaryText(wrap('2026-10-27', '## 今天最值得讲的一件事\n\n早上那句。\n\n## 今天最值得讲的一件事\n\n晚上补的那句。'))
+      t('同名小节两份都留着', String(twice.data['今天最值得讲的一件事'] ?? '').includes('早上那句') && String(twice.data['今天最值得讲的一件事'] ?? '').includes('晚上补的那句'), twice.data['今天最值得讲的一件事'])
+
+      // 一轮「读进来 → 写回去」之后，字节不该越写越多。
+      const before = wrap('2026-10-26', '## 今天最值得讲的一件事\n\n上午开会。\n\n## 楼梯间那十分钟\n\n我一句话没说。')
+      const p1 = await diary.parseDiaryText(before)
+      const out = diary.renderDiaryMarkdown(p1.data, { intro: p1.intro, extraSections: p1.extraSections, scoreLines: p1.scoreLines, headExtras: p1.headExtras })
+      const p2 = await diary.parseDiaryText(out)
+      t('写回去再读回来，小标题只有一份', (out.match(/## 楼梯间那十分钟/g) ?? []).length === 1, out)
+      t('第二轮内容和第一轮一样', String(p2.data['今天最值得讲的一件事'] ?? '') === String(p1.data['今天最值得讲的一件事'] ?? ''), [p1.data['今天最值得讲的一件事'], p2.data['今天最值得讲的一件事']])
+
+      // `# 紧急` 这种一行一条的记号：只剥记号，文字留下。
+      const sharp = await diary.parseDiaryText(wrap('2026-10-25', '## 今天最值得讲的一件事\n\nx\n\n## 下一步\n\n# 紧急 先把材料交了\n- 回邮件'))
+      t('「下一步」里手写 # 的那一行没被丢掉', (sharp.data.下一步 ?? []).some((x) => String(x).includes('先把材料交了')), sharp.data.下一步)
+
+      // frontmatter 里的 mood：不改它的写法，也不弄丢。
+      const moodText = wrap('2026-10-24', '## 今天最值得讲的一件事\n\n上午。').replace('---\n\n## ', 'mood: 木的\n---\n\n## ')
+      const moodParsed = await diary.parseDiaryText(moodText)
+      t('mood 读得回来', String(moodParsed.data.mood ?? '') === '木的', moodParsed.data.mood)
+      const moodOut = diary.renderDiaryMarkdown(moodParsed.data, { intro: moodParsed.intro, extraSections: moodParsed.extraSections, scoreLines: moodParsed.scoreLines, headExtras: moodParsed.headExtras })
+      t('写回去还带着 mood', moodOut.includes('mood:'), moodOut)
     } finally {
       await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
     }

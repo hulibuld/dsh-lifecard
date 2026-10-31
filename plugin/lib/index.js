@@ -3440,15 +3440,20 @@ function buildApi(ctx, workspace, config, options) {
       if (raw === '') return { ok: false, error: '没有说是哪个文件夹。' }
       const dir = diary.diaryRootFrom({ diary_dir: raw })
       if (dir === '' || dir === path.parse(dir).root) return { ok: false, error: '不能整个磁盘根目录都当日记文件夹。换一个位置。' }
+      const veto = diaryDirVeto(dir)
+      if (veto !== '') return { ok: false, error: veto }
       const made = await fs.mkdir(dir, { recursive: true }).then(() => true).catch(() => false)
       if (!made) return { ok: false, error: '这个文件夹建不出来。换一个位置，或者检查一下有没有写的权限。' }
       // 探针文件用完就删，但**先看它原本存不存在**：用户文件夹里真有个同名文件时，
-      // 我们既不该覆盖它，也不该删掉它。
+      // 我们既不该覆盖它，也不该删掉它。也不能给它传 undefined 当内容——
+      // Node 对 `writeFile(p, undefined)` 直接抛 TypeError，于是「本来好好的文件夹」
+      // 会被判成写不进去。
       const probe = path.join(dir, '.lifecard-diary-probe')
       const hadProbe = await fs.lstat(probe).then(() => true).catch(() => false)
-      const writable = await fs.writeFile(probe, hadProbe ? undefined : 'x', { encoding: 'utf8', flag: hadProbe ? 'a' : 'w' })
-        .then(async () => { if (!hadProbe) await fs.rm(probe, { force: true }); return true })
-        .catch(() => false)
+      const writable = await (hadProbe
+        ? fs.appendFile(probe, '')
+        : fs.writeFile(probe, 'x', { encoding: 'utf8' }).then(() => fs.rm(probe, { force: true }))
+      ).then(() => true).catch(() => false)
       if (writable !== true) return { ok: false, error: '这个文件夹写不进去。换一个位置，或者检查一下有没有写的权限。' }
       const saved = await store.writeConfig(ws, { diary_dir: dir })
       if (saved?.ok !== true) return { ok: false, error: saved?.error ?? '位置没记住，下次还得再挑一次。' }
@@ -3465,7 +3470,19 @@ function buildApi(ctx, workspace, config, options) {
       if (diary.dateFileName(date) === '') return { ok: false, error: '日期看起来不对，应该是 2026-10-31 这种样子。' }
       const got = await diary.readDiary(where.dir, date)
       if (got.ok !== true) return got
-      return { ok: true, dir: where.dir, ready: true, date, data: got.data, missing: got.missing === true }
+      // 除了五节，还得把「文件里本来还有」的东西交出去：用户写在开头那段话、
+      // 自己加的小节。不交的话界面上看不见它们，他会以为存丢了。
+      return {
+        ok: true,
+        dir: where.dir,
+        ready: true,
+        date,
+        data: got.data,
+        intro: got.intro ?? '',
+        extraSections: got.extraSections ?? [],
+        scoreLines: got.scoreLines ?? [],
+        missing: got.missing === true,
+      }
     },
 
     /** 存某一天。 */
@@ -3523,13 +3540,13 @@ function buildApi(ctx, workspace, config, options) {
           // 只好从头重问一遍；存盘时它照着新问出来的整节重写，上午写的就没了。
           if (todayDone) {
             const got = await diary.readDiary(where.dir, today)
-            if (got.ok === true && got.data !== null) draft = diary.diaryBlock(got.data)
+            if (got.ok === true && got.data !== null) draft = diary.diaryBlock(got.data, { intro: got.intro, extraSections: got.extraSections })
           }
           const picked = listed.diaries.filter((d) => d.date !== today).slice(0, 3)
           const texts = []
           for (const item of picked) {
             const got = await diary.readDiary(where.dir, item.date)
-            if (got.ok === true && got.data !== null) texts.push({ date: item.date, data: got.data })
+            if (got.ok === true && got.data !== null) texts.push({ date: item.date, data: got.data, intro: got.intro, extraSections: got.extraSections })
           }
           recent = diary.recentBlock(picked.map((d) => d.date), texts)
         }
@@ -3574,7 +3591,7 @@ function buildApi(ctx, workspace, config, options) {
       const got = await diary.readDiary(where.dir, date)
       if (got.ok !== true) return got
       if (got.data === null) return { ok: false, error: '这一天还没写。' }
-      const built = diary.buildDigestPrompt({ date, text: diary.diaryBlock(got.data) })
+      const built = diary.buildDigestPrompt({ date, text: diary.diaryBlock(got.data, { intro: got.intro, extraSections: got.extraSections }) })
       const called = await callModel(ctx, { system: built.system, user: built.user, model: body?.model })
       if (called.ok !== true) return { ok: false, error: `这次没整理出来：${called.error ?? '过一会儿再试一次'}` }
       return { ok: true, date, text: String(called.text ?? '').trim() }
@@ -4438,6 +4455,33 @@ function pinnedCardIdSync(root, mode) {
  * 和别的东西不一样：日记**不在这个工作区里**，它是用户在第一次点「写日记」时
  * 自己挑的一个位置。所以这里不回落到工作区，没定过就老实说没定。
  */
+/**
+ * 日记文件夹不能挑在这些地方。
+ *
+ * 以前只挡了文件系统根目录，于是 `~/.ssh`、`~/Library`、`/tmp` 全照收：
+ * 一个手滑把 `.ssh` 设成日记夹，往后每一次「写日记」都往密钥目录里写文件。
+ * 这里只挡「明显不该往里写东西」的几处，不是白名单——用户自己的
+ * `~/Documents/xxx`、外接盘、iCloud 都照旧能选。
+ *
+ * @returns {string} 不许的话，一句人话；可以的话空串。
+ */
+function diaryDirVeto(dir) {
+  const abs = path.normalize(String(dir ?? ''))
+  const home = homedir()
+  const under = (base) => base !== '' && (abs === base || abs.startsWith(base + path.sep))
+  if (abs === path.parse(abs).root) return '不能整个磁盘根目录都当日记文件夹。换一个位置。'
+  if (abs === os.tmpdir()) {
+    // 只挡临时目录本身：那是系统会整个清掉的地方。它下面自己建的具体文件夹
+    // 不挡——外接盘、同步盘的挂载点有时候就长在系统临时路径下面。
+    return '别把系统临时文件夹本身当日记文件夹——那里会被系统整个清掉，日记会跟着没。换一个位置。'
+  }
+  if (under(path.join(home, '.ssh'))) return '这是放密钥的地方，不能当日记文件夹。换一个位置。'
+  if (under(path.join(home, '.gnupg'))) return '这是放密钥的地方，不能当日记文件夹。换一个位置。'
+  if (under(path.join(home, 'Library'))) return '这是系统自己用的文件夹，别往里写日记。换一个位置，比如「文稿」。'
+  if (abs === home) return '整个家目录太大了，给日记单独建个文件夹吧。换一个位置。'
+  return ''
+}
+
 async function diaryDirOf(ws) {
   const state = await store.readConfigState(ws)
   if (state.ok !== true) return { ok: false, error: state.error ?? '这个文件夹里的设置读不出来。' }
@@ -4968,14 +5012,21 @@ export function apply(ctx, config) {
         // 没有 Origin 就是同源请求（浏览器对同源 POST 一般不送）；`null` 是
         // 沙箱里的 iframe。这两种放行，只有「明确来自别家站点」才拦。
         if (origin !== '' && origin !== 'null') {
-          let sameHost = false
+          // 只比「Origin 和 Host 一致」是不够的：DNS rebinding 下攻击者页面的
+          // Origin 和它请求的 Host 都是它自己的域名，两面一致照样放行，
+          // 于是别人的网页能读、能改你的日记。这里再加一条——这一台服务只在
+          // 本机跑，所以请求的主机名必须真的是回环地址，别的一律不收。
+          let allowed = false
           try {
             const host = String(req.headers?.host ?? '')
-            sameHost = host !== '' && new URL(origin).host === host
+            const originUrl = new URL(origin)
+            const hostName = host === '' ? '' : new URL(`http://${host}`).hostname
+            const loopback = hostName === '127.0.0.1' || hostName === 'localhost' || hostName === '::1' || hostName === '[::1]'
+            allowed = loopback && originUrl.host === host
           } catch {
-            sameHost = false
+            allowed = false
           }
-          if (!sameHost) {
+          if (!allowed) {
             writeJson(res, 403, { ok: false, error: { code: 'forbidden', message: '这个来源不能改档案' } })
             return
           }

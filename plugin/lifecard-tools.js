@@ -84,6 +84,15 @@ async function resolveRoot(config) {
 
 const KIND_LABEL = { real: '现实里的人', fictional: '虚构角色', self: '自己', hybrid: '半真半虚构' }
 
+/**
+ * 一句引文至少要有几个字才算「原文里有这一句」。
+ *
+ * 以前只要求非空，于是 `quote: '今天'` 就能过——那两个字在哪个人的材料里
+ * 都找得到，「每条都要有原文」这道门等于没有。五个字是个折中：
+ * 「睡得很沉」这种短句还在，纯口头禅类的两三个字拦掉。
+ */
+const MIN_QUOTE_CHARS = 5
+
 function kindOf(card) {
   const kind = String(card?.kind ?? '')
   return KIND_LABEL[kind] ?? (kind === '' ? '没写是哪种' : kind)
@@ -946,8 +955,14 @@ export function registerTools(ctx, config) {
         const old = before[title]
         if (Array.isArray(old) ? old.length > 0 : String(old ?? '').trim() !== '') payload[title] = old
       }
+      // 心情那行工具不管，也不该因为这次没提到就没了。
+      if (payload.mood === undefined && String(before.mood ?? '').trim() !== '') payload.mood = before.mood
 
-      const saved = await writeDiary(dir, payload, new Date(), { expect: { text: existing.text } })
+      // 用户点了「就改这一天」，那就照他说的改：写盘那一层默认会把「这次没写的节」
+      // 从旧文件里补回来（对「接着写」是对的），补回来就清不掉了。所以确认过之后
+      // 关掉那一层——要留的节上面已经一条条补进 payload 了。
+      const mergeOld = args.confirm_overwrite !== true
+      const saved = await writeDiary(dir, payload, new Date(), { expect: { text: existing.text }, merge: mergeOld })
       if (saved.ok !== true) {
         if (saved.conflict === true) {
           return [
@@ -999,7 +1014,9 @@ function squash(text) {
 /** 材料里到底有没有这句话。宁可放过折行，绝不放过「差不多」。 */
 function hasQuote(source, quote) {
   const q = squash(quote)
-  if (q === '') return false
+  // 两三个字太容易碰上了：`quote: '今天'` 能对上任何一段日记，
+  // 于是「每条都要有原文引文」这道门就成了摆设。太短的一律不算。
+  if (q.length < MIN_QUOTE_CHARS) return false
   return squash(source).includes(q)
 }
 
@@ -1053,9 +1070,13 @@ async function findSelfCard(root) {
   const cards = Array.isArray(all.cards) ? all.cards : []
   const hit = cards.find((c) => String(c.kind ?? '') === 'self')
   if (hit === undefined) {
-    // 老档案里「我」常常是 kind:real + relation:我（用户自己就是这么建的）。
-    // 认它，但只在没有真正的 self 卡时认。
-    const byRelation = cards.find((c) => String(c.relation ?? '').trim() === '我' && String(c.kind ?? '') === 'real')
+    // 老档案里「我」常常是 kind:real + 某个关系词（用户自己就是这么建的）。
+    // 认它，但只在没有真正的 self 卡时认。`relation` 这一格有人写「我」，
+    // 也有人写「本人」「自己」「我自己」——只认第一个的话，他会建出
+    // 第二张「我」，然后两张卡各写一半。
+    const SELF_WORDS = new Set(['我', '本人', '自己', '我自己', '本人自己'])
+    const looksSelf = (c) => SELF_WORDS.has(String(c.relation ?? '').trim()) && String(c.kind ?? '') === 'real'
+    const byRelation = cards.find(looksSelf)
     if (byRelation === undefined) return null
     const read = await store.readCard(root, byRelation.path)
     return read.ok === true ? read : null

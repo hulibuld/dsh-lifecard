@@ -84,6 +84,55 @@ export function diaryFileName(today = localDate()) {
 }
 
 /**
+ * 这个文件名算不算某一天的日记——放宽一档。
+ *
+ * 严格只认 `2026-10-30.md` 的问题是：用户在访达里把它改名成
+ * 「2026-10-30 周五.md」或者后缀变成 `.MD`，从此这一天就"不存在"了——
+ * 界面说今天还没写，再存一次还会新建一个同日期文件，两篇分叉。
+ * 日记是用户自己的文件，他有一个起名字的权利。
+ *
+ * 所以放宽到：日期对得上，后面跟不跟东西都行。但日期本身必须真是那一天，
+ * `2026-13-45` 这种照样不认；后缀必须是 `.md`（不区分大小写）。
+ *
+ * @returns {string} 认得出就回 `YYYY-MM-DD`，认不出回空串。
+ */
+function looseDateOf(name) {
+  const raw = String(name ?? '')
+  if (!/\.md$/i.test(raw)) return ''
+  const stem = raw.slice(0, -3)
+  const m = /^(\d{4}-\d{2}-\d{2})(?:[\s_\-–—].*)?$/.exec(stem)
+  if (m === null) return ''
+  return dateFileName(m[1]) === '' ? '' : m[1]
+}
+
+/**
+ * 这一天的日记到底是哪个文件。
+ *
+ * 先找标准名字；没有再在这个文件夹里找「日期对得上、后面被加了别的话」的
+ * 那份（用户自己改过名）。找到就接着用它写，不另建一个同日期文件把一篇
+ * 日记劈成两半。
+ */
+async function findDiaryFile(dir, date) {
+  const exact = dateFileName(date)
+  if (exact === '') return { ok: false, error: '日子不对，日记只认 年-月-日 这种写法。' }
+  const absExact = path.join(dir, exact)
+  const got = await readRaw(absExact)
+  if (got.kind !== 'none') return { ok: true, name: exact, abs: absExact, raw: got, loose: false }
+  let names
+  try {
+    names = await fs.readdir(dir)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { ok: true, name: exact, abs: absExact, raw: got, loose: false }
+    return { ok: false, error: '那个日记文件夹读不出来。检查一下权限。' }
+  }
+  const hits = names.filter((n) => looseDateOf(n) === date).sort()
+  if (hits.length === 0) return { ok: true, name: exact, abs: absExact, raw: got, loose: false }
+  const name = hits[0]
+  const abs = path.join(dir, name)
+  return { ok: true, name, abs, raw: await readRaw(abs), loose: true }
+}
+
+/**
  * 日记放进哪里：用户自己指定的那个文件夹。
  *
  * 没指定就返回空串，让调用方去问，而不是偷偷写进工作区——
@@ -92,9 +141,14 @@ export function diaryFileName(today = localDate()) {
 export function diaryRootFrom(config) {
   const raw = typeof config?.diary_dir === 'string' ? config.diary_dir.trim() : ''
   if (raw === '') return ''
-  if (raw === '~') return path.join(process.env.HOME ?? '', '')
-  if (raw.startsWith('~/')) return path.join(process.env.HOME ?? '', raw.slice(2))
-  return path.resolve(raw)
+  const home = process.env.HOME ?? ''
+  if (raw === '~') return home
+  if (raw.startsWith('~/')) return path.join(home, raw.slice(2))
+  // 相对路径不能按「进程现在站在哪儿」算：那个位置是插件自己的安装目录，
+  // 用户输入「我的日记」会在插件包里造一个文件夹，他永远找不到。
+  // 相对路径一律按「他的家目录」算，这是他说那句话时唯一会想到的地方。
+  if (!path.isAbsolute(raw)) return path.join(home, raw)
+  return path.normalize(raw)
 }
 
 // ── 写 / 读 ──────────────────────────────────────────────────────
@@ -175,7 +229,8 @@ export function parseDiaryText(text) {
   const head = parsed.data ?? {}
   const kind = String(head.kind ?? '').trim()
   if (kind !== '' && kind !== DIARY_KIND) return { ok: false, error: '这个文件不是日记，是别的文件。' }
-  const sections = Array.isArray(parsed.sections) ? parsed.sections : []
+  const grouped = regroupSections(parsed.sections)
+  const bodyOf = (title) => String(grouped.byTitle.get(title) ?? '').trim()
   const data = { date: String(head.date ?? '').trim() }
   const mood = String(head.mood ?? '').trim()
   if (mood !== '') data.mood = mood
@@ -185,14 +240,12 @@ export function parseDiaryText(text) {
     headExtras[key] = head[key]
   }
   const scores = {}
-  const known = new Set([...DIARY_SECTIONS, SCORE_SECTION])
-  const extraSections = []
   const scoreLines = []
   for (const title of DIARY_SECTIONS) {
-    const body = core.sectionBody(sections, title)
-    data[title] = DIARY_LIST_SECTIONS.includes(title) ? parseList(body) : String(body ?? '').trim()
+    const body = bodyOf(title)
+    data[title] = DIARY_LIST_SECTIONS.includes(title) ? parseList(body) : body
   }
-  for (const line of parseList(core.sectionBody(sections, SCORE_SECTION))) {
+  for (const line of parseList(bodyOf(SCORE_SECTION))) {
     const got = parseScoreLine(line)
     if (got === null || !DIMENSIONS.includes(got.name)) {
       // 认不出来的打分行原样留着：宁可多一行，不要静默吃掉用户写的东西。
@@ -201,22 +254,109 @@ export function parseDiaryText(text) {
     }
     scores[got.name] = got.value
   }
-  for (const one of sections) {
-    const title = String(one?.title ?? '').trim()
-    if (title === '' || title === '_intro' || known.has(title)) continue
-    const body = String(one?.body ?? '').trim()
-    if (body !== '') extraSections.push({ title, body })
-  }
   data.scores = scores
   return {
     ok: true,
     data,
-    sections,
+    sections: parsed.sections,
     headExtras,
-    extraSections,
+    // 用户自己写的小标题现在留在正文里，不再单拎成「额外小节」——
+    // 拎出去等于把它从原本待着的那一段里挖走，写回去就多一份。
+    extraSections: [],
     scoreLines,
-    intro: String(core.sectionBody(sections, '_intro') ?? '').trim(),
+    intro: grouped.intro,
   }
+}
+
+/**
+ * 把切出来的小节重新归位：**只有我们自己那六个标题算分节线**。
+ *
+ * 用户在自己那一节里手写一行 `## 医院里的事` 是很自然的事（那本来就是
+ * 一段小标题）。以前 `splitSections` 见到任何 `^## ` 都另起一节，于是
+ * 那一行连同它下面的话被搬出正文、摆到文件末尾——模型再读就只看得到
+ * 第一行，改一次多出一份，文件越写越长。
+ *
+ * 这里改口径：认得的标题才分节，不认得的标题原样留在它所在那一节的正文里，
+ * 一个字都不搬。这样「读进来 → 写回去」是恒等的，模型也看得到全段。
+ */
+function regroupSections(sections) {
+  const known = new Set([...DIARY_SECTIONS, SCORE_SECTION])
+  const intro = []
+  const blocks = []
+  let cur = null
+  const startBlock = (title, lines) => {
+    cur = { title, lines: Array.isArray(lines) ? lines.slice() : [] }
+    blocks.push(cur)
+  }
+  const push = (lines) => {
+    if (cur === null) intro.push(...lines)
+    else cur.lines.push(...lines)
+  }
+  // 一行 `## xxx`：认得的标题才另起一节。
+  const headingOf = (line) => {
+    const m = /^##\s+(.+?)\s*$/.exec(String(line ?? ''))
+    if (m === null) return ''
+    const title = m[1].trim()
+    return known.has(title) ? title : ''
+  }
+  const bodyLines = (text) => (String(text ?? '') === '' ? [] : String(text).split('\n'))
+  let seenKnown = false
+
+  // 一行一行地过，而不是一节一节地过：
+  //
+  // `parseCard` 出来的小节是按「行首 `## `」切的，可它有两种场合会切错——
+  // 一是用户手打了一个没闭合的 ``` 围栏，后面所有 `## ` 都被当成代码吞进
+  // 上一节；二是用户自己写的一行 `## 医院里的事` 也被切成了一节。
+  // 前者要把被吞掉的节认回来，后者要把它留在正文里。所以这里重新过一遍
+  // 每一节的正文行：认得的标题一律另起一节，不认得的原样留在原地。
+  const feed = (lines) => {
+    for (const line of lines) {
+      const title = headingOf(line)
+      if (title !== '') {
+        seenKnown = true
+        startBlock(title, [])
+        continue
+      }
+      if (cur !== null) cur.lines.push(line)
+      else intro.push(line)
+    }
+  }
+
+  for (const one of Array.isArray(sections) ? sections : []) {
+    const title = String(one?.title ?? '').trim()
+    const lines = bodyLines(one?.body)
+    if (title === '' || title === '_intro') {
+      feed(lines)
+      continue
+    }
+    if (known.has(title)) {
+      seenKnown = true
+      startBlock(title, [])
+      feed(lines)
+      continue
+    }
+    // 不认得的标题：用户自己写的小标题。原样并回当前这一节。
+    //
+    // 但一个认得的标题都还没出现时，它更可能是被围栏带出来的真小节
+    // （见上面），这时候单独算一节，否则后面几节整片消失。
+    if (!seenKnown) {
+      startBlock(title, [])
+      feed(lines)
+      continue
+    }
+    if (cur !== null && cur.lines.some((line) => line.trim() !== '')) push([''])
+    push([`## ${title}`])
+    feed(lines)
+  }
+
+  const byTitle = new Map()
+  for (const block of blocks) {
+    const text = block.lines.join('\n').replace(/^\n+|\n+$/g, '')
+    if (text === '') continue
+    // 同名小节（早上写一段、晚上又起一个同名标题）并成一段，不丢后一份。
+    byTitle.set(block.title, byTitle.has(block.title) ? `${byTitle.get(block.title)}\n\n${text}` : text)
+  }
+  return { intro: intro.join('\n').replace(/^\n+|\n+$/g, ''), byTitle }
 }
 
 /** 一行打分：`健康 6`、`健康：6.5`、全角数字、负号，都认。 */
@@ -238,7 +378,9 @@ function parseList(body) {
   for (const raw of String(body ?? '').split(/\r?\n/)) {
     let line = raw.trim()
     if (line === '') continue
-    if (/^#{1,6}\s/.test(line)) continue
+    // `# 紧急` 这种用户手写的记号：以前整行被丢掉（「我写的怎么没了」）。
+    // 现在只剥掉记号本身，文字留下——一行一条的小节里，那也是他的一条。
+    line = line.replace(/^#{1,6}\s+/, '').trim()
     line = line.replace(/^\s*(?:[-*+]|\d+\s*[.、)．])\s*/, '').trim()
     if (line !== '') out.push(unescapeItem(line))
   }
@@ -310,8 +452,10 @@ export async function readDiary(dir, date) {
   const name = dateFileName(date)
   if (name === '') return { ok: false, error: '日子不对，日记只认 年-月-日 这种写法。' }
   if (String(dir ?? '').trim() === '') return { ok: true, data: null, missing: true }
-  const abs = path.join(dir, name)
-  const got = await readRaw(abs)
+  const found = await findDiaryFile(dir, date)
+  if (found.ok !== true) return found
+  const name2 = found.name
+  const got = found.raw
   if (got.kind === 'none') return { ok: true, data: null, missing: true, path: name }
   if (got.kind === 'link') return { ok: false, error: '这一天不是一篇日记，是个快捷方式。为了不读到别处去，这次不读了。' }
   if (got.kind === 'error') return { ok: false, error: got.error }
@@ -321,7 +465,7 @@ export async function readDiary(dir, date) {
   // 认不出的打分行、开头那段）一路带出去：写回去的时候要原样带着走。
   return {
     ok: true,
-    path: name,
+    path: name2,
     text: got.text,
     data: parsed.data,
     sections: parsed.sections,
@@ -377,7 +521,12 @@ export async function writeDiary(dir, data, now = new Date(), options = {}) {
   if (name === '') return { ok: false, error: '日子不对，日记只认 年-月-日 这种写法。' }
   if (String(dir ?? '').trim() === '') return { ok: false, error: '还没定日记放在哪个文件夹。' }
   const abs = path.join(dir, name)
-  return withLock(abs, async () => {
+  // 锁要按「这一天」锁，不能按这里猜出来的标准名：用户可能已经把这一天
+  // 改名成「2026-10-30 周五.md」了，那写进去的也是那个文件。
+  const found = await findDiaryFile(dir, date)
+  if (found.ok !== true) return found
+  return withLock(found.abs, async () => {
+    const abs = found.abs
     const old = await readRaw(abs)
     if (old.kind === 'error') return { ok: false, error: `为了不覆盖掉原来那一篇，这次没存：${old.error}` }
     if (old.kind === 'link') return { ok: false, error: '这一天是个快捷方式，不往里写。' }
@@ -425,7 +574,10 @@ export async function writeDiary(dir, data, now = new Date(), options = {}) {
     const text = renderDiaryMarkdown(merged, renderOptions)
     const tmp = `${abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
     try {
-      await fs.mkdir(dir, { recursive: true })
+      // 只有「这一天还没写过」才建文件夹。已有那一篇在的时候不建：
+      // 用户可能刚把整个日记文件夹改名挪走了，这时候重建一个空壳出来，
+      // 会把他的日记分成互不相见的两处。
+      if (!existed) await fs.mkdir(dir, { recursive: true })
       await fs.writeFile(tmp, text, { encoding: 'utf8', mode: 0o600 })
       await fs.rename(tmp, abs)
       // 老文件原来是 600 就还是 600；原来是别的（用户自己改过）也照旧。
@@ -436,7 +588,7 @@ export async function writeDiary(dir, data, now = new Date(), options = {}) {
     }
     return {
       ok: true,
-      path: name,
+      path: path.basename(abs),
       chars: text.length,
       text,
       data: { ...merged, date },
@@ -463,6 +615,21 @@ async function saveSnapshot(dir, date, text) {
 }
 
 /**
+ * 这一篇有多少字。
+ *
+ * 不能用 `st.size`：那是字节数，一个汉字占三个字节，界面上会显示成三倍。
+ * 读不出来就退回字节数——数字不准好过没有。
+ */
+async function countChars(abs, size) {
+  try {
+    const text = await fs.readFile(abs, 'utf8')
+    return text.length
+  } catch {
+    return Number.isFinite(Number(size)) ? Number(size) : 0
+  }
+}
+
+/**
  * 列出写过哪些天（新的在前）。
  *
  * 只认 `YYYY-MM-DD.md`，别的文件一概不看：用户会把这个文件夹拿去同步、
@@ -484,11 +651,11 @@ export async function listDiaries(dir, options = {}) {
   }
   const diaries = []
   for (const name of names) {
-    // dateFileName 返回的是带 .md 的文件名，这里得跟原文件名叫法对上，
-    // 不然「2026-10-30.md」会被拼成「2026-10-30.md.md」，一条都列不出来。
-    const file = dateFileName(String(name).replace(/\.md$/i, ''))
-    if (file === '' || file !== name) continue
-    const date = file.slice(0, -3)
+    // 放宽一档：用户在访达里把「2026-10-30.md」改成「2026-10-30 周五.md」、
+    // 或者后缀变成 .MD，那不是「这一天没写」，是他给这一天起了个名字。
+    // 严格只认标准名的结果是这些日记整篇看不见，再存一次还会另建一个文件。
+    const date = looseDateOf(name)
+    if (date === '') continue
     const abs = path.join(dir, name)
     let st
     try {
@@ -497,7 +664,7 @@ export async function listDiaries(dir, options = {}) {
       continue
     }
     if (st.isSymbolicLink() || !st.isFile()) continue
-    diaries.push({ date, file: name, chars: st.size, mtime: st.mtime.toISOString() })
+    diaries.push({ date, file: name, chars: await countChars(abs, st.size), mtime: st.mtime.toISOString() })
   }
   diaries.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
   return { ok: true, diaries: diaries.slice(0, limit), total: diaries.length }
@@ -523,7 +690,9 @@ export function recentBlock(diaries, texts) {
       const hit = rows.find((one) => String(one?.date ?? '') === date)
       if (hit === undefined) return ''
       const data = hit.data
-      return data !== null && typeof data === 'object' ? diaryBlock(data) : String(data ?? '').trim()
+      return data !== null && typeof data === 'object'
+        ? diaryBlock(data, { intro: hit.intro, extraSections: hit.extraSections })
+        : String(data ?? '').trim()
     }
     const value = map[date]
     return value !== null && typeof value === 'object' ? diaryBlock(value) : String(value ?? '').trim()
@@ -609,10 +778,18 @@ export function buildDigestPrompt({ date, text }) {
   return { system, user }
 }
 
-/** 把整份日记排成模型看的样子：只给有内容的小节。 */
-export function diaryBlock(data) {
+/**
+ * 把整份日记排成模型看的样子：只给有内容的小节。
+ *
+ * 第二个参数可以带上「文件里还有、但不在五节里」的东西（`intro` 和
+ * `extraSections`）。不带的话，用户写在开头那段话、自己加的那几节，
+ * 模型一个字都看不见——他接着写的时候会把它当空白，人会觉得它没读。
+ */
+export function diaryBlock(data, options = {}) {
   const d = data !== null && typeof data === 'object' ? data : {}
   const lines = []
+  const intro = String(options?.intro ?? '').trim()
+  if (intro !== '') lines.push('【开头那段】', intro, '')
   for (const title of DIARY_SECTIONS) {
     const value = d[title]
     const body = DIARY_LIST_SECTIONS.includes(title)
@@ -623,6 +800,12 @@ export function diaryBlock(data) {
   const scores = d.scores !== null && typeof d.scores === 'object' ? d.scores : {}
   const scoreLine = DIMENSIONS.filter((name) => scores[name] !== undefined).map((name) => `${name} ${scores[name]}`).join(' / ')
   if (scoreLine !== '') lines.push(`【今天这四样】${scoreLine}`)
+  for (const one of Array.isArray(options?.extraSections) ? options.extraSections : []) {
+    const title = String(one?.title ?? '').trim()
+    const body = String(one?.body ?? '').trim()
+    if (title === '' || body === '') continue
+    lines.push(`【${title}】`, body, '')
+  }
   return lines.length === 0 ? '（这一篇还是空的）' : lines.join('\n').trimEnd()
 }
 
