@@ -2129,6 +2129,16 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   t('有删掉的按钮', words.includes('删掉这份'), words.slice(-300))
   t('数出来的结果也摆着', words.includes('共 1 场'), words.slice(-300))
   t('字数列出来', words.includes('字'), words.slice(-200))
+  // 改剧本这一节自己报错：全页那个 err 在最底下，剧本框本身就三百像素高，
+  // 报错落到屏幕外等于没报。
+  const withErr = renderOne('改成剧本（这一节自己的报错）', seen.get('BookView'), { bookId: 'demo', flash: () => {}, onBack: () => {} },
+    { 0: BOOK, 1: { ok: true, chapters: 1, text: '', theme: '', ending: '' }, 2: 1, 3: '第一章写了一半', 12: SCRIPT, 13: '', 15: '这一章还空着，没什么可改的。' })
+  const errWords = textOf(expand(withErr))
+  t('改剧本这一节的报错就摆在这一节里', errWords.includes('这一章还空着'), errWords.slice(-260))
+  // 哪一章已经改过剧本：章列表上给个标记，不然只有翻进去才知道。
+  const withMark = renderOne('改过剧本的章有标记', seen.get('BookView'), { bookId: 'demo', flash: () => {}, onBack: () => {} },
+    { 0: BOOK, 1: { ok: true, chapters: 1, text: '', theme: '', ending: '' }, 2: 1, 3: '第一章写了一半', 16: [1] })
+  t('改过剧本的那一章有标记', textOf(expand(withMark)).includes('有剧本'), textOf(expand(withMark)).slice(0, 400))
 }
 
 {

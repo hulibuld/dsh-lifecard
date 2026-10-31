@@ -28,7 +28,10 @@ const forbidden = ['JSON', 'json', 'chunk', 'tEXt', 'CHARX', 'CCv2', 'CCv3', 'Zo
 // core 的体检提示是数据诊断，字段名是定位用的，先不套这一层（另案处理）。
 const routeForbidden = ['lens', 'kind', 'world', 'consent', 'basis', 'recorded_at', 'snapshot']
 
-const files = ['index', 'store', 'core', 'score', 'codec', 'memory', 'jobs', 'jobs-store', 'jobs-interview']
+const files = ['index', 'store', 'core', 'score', 'codec', 'memory', 'jobs', 'jobs-store', 'jobs-interview',
+  // novel 和 client 以前漏在名单外：`novel.js` 那句「这本书的命令行读不出来」
+  // 真能上屏，测试却全绿。谁会在界面上说话，就把谁放进来。
+  'novel', 'prose', 'tavern', 'game', 'presets', 'career', 'client']
 
 /** 抠出「会显示给用户」的字符串字面量。只认单行，宁可漏也别误报。 */
 function shownStrings(source) {

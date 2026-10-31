@@ -3589,7 +3589,15 @@ function buildApi(ctx, workspace, config, options) {
       if (id === '') return { ok: false, error: '没有说是哪本书' }
       const book = await novel.readBook(ws, id)
       if (book.ok !== true) return book
-      const index = Number(body?.index) || (book.chapters.length === 0 ? 1 : book.chapters[book.chapters.length - 1].index)
+      // 没给章号就用最后一章；给了但不合法要说出来，不能悄悄改成第 1 章去改。
+      const rawIndex = body?.index
+      const gaveIndex = rawIndex !== undefined && rawIndex !== null && String(rawIndex).trim() !== ''
+      if (gaveIndex === true && novel.isValidChapterIndex(rawIndex) !== true) {
+        return { ok: false, error: '章号不对，没法知道你说的是哪一章。' }
+      }
+      const index = gaveIndex === true
+        ? Number(String(rawIndex).trim())
+        : (book.chapters.length === 0 ? 1 : book.chapters[book.chapters.length - 1].index)
       const chapter = await novel.readChapter(ws, id, index)
       if (chapter.ok !== true) return chapter
       const chapterBody = String(chapter.body ?? '').trim()
@@ -3683,11 +3691,10 @@ function buildApi(ctx, workspace, config, options) {
  * 返回 `{ index }` 或者 `{ error }`。
  */
 async function scriptTarget(ws, id, rawIndex) {
-  const text = String(rawIndex ?? '').trim()
-  const index = Number(text)
-  if (text === '' || !Number.isInteger(index) || index < 1) {
+  if (novel.isValidChapterIndex(rawIndex) !== true) {
     return { error: '章号不对，没法知道你说的是哪一章。' }
   }
+  const index = Number(String(rawIndex).trim())
   const book = await novel.readBook(ws, id)
   if (book.ok !== true) return { error: '这本书不在了。回到书架看一眼，可能被移走了。' }
   const exists = Array.isArray(book.chapters) && book.chapters.some((c) => Number(c.index) === index)

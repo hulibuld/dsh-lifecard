@@ -736,6 +736,73 @@ console.log('\n=== 17. 场号的几种真实写法都要认 ===')
   t('场名带「外」字不被拆', withNo('外滩 夜 外').place === '外滩' && withNo('外滩 夜 外').inOut === '外', withNo('外滩 夜 外'))
 }
 
+console.log('\n=== 18. 落盘这一层：章号、重名、失败话术 ===')
+{
+  // 章号：`chapterFileName` 自己还留着兜底（读的时候无害），但**写盘前**必须先过
+  // `isValidChapterIndex`——它以前把 0 / -1 / 'abc' 全夹成 1，写下去就是盖掉第 1 章。
+  t('0 不是合法章号', novel.isValidChapterIndex(0) === false, '')
+  t('-1 不是合法章号', novel.isValidChapterIndex(-1) === false, '')
+  t('1.9 不是合法章号', novel.isValidChapterIndex(1.9) === false, '')
+  t("'abc' 不是合法章号", novel.isValidChapterIndex('abc') === false, '')
+  t('null 不是合法章号', novel.isValidChapterIndex(null) === false, '')
+  t('1 是合法章号', novel.isValidChapterIndex(1) === true, '')
+  t("'3' 也认（界面上是字符串）", novel.isValidChapterIndex('3') === true, '')
+  t('超过上限也不行', novel.isValidChapterIndex(100000) === false, '')
+
+  const ctx3 = {
+    webServer: { register: () => () => {} },
+    reflect: { get: () => undefined },
+    effect: (fn) => { fn(); return () => {} },
+    logger: { warn: () => {} },
+    get: () => undefined,
+  }
+  const ws3 = path.join(tmpdir(), `lc-script-land-${process.pid}-${Date.now()}`)
+  await fs.mkdir(ws3, { recursive: true })
+  await store.openWorkspace(ws3, { create: true })
+  const table3 = api.buildApi(ctx3, async () => ws3, { workspace: ws3 })
+  const made3 = await table3['novel.create']({ title: '落盘那本' })
+  const id3 = made3.id
+  await table3['novel.chapter.save']({ id: id3, index: 1, body: '第一章。' })
+  await table3['novel.chapter.save']({ id: id3, index: 2, body: '第二章。' })
+
+  // 改剧本也别拿非法章号去改：以前悄悄改成第 1 章。
+  for (const bad of [0, -1, 'abc', 1.9]) {
+    const r = await table3['novel.script.draft']({ id: id3, index: bad })
+    t(`改剧本时章号 ${JSON.stringify(bad)} 会被挡下来`, r.ok !== true, JSON.stringify(r).slice(0, 120))
+  }
+  // 不给章号：用最后一章，不许报错。
+  const auto = await novel.readChapter(ws3, id3, 2)
+  t('书里第 2 章在（下面那几组要用）', auto.ok === true, JSON.stringify(auto).slice(0, 100))
+
+  // 同一章写成 1.md 和 001.md 两份：列出来只许一条，不许并列两条 1。
+  const dir = path.join(ws3, 'books', id3, 'scripts')
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(path.join(dir, '1.md'), '第1场\n客厅 日 内\n【出场人物】甲\n△ 甲站着。', 'utf8')
+  await fs.writeFile(path.join(dir, '001.md'), '第1场\n客厅 夜 内\n【出场人物】甲\n△ 甲坐着。', 'utf8')
+  await fs.writeFile(path.join(dir, '002.MD'), '第1场\n门外 日 外\n【出场人物】乙\n△ 乙走过。', 'utf8')
+  const listed3 = await novel.listScripts(ws3, id3)
+  const ones = listed3.scripts.filter((x) => x.index === 1)
+  t('1.md 和 001.md 只算一条', ones.length === 1, JSON.stringify(listed3.scripts.map((x) => x.file)))
+  t('留的是名字规范的那份（001.md）', ones.length === 1 && ones[0].file === '001.md', ones.map((x) => x.file))
+  t('002.MD 也认成第 2 章', listed3.scripts.some((x) => x.index === 2 && x.file === '002.MD'), JSON.stringify(listed3.scripts.map((x) => x.file)))
+
+  // 写失败的话术：不许一律报「磁盘满了」。用一个必然失败的路径（拿文件当目录）。
+  const blocker = path.join(ws3, 'books', id3, 'scripts')
+  await fs.rm(blocker, { recursive: true, force: true })
+  await fs.writeFile(blocker, 'not a dir', 'utf8')
+  const failed = await novel.writeScript(ws3, id3, 1, '第1场\n客厅 日 内\n△ 站着。')
+  t('写不进去时能说清是没存上', failed.ok !== true, JSON.stringify(failed).slice(0, 140))
+  t('写不进去时不硬说「磁盘满了」', !String(failed.error ?? '').includes('磁盘'), String(failed.error ?? ''))
+  const leftovers = await fs.readdir(path.join(ws3, 'books', id3)).catch(() => [])
+  t('写失败不留临时文件', leftovers.every((x) => !x.includes('.tmp-')), JSON.stringify(leftovers))
+
+  // 书的位置被文件夹占住时也不许出现「命令行」这种词。
+  const broken = await table3['novel.get']({ id: '不存在的那本' })
+  t('书不在时话说得干净', broken.ok !== true && !String(broken.error ?? '').includes('命令行'), String(broken.error ?? ''))
+
+  await fs.rm(ws3, { recursive: true, force: true })
+}
+
 await fs.rm(ws, { recursive: true, force: true })
 
 console.log(`\n${pass} passed, ${fail} failed`)

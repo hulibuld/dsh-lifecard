@@ -73,6 +73,24 @@ export function bookAbs(root, id) {
   return abs
 }
 
+/**
+ * 章号能不能用。
+ *
+ * `chapterFileName` 以前会 `Math.max(1, ...)` 兜底：`0`、`-1`、`'abc'`、`null`
+ * 全被悄悄夹成 1。读的时候无害，写的时候是灾——`novel.script.save({index:0})`
+ * 会把第 1 章原来那份剧本整份盖掉，而界面上什么都没说。
+ * 所以凡是**要写盘**的地方，先用这个判一遍。
+ */
+export function isValidChapterIndex(index) {
+  if (typeof index === 'number') {
+    return Number.isInteger(index) && index >= 1 && index <= MAX_CHAPTERS
+  }
+  const text = String(index ?? '').trim()
+  if (!/^[0-9]{1,3}$/.test(text)) return false
+  const n = Number(text)
+  return Number.isInteger(n) && n >= 1 && n <= MAX_CHAPTERS
+}
+
 /** 章文件名：`001.md` —— 补零到三位，字典序就是章序。 */
 export function chapterFileName(index) {
   const n = Math.max(1, Math.min(MAX_CHAPTERS, Math.floor(Number(index) || 1)))
@@ -124,7 +142,8 @@ export async function readBook(root, id) {
     text = await fs.readFile(abs, 'utf8')
   } catch (error) {
     if (error?.code === 'ENOENT') return { ok: false, error: '这本书不在了' }
-    return { ok: false, error: '这本书的命令行读不出来。检查一下文件夹权限。' }
+    if (error?.code === 'EISDIR') return { ok: false, error: '这本书的位置被一个文件夹占住了，里面可能被别的东西动过。' }
+    return { ok: false, error: '这本书打不开。用访达看一眼那个文件夹还在不在。' }
   }
   const parsed = parseBookText(text)
   if (parsed.ok !== true) return parsed
@@ -584,19 +603,27 @@ export async function readScript(root, id, index) {
 
 /** 写一份剧本（整份覆盖，先写临时文件再改名）。 */
 export async function writeScript(root, id, index, text) {
+  if (isValidChapterIndex(index) !== true) {
+    return { ok: false, error: '章号不对，没法知道你说的是哪一章。' }
+  }
   const book = await readBook(root, id)
   if (book.ok !== true) return book
   const n = chapterIndexOf(chapterFileName(index))
   const rel = scriptRelPath(id, n)
   const abs = path.join(root, rel)
   const body = String(text ?? '')
+  const tmp = `${abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
   try {
     await fs.mkdir(path.dirname(abs), { recursive: true })
-    const tmp = `${abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
     await fs.writeFile(tmp, body, 'utf8')
     await fs.rename(tmp, abs)
-  } catch {
-    return { ok: false, error: '这份剧本没能存下来。检查一下磁盘是不是满了。' }
+  } catch (error) {
+    // 写失败会把半截临时文件留在那儿，下次列剧本时又被当成 `名字.md.tmp-xxx` 混过去。
+    await fs.unlink(tmp).catch(() => null)
+    if (error?.code === 'ENOSPC') return { ok: false, error: '磁盘满了，这份剧本没存下来。' }
+    if (error?.code === 'EACCES' || error?.code === 'EPERM') return { ok: false, error: '这个文件夹不让写。用访达看一眼它的权限。' }
+    if (error?.code === 'EISDIR' || error?.code === 'ENOTDIR') return { ok: false, error: '那个位置上被别的东西占着，这份剧本没存下来。' }
+    return { ok: false, error: '这份剧本没能存下来。再试一次；还是不行就先关掉重开。' }
   }
   return { ok: true, index: n, path: rel, chars: body.length }
 }
@@ -624,11 +651,21 @@ export async function listScripts(root, id) {
     return { ok: false, error: '剧本目录读不出来。检查一下文件夹权限。' }
   }
   const scripts = []
+  // `1.md`、`001.md`、`002.MD` 会被读成同一个章号（章号正则不区分大小写、不要求补零）。
+  // 同一个章号只报一条，按「名字最规范」的那份算：先比是不是三位补零，再比是不是小写。
+  const seen = new Map()
   for (const name of names) {
     const index = chapterIndexOf(name)
     if (index === 0) continue
     const stat = await fs.stat(path.join(dir, name)).catch(() => null)
     if (stat === null || !stat.isFile()) continue
+    const canonical = name === chapterFileName(index)
+    const prev = seen.get(index)
+    if (prev !== undefined) {
+      // 已经有更好的那份就不换；都是非规范名时留字典序靠前的，至少两次结果一样。
+      if (prev.canonical === true) continue
+      if (canonical !== true && prev.file <= name) continue
+    }
     let scenes = 0
     try {
       const text = await fs.readFile(path.join(dir, name), 'utf8')
@@ -636,15 +673,17 @@ export async function listScripts(root, id) {
     } catch {
       scenes = 0
     }
-    scripts.push({
+    seen.set(index, {
       index,
       file: name,
+      canonical,
       path: path.posix.join(bookRelPath(id), SCRIPT_DIR, name),
       chars: stat.size,
       scenes,
       mtime: stat.mtime.toISOString(),
     })
   }
+  for (const entry of seen.values()) scripts.push({ ...entry })
   scripts.sort((a, b) => a.index - b.index)
   return { ok: true, scripts }
 }
@@ -1456,6 +1495,7 @@ export default {
   MAX_CHAPTERS,
   bookIdOf,
   bookRelPath,
+  isValidChapterIndex,
   chapterFileName,
   chapterIndexOf,
   renderBookMarkdown,

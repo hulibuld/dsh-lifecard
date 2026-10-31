@@ -168,7 +168,14 @@ function collect(node, pred, out = []) {
   return out
 }
 
-const settle = async () => { for (let i = 0; i < 12; i++) await Promise.resolve() }
+// 让挂起的 promise 都跑完。数字别抠得太紧：`load` 现在会多问一次
+// 「这本书哪几章改过剧本」，链上多几个 await，12 个微任务轮次就不够了，
+// 于是断言看到的是「还没加载完」的中间态——那是测试的问题，不是代码的。
+const settle = async () => {
+  for (let i = 0; i < 60; i++) await Promise.resolve()
+  await new Promise((r) => setTimeout(r, 0))
+  for (let i = 0; i < 60; i++) await Promise.resolve()
+}
 
 // ── 走一遍：打开 a，改剧本，不存，换去 b ────────────────────────────
 const BookView = api.__BookView
@@ -401,6 +408,286 @@ if (typeof BookView === 'function') {
   }
 
   fakeWindow.confirm = realConfirm
+  globalThis.fetch = realFetch
+}
+
+// ── 删的是别的章，不许把当前章正在写的正文和剧本一起抹掉 ─────────────────
+// 现场：停在第 2 章写了一小段没点存，顺手把第 1 章删掉。
+// 以前 removeChapter 不问 n 是不是当前章就 setBodyDirty(false)、清剧本，
+// 第 2 章新写的那一段跟着没了，正文连个确认框都没有。
+if (typeof BookView === 'function') {
+  stores.clear()
+  calls.length = 0
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, opts = {}) => {
+    const method = String(url).split('/').pop()
+    const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : {}
+    const reply = (payload) => ({ ok: true, status: 200, json: async () => payload })
+    if (method === 'novel.get') return reply({ ok: true, data: { title: '雨里的门' }, idea: '', chapters: [{ index: 1 }, { index: 2 }] })
+    if (method === 'novel.outline.get') return reply({ ok: true, text: '', chapters: [] })
+    // 假后台要记住存进去的东西：删完别的章会重读这一章，
+    // 要是每次都回同一句旧正文，就分不清「真丢」和「假后台不会存」了。
+    if (method === 'novel.chapter.get') {
+      return reply({ ok: true, body: diskBody[body.index] ?? `第 ${body.index} 章的旧正文。` })
+    }
+    if (method === 'novel.chapter.save') {
+      calls.push({ method, body })
+      diskBody[body.index] = String(body.body ?? '')
+      return reply({ ok: true })
+    }
+    if (method === 'novel.script.get') {
+      return reply({ ok: true, text: diskScript[body.index] ?? (body.index === 2 ? '第1场\n客厅 日 内\n△ 第 2 章原来那份。' : ''), report: '' })
+    }
+    if (method === 'novel.script.save') {
+      calls.push({ method, body })
+      diskScript[body.index] = String(body.text ?? '')
+      return reply({ ok: true, report: '' })
+    }
+    calls.push({ method, body })
+    return reply({ ok: true })
+  }
+
+  const diskBody = {}
+  const diskScript = {}
+  const propsD = { bookId: 'a', onBack: () => {}, flash: () => {} }
+  let treeD = renderComponent(BookView, propsD)
+  await settle()
+  treeD = renderComponent(BookView, propsD)
+  await settle()
+
+  // 翻到第 2 章。
+  const goTwo = collect(treeD, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+    && String(textOf(x)).startsWith('第 2 章'))[0]
+  if (goTwo !== undefined) {
+    goTwo.props.onClick()
+    await settle()
+    treeD = renderComponent(BookView, propsD)
+    await settle()
+
+    const boxes = collect(treeD, (x) => x.type === 'textarea')
+    const bodyBox = boxes.find((x) => String(x.props?.value ?? '').includes('第 2 章的旧正文'))
+    const scriptBox = boxes.find((x) => String(x.props?.value ?? '').includes('第 2 章原来那份'))
+    t('切到第 2 章：正文和剧本都在', bodyBox !== undefined && scriptBox !== undefined, `正文:${bodyBox !== undefined} 剧本:${scriptBox !== undefined}`)
+
+    if (bodyBox !== undefined && scriptBox !== undefined) {
+      // 第 2 章正文补一段（不存），剧本也手改一处（不存）。
+      bodyBox.props.onChange({ target: { value: String(bodyBox.props.value) + '\n刚写的这一小段。' } })
+      scriptBox.props.onChange({ target: { value: String(scriptBox.props.value) + '\n△ 手改的一行。' } })
+      treeD = renderComponent(BookView, propsD)
+      await settle()
+
+      // 对第 1 章点「删掉这一章」。
+      calls.length = 0
+      const delOne = collect(treeD, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+        && String(textOf(x)) === '删掉这一章')[0]
+      t('找得到「删掉这一章」', delOne !== undefined, '')
+      if (delOne !== undefined) {
+        delOne.props.onClick()
+        await settle()
+        await new Promise((r) => setTimeout(r, 30))
+        await settle()
+
+        // 该存的先存了：第 2 章正文一次、剧本一次。
+        const bodySaves = calls.filter((c) => c.method === 'novel.chapter.save')
+        const scriptSaves = calls.filter((c) => c.method === 'novel.script.save')
+        t('删别的章之前，先把当前章正文存好', bodySaves.length === 1 && Number(bodySaves[0].body.index) === 2, JSON.stringify(calls.map((c) => c.method)))
+        t('删别的章之前，先把当前章剧本存好', scriptSaves.length === 1 && Number(scriptSaves[0].body.index) === 2, JSON.stringify(calls.map((c) => c.method)))
+        t('新写的正文真的写进去了', bodySaves.length === 1 && String(bodySaves[0].body.body).includes('刚写的这一小段'), bodySaves.length === 1 ? String(bodySaves[0].body.body).slice(-40) : '')
+        t('删的是第 1 章，不是第 2 章', calls.filter((c) => c.method === 'novel.chapter.delete').every((c) => Number(c.body.index) === 1), JSON.stringify(calls.filter((c) => c.method === 'novel.chapter.delete').map((c) => c.body.index)))
+
+        // 删完之后人还应该停在第 2 章，框里的东西还在。
+        treeD = renderComponent(BookView, propsD)
+        await settle()
+        const after = collect(treeD, (x) => x.type === 'textarea')
+        const stillThere = after.some((x) => String(x.props?.value ?? '').includes('刚写的这一小段'))
+        t('删完别的章，人还停在第 2 章、写的还在', stillThere, after.map((x) => String(x.props?.value ?? '').slice(0, 24)))
+      }
+    }
+  }
+
+  globalThis.fetch = realFetch
+}
+
+// ── 同一章里点「存好这一章」，不许误触剧本守卫把手改的剧本弄没 ─────────────
+// 现场：手改剧本（没存）→ 点「存好这一章」→ 以前 load(chapterIndex) 又走一遍
+// openChapter，同一章也当「换过去」，弹「剧本还没存，换过去就没了」。
+// 点「好」手改消失且不发任何保存；点「取消」正文也没存上。
+if (typeof BookView === 'function') {
+  stores.clear()
+  calls.length = 0
+  const realFetch = globalThis.fetch
+  let confirmAsked = 0
+  let confirmAnswer = false
+  const realConfirm = fakeWindow.confirm
+  fakeWindow.confirm = () => { confirmAsked += 1; return confirmAnswer }
+  globalThis.fetch = async (url, opts = {}) => {
+    const method = String(url).split('/').pop()
+    const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : {}
+    const reply = (payload) => ({ ok: true, status: 200, json: async () => payload })
+    if (method === 'novel.get') return reply({ ok: true, data: { title: '雨里的门' }, idea: '', chapters: [{ index: 1 }] })
+    if (method === 'novel.outline.get') return reply({ ok: true, text: '', chapters: [] })
+    if (method === 'novel.chapter.get') return reply({ ok: true, body: '第一章的正文。' })
+    if (method === 'novel.script.get') return reply({ ok: true, text: SCRIPT_OF.a, report: '' })
+    calls.push({ method, body })
+    return reply({ ok: true })
+  }
+
+  const propsS = { bookId: 'a', onBack: () => {}, flash: () => {} }
+  let treeS = renderComponent(BookView, propsS)
+  await settle()
+  treeS = renderComponent(BookView, propsS)
+  await settle()
+
+  const boxes = collect(treeS, (x) => x.type === 'textarea')
+  const boxS = boxes.find((x) => String(x.props?.value ?? '').includes('他把碗放下'))
+  const bodyS = boxes.find((x) => String(x.props?.value ?? '').includes('第一章的正文'))
+  t('找得到正文框和剧本框（同章重读那一组）', boxS !== undefined && bodyS !== undefined, `${boxS !== undefined}/${bodyS !== undefined}`)
+
+  if (boxS !== undefined) {
+    boxS.props.onChange({ target: { value: String(boxS.props.value) + '\n△ 手改的。' } })
+    treeS = renderComponent(BookView, propsS)
+    await settle()
+
+    const saveBox = collect(treeS, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+      && String(textOf(x)).includes('存好这一章'))[0]
+    t('找得到「存好这一章」', saveBox !== undefined, '')
+    if (saveBox !== undefined) {
+      confirmAnswer = true
+      confirmAsked = 0
+      calls.length = 0
+      saveBox.props.onClick()
+      await settle()
+      await new Promise((r) => setTimeout(r, 30))
+      await settle()
+
+      t('同一章重读不该弹「剧本还没存」', confirmAsked === 0, String(confirmAsked))
+      t('点「存好这一章」时剧本一次都没被清掉（没有意外保存请求）', calls.filter((c) => c.method === 'novel.script.save').length === 0, JSON.stringify(calls.map((c) => c.method)))
+      treeS = renderComponent(BookView, propsS)
+      await settle()
+      const still = collect(treeS, (x) => x.type === 'textarea').some((x) => String(x.props?.value ?? '').includes('手改的'))
+      t('存完正文，手改的剧本还在', still, collect(treeS, (x) => x.type === 'textarea').map((x) => String(x.props?.value ?? '').slice(0, 24)))
+    }
+  }
+
+  fakeWindow.confirm = realConfirm
+  globalThis.fetch = realFetch
+}
+
+// ── 点了「改成剧本」又马上换书：草稿不许串到新书上去 ────────────────────
+if (typeof BookView === 'function') {
+  stores.clear()
+  calls.length = 0
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, opts = {}) => {
+    const method = String(url).split('/').pop()
+    const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : {}
+    const reply = (payload) => ({ ok: true, status: 200, json: async () => payload })
+    if (method === 'novel.get') return reply({ ok: true, data: { title: body.id }, idea: '', chapters: [{ index: 1 }] })
+    if (method === 'novel.outline.get') return reply({ ok: true, text: '', chapters: [] })
+    if (method === 'novel.chapter.get') return reply({ ok: true, body: `${body.id} 的正文。` })
+    if (method === 'novel.script.get') return reply({ ok: true, text: '', report: '' })
+    if (method === 'novel.script.draft') {
+      // 慢一点回来，好让人在等的期间换书。
+      await new Promise((r) => setTimeout(r, 60))
+      calls.push({ method, body })
+      return reply({ ok: true, text: `${body.id} 书刚改出来的剧本`, report: '', scan: { issues: [] } })
+    }
+    calls.push({ method, body })
+    return reply({ ok: true })
+  }
+
+  const propsX2 = { bookId: 'a', onBack: () => {}, flash: () => {} }
+  let treeX2 = renderComponent(BookView, propsX2)
+  await settle()
+  treeX2 = renderComponent(BookView, propsX2)
+  await settle()
+
+  const runBtn = collect(treeX2, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+    && String(textOf(x)).includes('改成剧本'))[0]
+  t('找得到「把这一章改成剧本」', runBtn !== undefined, '')
+  if (runBtn !== undefined) {
+    runBtn.props.onClick()
+    await settle()
+    // 这一章的正文得先存一次（keepBody 之前 bodyDirty 为假，不会发）
+    renderComponent(BookView, { bookId: 'b', onBack: () => {}, flash: () => {} })
+    await new Promise((r) => setTimeout(r, 150))
+    await settle()
+    const treeB2 = renderComponent(BookView, { bookId: 'b', onBack: () => {}, flash: () => {} })
+    await settle()
+    const areas = collect(treeB2, (x) => x.type === 'textarea')
+    const leaked = areas.find((x) => String(x.props?.value ?? '').includes('刚改出来的剧本'))
+    t('换成另一本书后，上一本书的草稿不许显示出来', leaked === undefined, areas.map((x) => String(x.props?.value ?? '').slice(0, 24)))
+
+    // 再卸载一次：不许把 A 的稿写成 B 的剧本。
+    calls.length = 0
+    for (const slot of storeFor(BookView).slots) {
+      if (slot !== null && typeof slot === 'object' && slot.type === 'effect' && typeof slot.cleanup === 'function') slot.cleanup()
+    }
+    await settle()
+    const bad = calls.filter((c) => c.method === 'novel.script.save' && String(c.body.text).includes('刚改出来的剧本'))
+    t('卸载时不许把上一本书的稿写成这本书的剧本', bad.length === 0, JSON.stringify(bad.map((c) => c.body)))
+  }
+
+  globalThis.fetch = realFetch
+}
+
+// ── 存剧本的过程中又改了一句：这一版不许被当成已存 ──────────────────────
+if (typeof BookView === 'function') {
+  stores.clear()
+  calls.length = 0
+  const realFetch = globalThis.fetch
+  let releaseSave = null
+  globalThis.fetch = async (url, opts = {}) => {
+    const method = String(url).split('/').pop()
+    const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : {}
+    const reply = (payload) => ({ ok: true, status: 200, json: async () => payload })
+    if (method === 'novel.get') return reply({ ok: true, data: { title: '雨里的门' }, idea: '', chapters: [{ index: 1 }] })
+    if (method === 'novel.outline.get') return reply({ ok: true, text: '', chapters: [] })
+    if (method === 'novel.chapter.get') return reply({ ok: true, body: '第一章的正文。' })
+    if (method === 'novel.script.get') return reply({ ok: true, text: SCRIPT_OF.a, report: '' })
+    if (method === 'novel.script.save') {
+      calls.push({ method, body })
+      // 故意挂住，等测试放行——模拟「存的过程中人又改了一句」。
+      await new Promise((r) => { releaseSave = r })
+      return reply({ ok: true, report: '共 1 场。' })
+    }
+    calls.push({ method, body })
+    return reply({ ok: true })
+  }
+
+  const propsW = { bookId: 'a', onBack: () => {}, flash: () => {} }
+  let treeW = renderComponent(BookView, propsW)
+  await settle()
+  treeW = renderComponent(BookView, propsW)
+  await settle()
+
+  const boxW = collect(treeW, (x) => x.type === 'textarea').find((x) => String(x.props?.value ?? '').includes('他把碗放下'))
+  if (boxW !== undefined) {
+    boxW.props.onChange({ target: { value: String(boxW.props.value) + '\n△ 手改的。' } })
+    treeW = renderComponent(BookView, propsW)
+    await settle()
+
+    const saveW = collect(treeW, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+      && String(textOf(x)).includes('存好这份剧本'))[0]
+    if (saveW !== undefined) {
+      saveW.props.onClick()
+      await settle()
+      // 存的过程中 textarea 该是只读的。
+      treeW = renderComponent(BookView, propsW)
+      await settle()
+      const busyBox = collect(treeW, (x) => x.type === 'textarea').find((x) => String(x.props?.value ?? '').includes('他把碗放下'))
+      t('存的过程中剧本框是只读的', busyBox === undefined || busyBox.props.readOnly === true, busyBox === undefined ? '' : String(busyBox.props.readOnly))
+      if (typeof releaseSave === 'function') releaseSave()
+      await settle()
+      await new Promise((r) => setTimeout(r, 20))
+      await settle()
+      treeW = renderComponent(BookView, propsW)
+      await settle()
+      const words = JSON.stringify(collect(treeW, (n) => true).map((n) => textOf(n)))
+      t('存完之后标记清掉了', words.includes('还没存') === false, words.slice(0, 160))
+    }
+  }
+
   globalThis.fetch = realFetch
 }
 

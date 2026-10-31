@@ -3422,8 +3422,14 @@ function BookView({ bookId, onBack, flash }) {
   // 剧本有没有改了没存的。和正文的 bodyDirty 一个道理：切章之前得拦一下，
   // 否则人手改的那几场会静静消失，而且没有任何提示。
   const [scriptDirty, setScriptDirty] = useState(false)
+  // 改剧本这一节的错误单独放：全页那个 err 在最底下，一节剧本三百多像素高，
+  // 报错落在屏幕外，人只会觉得「点了没反应」。
+  const [scriptErr, setScriptErr] = useState(null)
+  // 这本书哪几章已经改出过剧本。后台一直有这个清单（`novel.script.list`），
+  // 界面从来没调过——于是「哪一章改过」只存在于文件夹里。
+  const [scripted, setScripted] = useState([])
 
-  const load = async (want) => {
+  const load = async (want, opts) => {
     setErr(null)
     try {
       const r = await call('novel.get', { id: bookId })
@@ -3431,10 +3437,16 @@ function BookView({ bookId, onBack, flash }) {
       setBook(r)
       const o = await call('novel.outline.get', { id: bookId })
       if (o?.ok === true) { setOutline(o); setOutlineText(String(o.text ?? '')) }
+      // 哪几章已经改出过剧本（画章列表上的小标记用）。拿不到就算了，不是要紧事。
+      const scripts = await call('novel.script.list', { id: bookId }).catch(() => null)
+      setScripted(scripts?.ok === true && Array.isArray(scripts.scripts)
+        ? scripts.scripts.map((x) => Number(x.index))
+        : [])
       // 默认打开：有章节就打开最后一章，没有就从第一章开始
       const target = Number(want) > 0 ? Number(want) : (r.chapters.length === 0 ? 1 : r.chapters[r.chapters.length - 1].index)
       // 先翻章再改章号：翻章被拦下（剧本没存）时，章号不能已经跑到新的一章去。
-      if ((await openChapter(target)) === false) return
+      // 回来的不是 true（被拦下，或者这中间又有人点了别的章）就什么都不改。
+      if ((await openChapter(target, opts)) !== true) return
       setChapterIndex(target)
     } catch (e) { setErr(humanizeError(e)) }
   }
@@ -3449,24 +3461,48 @@ function BookView({ bookId, onBack, flash }) {
     return go === true
   }
 
+  // 改剧本也要对号：点了「把这一章改成剧本」之后又翻章、又换书，
+  // 草稿晚回来会落进现在这一章的框里，人一按「存好这份剧本」，
+  // 第 5 章的内容就写成第 6 章的文件。换书之后更糟：A 书的稿子会存成 B 书的。
+  // 所以草稿出发前记下「哪本书、哪一章」，回来对不上就整份丢掉。
+  const scriptTicket = useRef(0)
+
   // 每翻一次章就加一，回来的东西先对一下号。
   // 手快连点两章（或者网络慢）时，前一章的剧本会在后一章之后才回来，
   // 落在框里就成了「标题是第 3 章，剧本是第 2 章的」——这种错对不上账，人只会觉得插件疯了。
   const chapterTicket = useRef(0)
 
-  const openChapter = async (index) => {
-    // 改过剧本还没存就切章，得先说一声。
-    if (leaveScript('换过去') !== true) return false
+  /**
+   * 翻到某一章。
+   *
+   * `opts.sameChapter` 是给「刚把这一章存好、要重读一遍」用的：那时候没换章，
+   * 不该弹「剧本还没存，换过去就没了」——人点了「好」，手改的剧本反倒没了。
+   * 带上它就别去动剧本框，剧本跟正文是两份东西，各存各的。
+   *
+   * 返回 true 表示框里已经是这一章；返回 'stale' 表示这中间又有人点了别的章，
+   * 这一次的结果该整份丢掉，调用方也不许再改章号。
+   */
+  const openChapter = async (index, opts) => {
+    const sameChapter = opts !== undefined && opts !== null && opts.sameChapter === true
+    // `settled`：调用方已经把要存的存过了（换书那一段），这里不许再拦一次。
+    // 不然人会看到一个「第 2 章改出来的剧本还没存」的框，说的却是上一本书的章，
+    // 点「取消」也照换不误——那框就是个摆设。
+    const settled = opts !== undefined && opts !== null && opts.settled === true
+    // 改过剧本还没存就切章，得先说一声。同一章重读不算切章。
+    if (settled !== true && sameChapter !== true && leaveScript('换过去') !== true) return false
     const mine = ++chapterTicket.current
-    setErr(null); setReview(null); setDraft(null)
-    setScriptText(''); setScriptReport(''); setScriptDirty(false)
+    // 换章 / 换书了：还在路上的剧本草稿一律作废。
+    scriptTicket.current += 1
+    setErr(null); setReview(null); setDraft(null); setScriptErr(null)
+    if (sameChapter !== true) { setScriptText(''); setScriptReport(''); setScriptDirty(false) }
     try {
       const r = await call('novel.chapter.get', { id: bookId, index })
-      if (mine !== chapterTicket.current) return true
+      if (mine !== chapterTicket.current) return 'stale'
       setBody(r?.ok === true ? String(r.body ?? '') : '')
+      if (sameChapter === true) return true
       // 这一章以前改过剧本没有——改过就直接摆出来，不用再问一次。
       const s = await call('novel.script.get', { id: bookId, index })
-      if (mine !== chapterTicket.current) return true
+      if (mine !== chapterTicket.current) return 'stale'
       if (s?.ok === true && String(s.text ?? '').trim() !== '') {
         setScriptText(String(s.text))
         setScriptReport(String(s.report ?? ''))
@@ -3474,7 +3510,7 @@ function BookView({ bookId, onBack, flash }) {
       return true
     } catch (e) {
       if (mine === chapterTicket.current) setErr(humanizeError(e))
-      return true
+      return 'stale'
     }
   }
 
@@ -3493,7 +3529,7 @@ function BookView({ bookId, onBack, flash }) {
   const goChapter = async (index) => {
     if ((await keepBody()) !== true) return
     // 剧本那边没存就被拦下时，章号也不能跟着变——否则标题写着新章、框里还是旧章。
-    if ((await openChapter(index)) === false) return
+    if ((await openChapter(index)) !== true) return
     setChapterIndex(index)
   }
 
@@ -3509,16 +3545,40 @@ function BookView({ bookId, onBack, flash }) {
       ? window.confirm(`把第 ${n} 章删掉？\n\n这一章的正文一起删，删了就真没了。别的章不受影响；大纲里那一行还在，你可以重写。`)
       : true
     if (ok !== true) return
+    // 删的是**这一章**时，它上面那份没存的剧本才跟着作废。
+    // 删别的章却去清当前章的状态，等于把人家正在写的正文和剧本一起抹了——
+    // 以前就是这样：停在第 2 章写了一大段，顺手删掉第 1 章，第 2 章写的全没了，
+    // 正文连问都没问一句。
+    const deletingCurrent = n === chapterIndex
+    if (deletingCurrent !== true) {
+      // 删别的章：当前章该存的先存好，别让它被下面的重读顺手丢掉。
+      if ((await keepBody()) !== true) return
+      // 剧本也替它存回去。这里不问「走不走」——人没打算走，只是在删别的章；
+      // 问了也只有一个正确答案，反倒把「删第 1 章」这件事拦下来。
+      if (scriptDirty === true && scriptText.trim() !== '') {
+        let saved = false
+        try {
+          const r = await call('novel.script.save', { id: bookId, index: chapterIndex, text: scriptText })
+          if (r?.ok === true) { saved = true; setScriptDirty(false) }
+          else setErr(r?.error ?? '这一章的剧本没存上，先别删')
+        } catch (e) { setErr(humanizeError(e)) }
+        // 存不上就别删：这一删，下面那次重读会把框里东西换掉，手改的就真没了。
+        if (saved !== true) return
+      }
+    }
     setErr(null)
-    setBodyDirty(false)
-    // 这一章要被删了，它上面那份没存的剧本一起作废，不要再拦一次。
-    setScriptText(''); setScriptReport(''); setScriptDirty(false)
+    if (deletingCurrent === true) {
+      setBodyDirty(false)
+      setScriptText(''); setScriptReport(''); setScriptDirty(false)
+    }
     try {
       const r = await call('novel.chapter.delete', { id: bookId, index: n })
       if (r?.ok !== true) { setErr(r?.error ?? '这一章没删掉'); return }
       flash?.(`删掉了第 ${n} 章`)
-      // 重新读一遍这本书：章列表少一条，正文换成还在的那一章。
-      await load(n > 1 ? n - 1 : 0)
+      // 重新读一遍这本书：章列表少一条。
+      // 删的不是当前章时留在原地重读（人可能正写着），删的就是当前章才往前挪。
+      if (deletingCurrent === true) await load(n > 1 ? n - 1 : 0, { sameChapter: false })
+      else await load(chapterIndex, { sameChapter: true })
     } catch (e) { setErr(humanizeError(e)) }
   }
 
@@ -3531,13 +3591,28 @@ function BookView({ bookId, onBack, flash }) {
   // 正好用得上——晚了就没了。
   useEffect(() => {
     const before = lastBookId.current
-    if (before !== '' && before !== bookId && scriptDirty === true && scriptText.trim() !== '') {
-      call('novel.script.save', { id: before, index: chapterIndex, text: scriptText }).catch(() => null)
+    if (before !== '' && before !== bookId) {
+      // 换书了：上一本还在路上的剧本草稿作废，不许它落进新书的框里。
+      scriptTicket.current += 1
+      // 上一本没存的剧本替它存回**原来那本**（不是新这本）。
+      // 存的时候顺手报一下成没成：失败还得让新书那边看得见，
+      // 不然人会以为「点了一下就都存好了」。
+      if (scriptDirty === true && scriptText.trim() !== '') {
+        const oldId = before
+        const oldIndex = chapterIndex
+        const oldText = scriptText
+        call('novel.script.save', { id: oldId, index: oldIndex, text: oldText })
+          .then((r) => {
+            if (r?.ok === true) flash?.(`上一本书第 ${oldIndex} 章的剧本替你存好了`)
+            else setErr(r?.error ?? '上一本书的剧本没存上')
+          })
+          .catch(() => setErr('上一本书的剧本没存上'))
+      }
     }
     lastBookId.current = String(bookId ?? '')
     setScriptText(''); setScriptReport(''); setScriptDirty(false)
     setBody(''); setDraft(null); setReview(null); setBodyDirty(false)
-    load(0)
+    load(0, { settled: true })
   }, [bookId])
 
   // 离开这一屏时（点顶上那个返回、换门、切到别的页）组件直接卸载，
@@ -3600,7 +3675,8 @@ function BookView({ bookId, onBack, flash }) {
       if (r?.ok !== true) { setErr(r?.error ?? '没存上'); return }
       setBody(merged); setDraft(null); setBodyDirty(false)
       flash?.(`第 ${chapterIndex} 章存好了`)
-      await load(chapterIndex)
+      // 同一章重读：别碰剧本框，也别弹「剧本还没存」。
+      await load(chapterIndex, { sameChapter: true })
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
   }
 
@@ -3611,7 +3687,7 @@ function BookView({ bookId, onBack, flash }) {
       if (r?.ok !== true) { setErr(r?.error ?? '没存上'); return }
       setBodyDirty(false)
       flash?.(`第 ${chapterIndex} 章存好了`)
-      await load(chapterIndex)
+      await load(chapterIndex, { sameChapter: true })
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
   }
 
@@ -3634,7 +3710,7 @@ function BookView({ bookId, onBack, flash }) {
    * 用户盯着屏幕会以为它漏掉了刚写的那几句。
    */
   const doScript = async () => {
-    if (body.trim() === '') { setErr('这一章还空着，没什么可改的。'); return }
+    if (body.trim() === '') { setScriptErr('这一章还空着，没什么可改的。'); return }
     // 框里已经有一份、而且改过没存：点「重改一份」会把它整份盖掉。
     // 不先问一句，人点错一次就是白改。
     if (scriptDirty === true && scriptText.trim() !== '') {
@@ -3644,27 +3720,43 @@ function BookView({ bookId, onBack, flash }) {
       if (go !== true) return
     }
     if ((await keepBody()) !== true) return
-    setBusy('script'); setErr(null)
+    // 出发前记下是哪本书的哪一章：回来要是对不上，说明人已经翻到别处了。
+    const wantBook = bookId
+    const wantIndex = chapterIndex
+    const mine = ++scriptTicket.current
+    setBusy('script'); setErr(null); setScriptErr(null)
     try {
-      const r = await call('novel.script.draft', { id: bookId, index: chapterIndex })
-      if (r?.ok !== true) { setErr(r?.error ?? '这次没改成'); return }
+      const r = await call('novel.script.draft', { id: wantBook, index: wantIndex })
+      if (mine !== scriptTicket.current) return
+      if (r?.ok !== true) { setScriptErr(r?.error ?? '这次没改成。再点一次试试。'); return }
       setScriptText(String(r.text ?? ''))
       setScriptReport(String(r.report ?? ''))
       // 改出来但还没落盘，所以算「没存」：这时候切章要拦。
       setScriptDirty(true)
-    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+    } catch (e) { if (mine === scriptTicket.current) setScriptErr(humanizeError(e)) } finally {
+      if (mine === scriptTicket.current) setBusy('')
+    }
   }
 
   const saveScript = async () => {
-    if (scriptText.trim() === '') { setErr('剧本还是空的，没什么可存的。'); return }
-    setBusy('scriptSave'); setErr(null)
+    if (scriptText.trim() === '') { setScriptErr('剧本还是空的，没什么可存的。'); return }
+    // 记下这一次到底存的是哪一份：回来时框里的字已经不是这一份了，
+    // 就不能把「还没存」这个标记清掉，否则那几个字会被当成已存、然后默默丢掉。
+    const sent = scriptText
+    setBusy('scriptSave'); setErr(null); setScriptErr(null)
     try {
-      const r = await call('novel.script.save', { id: bookId, index: chapterIndex, text: scriptText })
-      if (r?.ok !== true) { setErr(r?.error ?? '没存上'); return }
+      const r = await call('novel.script.save', { id: bookId, index: chapterIndex, text: sent })
+      if (r?.ok !== true) { setScriptErr(r?.error ?? '没存上。这一份还在框里，再点一次就行。'); return }
       setScriptReport(String(r.report ?? ''))
-      setScriptDirty(false)
-      flash?.(`第 ${chapterIndex} 章的剧本存好了`)
-    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+      if (scriptText === sent) {
+        setScriptDirty(false)
+        flash?.(`第 ${chapterIndex} 章的剧本存好了`)
+      } else {
+        // 存的过程中又改了：这一版还没存，标记留着，按钮上说出来。
+        setScriptDirty(true)
+        flash?.('存好了。存的时候你又改了，新改的这一版还没存')
+      }
+    } catch (e) { setScriptErr(humanizeError(e)) } finally { setBusy('') }
   }
 
   /**
@@ -3678,13 +3770,13 @@ function BookView({ bookId, onBack, flash }) {
       ? window.confirm(`把第 ${chapterIndex} 章改出来的剧本删掉？\n\n只删这份剧本，小说正文不动。想再要一份，可以重新改一次。`)
       : true
     if (ok !== true) return
-    setBusy('scriptDelete'); setErr(null)
+    setBusy('scriptDelete'); setErr(null); setScriptErr(null)
     try {
       const r = await call('novel.script.delete', { id: bookId, index: chapterIndex })
-      if (r?.ok !== true) { setErr(r?.error ?? '这份剧本没删掉'); return }
+      if (r?.ok !== true) { setScriptErr(r?.error ?? '这份剧本没删掉'); return }
       setScriptText(''); setScriptReport(''); setScriptDirty(false)
       flash?.(`删掉了第 ${chapterIndex} 章的剧本`)
-    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+    } catch (e) { setScriptErr(humanizeError(e)) } finally { setBusy('') }
   }
 
   if (book === null) {
@@ -3765,6 +3857,10 @@ function BookView({ bookId, onBack, flash }) {
                 tone: Number(c.index) === Number(chapterIndex) ? 'primary' : undefined,
                 onClick: () => { goChapter(Number(c.index)) },
               }, `第 ${c.index} 章${String(c.title ?? '').trim() === '' ? '' : ` · ${String(c.title).slice(0, 16)}`}`),
+              // 这一章改过剧本：给一个小标记。不然只有翻进去才知道自己改没改过。
+              scripted.includes(Number(c.index))
+                ? h('span', { className: 'lc-meta', title: '这一章已经有一份剧本' }, '有剧本')
+                : null,
               h('div', { className: 'lc-grow' }),
               h(Btn, { size: 'sm', ghost: true, icon: 'trash', onClick: () => removeChapter(c) }, '删掉这一章'),
             )),
@@ -3846,10 +3942,13 @@ function BookView({ bookId, onBack, flash }) {
     h('div', { className: 'lc-sec' },
       h('div', { className: 'lc-row' },
         h('div', { className: 'lc-grow' }, h('span', { style: { fontWeight: 650 } }, '改成剧本')),
-        h(Btn, { size: 'sm', tone: 'analyze', icon: 'spark', disabled: busy !== '', onClick: doScript },
+        h(Btn, { size: 'sm', tone: 'analyze', icon: 'spark', disabled: busy !== '' || body.trim() === '', onClick: doScript },
           busy === 'script' ? '正在改…' : (scriptText.trim() === '' ? '把这一章改成剧本' : '重改一份')),
       ),
       h('div', { className: 'lc-meta', style: { marginTop: 4, lineHeight: 1.7 } },
+        // 先说「不会动正文」：人第一眼最怕的是自己的小说被改掉。
+        '只读这一章的正文，小说一个字都不动；改出来的剧本单独存一份。',
+        h('br'),
         '改出来的是能配音、能拍的剧本：切成一场一场，叙述变成 △ 动作，人物的话变成台词。',
         h('br'),
         '小说里那些拍不出来的东西（他心里一沉、命运的齿轮），改的时候会被丢下。'),
@@ -3869,6 +3968,8 @@ function BookView({ bookId, onBack, flash }) {
               className: 'lc-textarea',
               value: scriptText,
               spellCheck: false,
+              // 正在存的时候不让改：改了的字会在存回来那一刻被当成「已存」清掉标记。
+              readOnly: busy === 'scriptSave',
               style: { minHeight: 300, lineHeight: 1.8 },
               onChange: (e) => { setScriptText(e.target.value); setScriptDirty(true) },
             }),
@@ -3882,6 +3983,9 @@ function BookView({ bookId, onBack, flash }) {
                 scriptDirty ? `${scriptText.length} 字 · 还没存` : `${scriptText.length} 字`),
             ),
           ),
+      // 这一节的报错就摆在这一节里。放全页最底下等于没报——
+      // 剧本框本身就三百像素高，报错落到屏幕外，人只会觉得「点了没反应」。
+      scriptErr === null ? null : h(Note, { tone: 'err', icon: 'warning' }, scriptErr),
     ),
 
     err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
