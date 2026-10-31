@@ -936,6 +936,8 @@ export async function listAll(root) {
           kind: String(r.data?.kind ?? 'real'),
           world: String(r.data?.world ?? 'reality'),
           relation: r.data?.relation,
+          // 补充关系（「也是伴侣」这类）。关系网要用它排先后，卡背面也读它。
+          relation_extra: Array.isArray(r.data?.relation_extra) ? r.data.relation_extra.filter((x) => typeof x === 'string') : [],
           status: r.data?.status,
           tags: Array.isArray(r.data?.tags) ? r.data.tags : [],
           // 卡背面要显示一段「简介」：取自述的头一段，够长又不至于把整卡铺出来。

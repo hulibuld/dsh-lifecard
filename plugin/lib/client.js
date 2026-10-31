@@ -841,7 +841,7 @@ const SECTIONS_REL = [
 
 // ── 主界面 ────────────────────────────────────────────────────────
 
-const VIEWS = { doors: 'doors', novel: 'novel', book: 'book', game: 'game', career: 'career', tavern: 'tavern', tavernChat: 'tavernChat', home: 'home', card: 'card', diary: 'diary', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs' }
+const VIEWS = { doors: 'doors', novel: 'novel', book: 'book', game: 'game', career: 'career', tavern: 'tavern', tavernChat: 'tavernChat', home: 'home', card: 'card', diary: 'diary', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs', net: 'net' }
 
 // ── 开一个新会话去问 ──────────────────────────────────────────────
 //
@@ -1708,6 +1708,7 @@ function LifeCardTab(props) {
       [VIEWS.world]: activeWorld?.data?.name ?? '这本世界书',
       [VIEWS.jobs]: '求职',
       [VIEWS.diary]: '写日记',
+      [VIEWS.net]: '人物关系网',
     }
     // 「选个文件夹」页一般不该有返回按钮（还没地方可回），
     // 但已经选过文件夹、是从首页主动进来换的时候要能退回去。
@@ -1950,6 +1951,18 @@ function LifeCardTab(props) {
           onStart: runDiaryStart,
           busy,
         })
+      case VIEWS.net:
+        return h(NetView, {
+          onBack: () => setView(VIEWS.home),
+          // 走 openCard 而不是把列表里那一行直接摆上去：列表项只有摘要，
+          // 卡那一页要的是正文字节，少了它摊开是空的。
+          onOpen: (id) => {
+            const hit = (listing?.cards ?? []).find((c) => String(c.id ?? '') === String(id ?? ''))
+            if (hit === undefined) return
+            openCard(hit)
+          },
+          onTalk: (name) => startInterview({ about: name, mode }),
+        })
       case VIEWS.career:
         return h(CareerView, { flash, onBack: () => setView(VIEWS.home) })
       case VIEWS.jobs:
@@ -2078,7 +2091,7 @@ const DOORS = [
     title: '真实人物记录',
     desc: '身边的人：他做过什么、怎么说话、你们之间发生过什么。',
     bullets: ['聊一聊，它会问你几个具体的问题', '贴材料，让 AI 读出能核实的内容', '找工作：贴招聘说明、练面试'],
-    modules: ['人物卡', '访谈记录', '材料与建议', '简历与规划'],
+    modules: ['人物卡', '人物关系网', '访谈记录', '材料与建议', '简历与规划'],
   },
   {
     id: 'novel', icon: 'book', tone: 'import',
@@ -2487,6 +2500,11 @@ function HomeView({ state, listing, mode, onStartInterview, onDiary, onOpen, onO
         : null,
       isReal
         ? h(Btn, { size: 'sm', icon: 'book', onClick: () => onNavigate(VIEWS.career), title: '把自己的情况写清楚，让 AI 帮你看简历、算差距、规划怎么走' }, '简历与规划')
+        : null,
+      // 人物关系网：认识的人散在文件夹里看不出远近，这一屏以「我」为中心摆开。
+      // 只在真实人物这扇门里给——写小说和酒馆要的是角色设定，不是社交圈。
+      isReal
+        ? h(Btn, { size: 'sm', icon: 'relation', onClick: () => onNavigate(VIEWS.net), title: '我认识的人，谁离我近、谁只是通过别人认识的' }, '人物关系网')
         : null,
       // 写日记：点一下就开新对话，进去直接开始写。
       // 不摆在这一排的最后面，是因为它是每天都会用一次的东西，
@@ -3547,6 +3565,202 @@ function keepButton(busy, dir, keep) {
       onClick: keep,
     }, busy === true ? '正在准备…' : '就用这个文件夹'),
   )
+}
+
+/**
+ * 人物关系网。
+ *
+ * 为什么单独做一屏：卡的列表按名字和更新时间排，谁离你近、谁只是通过
+ * 别人认识的，在那里完全看不出来。这一屏只回答一件事——我在中间，
+ * 认识的人是怎么散开的。
+ *
+ * 圈的口径后台算好（`relations.net`）：0 圈是我自己，1 圈是直接写着和
+ * 我有关系的人，2 圈是只和 1 圈里的人有关系的人。没有任何关系线索的
+ * 人不进网，收在底下那一行——不收进来的话，他们会像凭空消失了一样。
+ */
+function NetView({ onBack, onOpen, onTalk }) {
+  const [net, setNet] = useState(null)
+  const [err, setErr] = useState(null)
+  const [showOutside, setShowOutside] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    call('relations.net', {}).then((r) => {
+      if (alive !== true) return
+      if (r?.ok !== true) { setErr(r?.error ?? '这张网没读出来'); return }
+      setNet(r)
+    }).catch((e) => { if (alive === true) setErr(humanizeError(e)) })
+    return () => { alive = false }
+  }, [])
+
+  if (net === null) {
+    return h('div', { className: 'lc-pad lc-stack' },
+      err === null
+        ? h('div', { className: 'lc-empty' }, h(Spinner), h('div', { className: 'lc-meta', style: { marginTop: 8 } }, '正在把认识的人摆开…'))
+        : h(Err, { text: err }),
+      h(Btn, { onClick: onBack }, '回去'),
+    )
+  }
+
+  const self = net.self ?? null
+  const inner = net.rings?.inner ?? []
+  const outer = net.rings?.outer ?? []
+  const outside = net.outside ?? []
+
+  // 画在圈上的位置：按人数均分一圈，从正上方开始。人太多就只画前 12 个，
+  // 剩下的在下面的名单里——挤成一团比不画更难看懂。
+  const onRing = (list, radius, ring) => {
+    const shown = list.slice(0, 12)
+    return shown.map((one, i) => {
+      const angle = (Math.PI * 2 * i) / Math.max(1, shown.length) - Math.PI / 2
+      return { one, ring, x: 170 + Math.cos(angle) * radius, y: 170 + Math.sin(angle) * radius }
+    })
+  }
+  const innerSpots = onRing(inner, 86, 1)
+  const outerSpots = onRing(outer, 138, 2)
+
+  // 二圈的人连到最近的那个一圈的人：谁把他带进来的，一眼看得出。
+  const nearest = (spot) => {
+    let best = null
+    let gap = Infinity
+    for (const one of innerSpots) {
+      const d = (one.x - spot.x) ** 2 + (one.y - spot.y) ** 2
+      if (d < gap) { gap = d; best = one }
+    }
+    return best
+  }
+
+  const pic = h('svg', {
+    viewBox: '0 0 340 340',
+    width: '100%',
+    height: 'auto',
+    role: 'img',
+    'aria-label': '以我为中心的人物关系图',
+    style: { display: 'block', maxHeight: 340 },
+  },
+    // 先画线，再画点。线在下面，名字才不会被穿过。
+    innerSpots.map((spot) => h('line', {
+      key: `l-${spot.one.id}`,
+      x1: 170, y1: 170, x2: spot.x, y2: spot.y,
+      stroke: 'currentColor', strokeOpacity: 0.22, strokeWidth: 1.2,
+    })),
+    outerSpots.map((spot) => {
+      const from = nearest(spot)
+      return h('line', {
+        key: `lo-${spot.one.id}`,
+        x1: from === null ? 170 : from.x, y1: from === null ? 170 : from.y,
+        x2: spot.x, y2: spot.y,
+        stroke: 'currentColor', strokeOpacity: 0.13, strokeWidth: 1,
+        strokeDasharray: '3 3',
+      })
+    }),
+    // 我自己
+    h('g', {
+      key: 'self',
+      onClick: self === null ? undefined : () => onOpen?.(self.id),
+      style: { cursor: self === null ? 'default' : 'pointer' },
+    },
+      h('circle', { cx: 170, cy: 170, r: 30, fill: 'var(--lc-accent)', fillOpacity: 0.16, stroke: 'var(--lc-accent)', strokeWidth: 1.4 }),
+      h('text', {
+        x: 170, y: 175, textAnchor: 'middle', fontSize: 13, fontWeight: 700, fill: 'currentColor',
+      }, self === null ? '我' : cutName(self.name, 5)),
+    ),
+    [...innerSpots, ...outerSpots].map((spot) => h('g', {
+      key: spot.one.id,
+      onClick: () => onOpen?.(spot.one.id),
+      style: { cursor: 'pointer' },
+    },
+      h('circle', {
+        cx: spot.x, cy: spot.y, r: spot.ring === 1 ? 13 : 11,
+        fill: 'var(--lc-panel, transparent)', stroke: 'currentColor',
+        strokeOpacity: spot.ring === 1 ? 0.5 : 0.3, strokeWidth: 1.2,
+      }),
+      h('text', {
+        x: spot.x, y: spot.y + (spot.ring === 1 ? 22 : 20),
+        textAnchor: 'middle', fontSize: 9.5, fill: 'currentColor', fillOpacity: 0.8,
+      }, cutName(spot.one.name, 5)),
+    )),
+  )
+
+  const rowOf = (one, tone) => h('button', {
+    key: one.id,
+    type: 'button',
+    className: 'lc-listrow',
+    style: { display: 'flex', alignItems: 'center', gap: 9, width: '100%', textAlign: 'left' },
+    onClick: () => onOpen?.(one.id),
+  },
+    h(Avatar, { name: one.name, kind: one.kind }),
+    h('span', { className: 'lc-grow' },
+      h('div', null, one.name),
+      h('div', { className: 'lc-meta' },
+        one.relationLabel === '' ? KIND_LABEL[one.kind] ?? '' : one.relationLabel,
+        ...(one.extras ?? []).map((x) => ` · ${x}`)),
+    ),
+    tone === undefined ? null : h(Tag, { tone }, tone === 'ok' ? '直接认识' : '通过别人'),
+  )
+
+  return h('div', { className: 'lc-pad lc-stack' },
+    h('div', { className: 'lc-meta' },
+      self === null
+        ? '还没有一张写着「我」的卡。把你自己也写成一张，这张网才有中心。'
+        : `以「${self.name}」为中心，${inner.length} 个人是你直接认识的，${outer.length} 个是通过别人认识的。`),
+
+    self === null
+      ? h(Action, {
+          tone: 'interview', icon: 'person', title: '先把「我」写成一张卡',
+          desc: '答完 AI 会写进 people/ 里，之后这张网就以你为中心了。',
+          onClick: () => onTalk?.(''),
+        })
+      : pic,
+
+    inner.length === 0
+      ? h(Note, { tone: undefined, icon: 'relation' }, '还没有人和你有直接关系。点一个人名进去，把他的关系写上是「父亲」「朋友」这样，他就会出现在这里。')
+      : h('div', { className: 'lc-sec' },
+          h(GroupTitle, { icon: 'people' }, `我直接认识的（${inner.length}）`),
+          h('div', { className: 'lc-stack' }, inner.map((one) => rowOf(one, 'ok'))),
+        ),
+
+    outer.length === 0
+      ? null
+      : h('div', { className: 'lc-sec' },
+          h(GroupTitle, { icon: 'relation' }, `通过别人认识的（${outer.length}）`),
+          h('div', { className: 'lc-stack' }, outer.map((one) => rowOf(one, undefined))),
+        ),
+
+    outside.length === 0
+      ? null
+      : h('div', { className: 'lc-more' },
+          h('button', {
+            type: 'button', className: 'lc-more-open',
+            onClick: () => setShowOutside(showOutside !== true),
+          }, showOutside === true ? '收起来' : `还有 ${outside.length} 个人，卡片在，还没写出和你是什么关系`),
+          showOutside !== true
+            ? null
+            : h('div', { className: 'lc-stack', style: { marginTop: 8 } },
+                h('div', { className: 'lc-meta' }, '点进去把「他是我的什么人」写上，他们就会进到圈里。'),
+                outside.map((one) => rowOf({ ...one, kind: one.kind ?? 'real', relationLabel: '', extras: [] }, undefined)),
+              ),
+        ),
+
+    err === null ? null : h(Err, { text: err }),
+
+    h('div', { className: 'lc-row' },
+      self === null
+        ? null
+        : h(Btn, { tone: 'interview', icon: 'chat', onClick: () => onTalk?.(self.name) }, '和「我」聊聊'),
+      h('div', { className: 'lc-grow' }),
+      h(Btn, { onClick: onBack }, '回去'),
+    ),
+    h('div', { className: 'lc-meta' },
+      '这张网只按卡片上写的关系连。想连得更细（谁和谁也有关系），现在还没有地方能写——那要一段一段自己填。'),
+  )
+}
+
+/** 圈里只放得下几个字。名字太长就在这一屏截一下，点进去能看到全名。 */
+function cutName(name, n) {
+  const text = String(name ?? '').trim()
+  if (text === '') return ''
+  return text.length <= n ? text : `${text.slice(0, n)}…`
 }
 
 /**

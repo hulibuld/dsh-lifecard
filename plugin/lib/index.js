@@ -1083,6 +1083,104 @@ function buildApi(ctx, workspace, config, options) {
       if (saved?.ok !== true) return { ok: false, error: saved?.error ?? '这一张没能记住，下次还得再挑一次。', cards: pins }
       return { ok: true, cards: pins }
     },
+
+    /**
+     * 人物关系网：以「我」为中心，把认识的人一圈一圈摆开。
+     *
+     * 这一版不做图，只把「谁是谁、离我多远、多亲」算清楚交给界面。
+     * 距离的口径：
+     *   ring 0 = 我自己（kind self，或者老档案里 relation 写「我」的那张）
+     *   ring 1 = 直接写着和我有关系的人（他的 relation 是「父亲」「朋友」这种）
+     *   ring 2 = 只和某个 ring 1 的人有关系的人（比如「我姨」只和妈妈连着）
+     * 没有任何关系线索的人不进网——放进去也只是一堆没有边的点。
+     */
+    'relations.net': async (body) => {
+      const ws = await root(body)
+      const all = await store.listAll(ws)
+      const cards = Array.isArray(all.cards) ? all.cards : []
+      const edges = Array.isArray(all.relations) ? all.relations : []
+      const labelOf = new Map(prompts.RELATION_TYPES.map((one) => [String(one.id), String(one.label)]))
+      const selfCard = cards.find((c) => String(c.kind ?? '') === 'self')
+        ?? cards.find((c) => String(c.kind ?? '') === 'real' && String(c.relation ?? '').trim() === '我')
+        ?? null
+      const selfId = selfCard === null ? '' : String(selfCard.id ?? '')
+      const nodeOf = (c) => ({
+        id: String(c.id ?? ''),
+        name: String(c.name ?? '').trim() === '' ? '（还没起名字）' : String(c.name),
+        kind: String(c.kind ?? 'real'),
+        relation: String(c.relation ?? '').trim(),
+        relationLabel: String(c.relation ?? '').trim() === ''
+          ? ''
+          : (labelOf.get(String(c.relation).trim()) ?? String(c.relation).trim()),
+        extras: Array.isArray(c.relation_extra) ? c.relation_extra.filter((x) => typeof x === 'string') : [],
+        tags: Array.isArray(c.tags) ? c.tags : [],
+        intro: String(c.intro ?? ''),
+        coverage: Number(c.coverage ?? 0),
+        path: String(c.path ?? ''),
+      })
+
+      const rings = { 0: [], 1: [], 2: [] }
+      const placed = new Map()
+      if (selfCard !== null) {
+        rings[0].push(nodeOf(selfCard))
+        placed.set(selfId, 0)
+      }
+      // 第一轮：卡上自己写着关系的人，都算直接认识（ring 1）。
+      // 这一轮得排在关系边前面——边只回答「再往外还有谁」，它得有落脚点；
+      // 反过来先处理边，一圈还没人的时候边就没有起点可用，第 2 圈永远是空的。
+      for (const card of cards) {
+        const id = String(card.id ?? '')
+        if (id === '' || placed.has(id)) continue
+        const tag = String(card.relation ?? '').trim()
+        if (tag === '' && String(card.kind ?? '') !== 'self') continue
+        placed.set(id, 1)
+      }
+      // 第二轮：关系边再往外扩一层。两端都是 id，最准。
+      // 只扩一层——再往外的人已经不是「我认识的人」，是「我认识的人认识的人」。
+      for (const edge of edges) {
+        const from = String(edge?.from ?? '')
+        const to = String(edge?.to ?? '')
+        if (from === '' || to === '') continue
+        const depth = placed.get(from)
+        if (depth !== undefined && depth < 2 && !placed.has(to)) placed.set(to, depth + 1)
+      }
+      const byId = new Map(cards.map((c) => [String(c.id ?? ''), c]))
+      for (const [id, depth] of placed) {
+        if (depth === 0) continue
+        const card = byId.get(id)
+        if (card === undefined) continue
+        const node = nodeOf(card)
+        // 越亲的越靠里：ring 2 里如果还带着「也是家人」这种补充关系，也算一回事。
+        rings[depth].push(node)
+      }
+      rings[1].sort((a, b) => (b.coverage - a.coverage) || (a.name < b.name ? -1 : 1))
+      rings[2].sort((a, b) => (b.coverage - a.coverage) || (a.name < b.name ? -1 : 1))
+
+      const inNet = new Set([...rings[0], ...rings[1], ...rings[2]].map((n) => n.id))
+      // 网外的人不是「没有关系的人」，是「卡片在、还没写关系的人」。
+      // 世界书、设定、偏好这几种根本不是人；虚构角色是「扮演用的角色」，
+      // 不是认识的人——这一屏只在真实人物这扇门里给，混进来读着像出了错。
+      // 真写了关系的（relation 非空）仍然进圈，因为那说明用户自己把她当成了一个人。
+      const notPeople = new Set(['world', 'system', 'lens', 'relation', 'fictional'])
+      const outside = cards
+        .filter((c) => !inNet.has(String(c.id ?? '')))
+        .filter((c) => !notPeople.has(String(c.kind ?? 'real')))
+        .map((c) => ({
+          id: String(c.id ?? ''),
+          name: String(c.name ?? ''),
+          kind: String(c.kind ?? 'real'),
+          path: String(c.path ?? ''),
+        }))
+
+      return {
+        ok: true,
+        self: selfCard === null ? null : nodeOf(selfCard),
+        rings: { self: rings[0], inner: rings[1], outer: rings[2] },
+        edges: edges.map((e) => ({ from: String(e.from ?? ''), to: String(e.to ?? ''), type: String(e.type ?? '') })),
+        counts: { self: rings[0].length, inner: rings[1].length, outer: rings[2].length, outside: outside.length },
+        outside,
+      }
+    },
       /**
      * 把一扇门从界面上收起来 / 装回来。
      *

@@ -2099,6 +2099,7 @@ for (const [label, tree] of [
 renderRoot('书（逐章写，先注册组件）', base('book', { 25: { id: 'demo', title: '示范' } }))
 renderRoot('简历与规划（先注册组件）', base('career'))
 renderRoot('写日记（先注册组件）', base('diary'))
+renderRoot('人物关系网（先注册组件）', base('net'))
 renderRoot('玩一段（先注册组件）', base('game', { 25: { id: 'demo', title: '示范' } }))
 renderRoot('导入（先注册组件）', base('import'))
 renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
@@ -2401,6 +2402,76 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
 
   const emptyDay = renderOne('写日记（那天没写正文）', Diary, { onBack: () => {}, flash: () => {}, onStart: () => {}, busy: '' }, { 0: READY, 1: READY.dir, 2: false, 5: { date: '2026-10-29', data: { date: '2026-10-29' } } })
   t('那天没写正文就直说', textOf(expand(emptyDay)).includes('没有写正文'), textOf(expand(emptyDay)).slice(0, 300))
+}
+
+
+{
+  // 人物关系网：一屏里只回答一件事——我认识的人是怎么散开的。
+  // 以前卡只能按名字和更新时间排，「谁离我近、谁只是通过别人认识的」
+  // 在列表里完全看不出来。
+  const Net = seen.get('NetView')
+  t('人物关系网那一屏注册上了', Net !== undefined)
+
+  const SELF = { id: 'wo', name: '钱禹舟', kind: 'self', relation: '我', relationLabel: '我自己', extras: [], tags: [], intro: '', coverage: 72, path: 'people/钱禹舟.card.md' }
+  const DAD = { id: 'dad', name: '钱俊锋', kind: 'real', relation: 'father', relationLabel: '父亲', extras: ['也是家人'], tags: [], intro: '', coverage: 55, path: 'people/钱俊锋.card.md' }
+  const FRIEND = { id: 'li', name: '李雷', kind: 'real', relation: 'friend', relationLabel: '朋友', extras: [], tags: [], intro: '', coverage: 40, path: 'people/李雷.card.md' }
+  const AUNT = { id: 'yi', name: '我姨', kind: 'real', relation: 'relative', relationLabel: '亲戚', extras: [], tags: [], intro: '', coverage: 20, path: 'people/我姨.card.md' }
+  const STRANGER = { id: 'mo', name: '陈默', kind: 'real', relation: '', relationLabel: '', extras: [], tags: [], intro: '', coverage: 10, path: 'people/陈默.card.md' }
+  const NET = {
+    ok: true, self: SELF,
+    rings: { self: [SELF], inner: [DAD, FRIEND], outer: [AUNT] },
+    edges: [], counts: { self: 1, inner: 2, outer: 1, outside: 1 }, outside: [STRANGER],
+  }
+
+  // hook 槽：0 net / 1 err / 2 showOutside
+  const props = { onBack: () => {}, onOpen: () => {}, onTalk: () => {} }
+  const tree = renderOne('人物关系网（有中心）', Net, props, { 0: NET, 1: null, 2: false })
+  const words = textOf(expand(tree))
+  t('说清谁在中心、各圈几个人', words.includes('钱禹舟') && words.includes('2 个人是你直接认识的'), words.slice(0, 400))
+  t('有「我直接认识的」这一栏', words.includes('我直接认识的（2）'), words.slice(0, 400))
+  t('有「通过别人认识的」这一栏', words.includes('通过别人认识的（1）'), words.slice(0, 400))
+  t('父亲那张写着关系词', words.includes('父亲'), words.slice(0, 600))
+  t('补充关系也读得出来', words.includes('也是家人'), words.slice(0, 600))
+  // 没写出关系的人不能凭空消失：收在底下那一行，点得开。
+  t('没写关系的人收在底下那一行', words.includes('还有 1 个人'), words.slice(0, 700))
+  t('并且说清卡片还在', words.includes('卡片在'), words.slice(0, 700))
+  t('每个名字都点得动', collectIn(expand(tree), (n) => n.type === 'button' && textOf(n).includes('钱俊锋')).length > 0)
+
+  // 网上面的每一个点、每一条线都得画出来，否则只剩一列名单。
+  const svg = collectIn(expand(tree), (n) => n.type === 'svg')[0]
+  t('画了一张图', svg !== undefined)
+  const circles = svg === undefined ? [] : collectIn(svg, (n) => n.type === 'circle')
+  t('图上每个点都画了', circles.length >= 4, `circles=${circles.length}`)
+  const lines = svg === undefined ? [] : collectIn(svg, (n) => n.type === 'line')
+  t('图上连线也画了', lines.length >= 3, `lines=${lines.length}`)
+
+  // 没有「我」那张卡的时候：不能凭空画一个圈把人围起来，要先请用户把自己写成一张卡。
+  const noSelf = renderOne('人物关系网（还没有我）', Net, props, {
+    0: { ok: true, self: null, rings: { self: [], inner: [DAD], outer: [] }, edges: [], counts: { self: 0, inner: 1, outer: 0, outside: 0 }, outside: [] }, 1: null, 2: false,
+  })
+  const noSelfWords = textOf(expand(noSelf))
+  t('没有「我」的卡时照实说', noSelfWords.includes('还没有一张写着「我」的卡'), noSelfWords.slice(0, 400))
+  t('并给出「先把我也写一张」这条路', noSelfWords.includes('先把「我」写成一张卡'), noSelfWords.slice(0, 500))
+  t('这时不画那张图', collectIn(expand(noSelf), (n) => n.type === 'svg' && n.props?.['aria-label'] === '以我为中心的人物关系图').length === 0)
+  t('这张图能报出自己是什么', collectIn(expand(tree), (n) => n.type === 'svg' && n.props?.['aria-label'] === '以我为中心的人物关系图').length === 1)
+
+  // 一个人都没有：不能给一张空白图，要说清怎么让第一个人进来。
+  const empty = renderOne('人物关系网（一个人都没有）', Net, props, { 0: { ...NET, self: SELF, rings: { self: [SELF], inner: [], outer: [] }, counts: { self: 1, inner: 0, outer: 0, outside: 0 }, outside: [] }, 1: null, 2: false })
+  const emptyWords = textOf(expand(empty))
+  t('一个人都没有时说清下一步', emptyWords.includes('还没有人和你有直接关系'), emptyWords.slice(0, 400))
+  t('并且告诉用户去写「他是我的什么人」', emptyWords.includes('他是我的什么人') || emptyWords.includes('父亲'), emptyWords.slice(0, 600))
+
+  // 后台读不出来：不能画半张网，要照实说。
+  const broke = renderOne('人物关系网（读不出来）', Net, props, { 0: null, 1: '这个文件夹里的卡读不出来。', 2: false })
+  t('读不出来时照实说', textOf(expand(broke)).includes('读不出来'), textOf(expand(broke)).slice(0, 300))
+
+  // 首页那个入口：只在真实人物这扇门里有。
+  const realHome = textOf(expand(renderRoot('首页（真实门有入口）', base('home'))))
+  t('真实门首页有「人物关系网」', realHome.includes('人物关系网'), realHome.slice(0, 500))
+  const novelHome = textOf(expand(renderRoot('首页（小说门没有入口）', base('novel'))))
+  t('写小说门不摆「人物关系网」', !novelHome.includes('人物关系网'), novelHome.slice(0, 500))
+  const tavernHome = textOf(expand(renderRoot('首页（酒馆门没有入口）', base('tavern'))))
+  t('酒馆门不摆「人物关系网」', !tavernHome.includes('人物关系网'), tavernHome.slice(0, 500))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)
