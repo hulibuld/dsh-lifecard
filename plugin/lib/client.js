@@ -3511,7 +3511,23 @@ function BookView({ bookId, onBack, flash }) {
     } catch (e) { setErr(humanizeError(e)) }
   }
 
-  useEffect(() => { load(0) }, [bookId])
+  // 上一本是哪本。换书时要在下面那个 effect 里认出「这是换了一本」。
+  const lastBookId = useRef('')
+  // 换书（从书架再点一本进来）时组件不卸载、只是 bookId 变了：
+  // 上一本改了没存的剧本会留在框里，跟着新书一起显示，看着像这本书的剧本；
+  // 反过来，它也会被静悄悄丢掉。所以换书这一刻先替上一本存回去。
+  // 注意此刻 scriptText / scriptDirty / chapterIndex 还是上一本的值（下面才清），
+  // 正好用得上——晚了就没了。
+  useEffect(() => {
+    const before = lastBookId.current
+    if (before !== '' && before !== bookId && scriptDirty === true && scriptText.trim() !== '') {
+      call('novel.script.save', { id: before, index: chapterIndex, text: scriptText }).catch(() => null)
+    }
+    lastBookId.current = String(bookId ?? '')
+    setScriptText(''); setScriptReport(''); setScriptDirty(false)
+    setBody(''); setDraft(null); setReview(null); setBodyDirty(false)
+    load(0)
+  }, [bookId])
 
   const doPlan = async () => {
     setBusy('plan'); setErr(null)
@@ -7469,6 +7485,9 @@ const inject = ['slots']
 		// 测试专用口子：这两条路要等宿主服务就绪（ctx.inject）才分得清，
 		// 假宿主里造不出 inject，所以允许测试直接把两个服务塞进来。
 		exports.__openInterviewSession = openInterviewSession;
+		// 测试专用口子：写小说那一页只有从根部点进去才会出现，而它的换书逻辑
+		// （bookId 变了但组件不卸载）在假根部里绕太远，直接渲染这个组件最省事。
+		exports.__BookView = BookView;
 		exports.__setHostServices = (remote, ui) => {
 			REMOTE_SESSION = remote === undefined ? null : remote;
 			UI_WORKSPACE = ui === undefined ? null : ui;
