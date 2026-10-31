@@ -3449,22 +3449,33 @@ function BookView({ bookId, onBack, flash }) {
     return go === true
   }
 
+  // 每翻一次章就加一，回来的东西先对一下号。
+  // 手快连点两章（或者网络慢）时，前一章的剧本会在后一章之后才回来，
+  // 落在框里就成了「标题是第 3 章，剧本是第 2 章的」——这种错对不上账，人只会觉得插件疯了。
+  const chapterTicket = useRef(0)
+
   const openChapter = async (index) => {
     // 改过剧本还没存就切章，得先说一声。
     if (leaveScript('换过去') !== true) return false
+    const mine = ++chapterTicket.current
     setErr(null); setReview(null); setDraft(null)
     setScriptText(''); setScriptReport(''); setScriptDirty(false)
     try {
       const r = await call('novel.chapter.get', { id: bookId, index })
+      if (mine !== chapterTicket.current) return true
       setBody(r?.ok === true ? String(r.body ?? '') : '')
       // 这一章以前改过剧本没有——改过就直接摆出来，不用再问一次。
       const s = await call('novel.script.get', { id: bookId, index })
+      if (mine !== chapterTicket.current) return true
       if (s?.ok === true && String(s.text ?? '').trim() !== '') {
         setScriptText(String(s.text))
         setScriptReport(String(s.report ?? ''))
       }
       return true
-    } catch (e) { setErr(humanizeError(e)); return true }
+    } catch (e) {
+      if (mine === chapterTicket.current) setErr(humanizeError(e))
+      return true
+    }
   }
 
   // 切章之前先把没存的正文收好。存不上就留在这一章，别让人以为写进去了。

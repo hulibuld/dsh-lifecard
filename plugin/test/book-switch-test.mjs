@@ -215,5 +215,65 @@ if (typeof BookView === 'function') {
   t('新书上不会显示上一本的剧本', !areasB.some((n) => String(n.props?.value ?? '').includes('他把碗放下')), areasB.map((n) => String(n.props?.value ?? '').slice(0, 24)))
 }
 
+// ── 手快连点两章：先发出去的那一章晚回来，不许盖住后点的那一章 ────────────
+// 现场：第 2 章的剧本请求慢，人在等待期间又点了第 3 章。第 2 章那份剧本
+// 后到，落在框里就成了「标题是第 3 章、剧本是第 2 章的」。
+if (typeof BookView === 'function') {
+  stores.clear()
+  calls.length = 0
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, opts = {}) => {
+    const method = String(url).split('/').pop()
+    const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : {}
+    if (method === 'novel.get') {
+      return { ok: true, status: 200, json: async () => ({ ok: true, data: { title: '雨里的门' }, idea: '', chapters: [{ index: 1 }, { index: 2 }, { index: 3 }] }) }
+    }
+    if (method === 'novel.chapter.get') {
+      return { ok: true, status: 200, json: async () => ({ ok: true, body: `第 ${body.index} 章的正文。` }) }
+    }
+    if (method === 'novel.script.get') {
+      const n = Number(body.index)
+      if (n === 2) {
+        // 第 2 章那份剧本故意晚到。
+        await new Promise((r) => setTimeout(r, 60))
+      }
+      return { ok: true, status: 200, json: async () => ({ ok: true, text: n === 2 ? '第1场\n客厅 日 内\n△ 慢的那一份。' : '', report: '' }) }
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true }) }
+  }
+
+  const propsX = { bookId: 'a', onBack: () => {}, flash: () => {} }
+  let treeX = renderComponent(BookView, propsX)
+  await settle()
+  treeX = renderComponent(BookView, propsX)
+  await settle()
+
+  // 章节列表里那两个「第 2 章」「第 3 章」按钮。
+  // 按钮是组件（`Btn`）还没展开成 <button>，所以按组件名 + 上面那行字找。
+  const goBtn = (n) => collect(treeX, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+    && String(textOf(x)).startsWith(`第 ${n} 章`))[0]
+  const b2 = goBtn(2)
+  const b3 = goBtn(3)
+  t('找得到第 2 章和第 3 章的按钮', b2 !== undefined && b3 !== undefined, `2:${b2 !== undefined} 3:${b3 !== undefined}`)
+
+  if (b2 !== undefined && b3 !== undefined) {
+    b2.props.onClick()            // 慢的那一份先发出去
+    b3.props.onClick()            // 人等不及，又点了第 3 章
+    await settle()
+    await new Promise((r) => setTimeout(r, 120))
+    await settle()
+    treeX = renderComponent(BookView, propsX)
+    await settle()
+
+    const areas = collect(treeX, (x) => x.type === 'textarea')
+    const late = areas.find((x) => String(x.props?.value ?? '').includes('慢的那一份'))
+    t('晚回来的第 2 章剧本不许落到第 3 章的框里', late === undefined, areas.map((x) => String(x.props?.value ?? '').slice(0, 20)))
+    const bodyBox = areas.find((x) => String(x.props?.value ?? '').includes('章的正文'))
+    t('正文也是最后点的那一章', bodyBox === undefined || String(bodyBox.props.value).includes('第 3 章'), bodyBox === undefined ? '' : String(bodyBox.props.value).slice(0, 30))
+  }
+
+  globalThis.fetch = realFetch
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
