@@ -1035,6 +1035,9 @@ export function safeId(raw) {
   const s = String(raw ?? '').trim()
   if (s === '') return 'unnamed'
   return s
+    // 控制字符（含 NUL）一律抹掉：它们会原样跟着路径走，Node 那一侧只会
+    // ENOENT/EINVAL，排查起来像见鬼。
+    .replace(/[\u0000-\u001f\u007f]/g, '')
     .replace(/[\\/:*?"<>|#%\s]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .replace(/-{2,}/g, '-')
