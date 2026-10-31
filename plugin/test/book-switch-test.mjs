@@ -265,6 +265,12 @@ if (typeof BookView === 'function') {
 
   if (b2 !== undefined && b3 !== undefined) {
     b2.props.onClick()            // 慢的那一份先发出去
+    // 关键：不能两次 onClick 同步连发。同步连发时第二次点下去，第一次的
+    // `chapter.get` 还在飞、第一个过号检查就把它拦住了，`script.get` 之后那道
+    // 检查根本走不到——测试于是永远绿，把那一行删掉也不红（审查员实测过）。
+    // 这里先放行一帧，让第 2 章的 `chapter.get` 回来、`script.get` 正挂在
+    // 那 60ms 里，再点第 3 章：走到 `script.get` 之后那道检查，才是真的在测它。
+    await new Promise((r) => setTimeout(r, 0))
     b3.props.onClick()            // 人等不及，又点了第 3 章
     await settle()
     await new Promise((r) => setTimeout(r, 120))
