@@ -3748,6 +3748,9 @@ function BookView({ bookId, onBack, flash }) {
       const r = await call('novel.script.save', { id: bookId, index: chapterIndex, text: sent })
       if (r?.ok !== true) { setScriptErr(r?.error ?? '没存上。这一份还在框里，再点一次就行。'); return }
       setScriptReport(String(r.report ?? ''))
+      // 章列表上那个「有剧本」的小标记：存好之后立刻挂上，
+      // 不然得退出这本书再进来才看得见，人会以为自己没存上。
+      setScripted((old) => (old.includes(chapterIndex) ? old : [...old, chapterIndex].sort((a, b) => a - b)))
       if (scriptText === sent) {
         setScriptDirty(false)
         flash?.(`第 ${chapterIndex} 章的剧本存好了`)
@@ -3775,6 +3778,7 @@ function BookView({ bookId, onBack, flash }) {
       const r = await call('novel.script.delete', { id: bookId, index: chapterIndex })
       if (r?.ok !== true) { setScriptErr(r?.error ?? '这份剧本没删掉'); return }
       setScriptText(''); setScriptReport(''); setScriptDirty(false)
+      setScripted((old) => old.filter((n) => n !== chapterIndex))
       flash?.(`删掉了第 ${chapterIndex} 章的剧本`)
     } catch (e) { setScriptErr(humanizeError(e)) } finally { setBusy('') }
   }

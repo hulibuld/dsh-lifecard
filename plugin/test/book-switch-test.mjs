@@ -685,6 +685,10 @@ if (typeof BookView === 'function') {
       await settle()
       const words = JSON.stringify(collect(treeW, (n) => true).map((n) => textOf(n)))
       t('存完之后标记清掉了', words.includes('还没存') === false, words.slice(0, 160))
+      // 存好之后，章列表上那个「有剧本」的小标记要立刻挂上。
+      // 以前只有退出这本书再进来才看得见（load 才会重新问一次 list），
+      // 人会以为自己没存上，又存一遍。
+      t('存好之后章列表立刻挂上「有剧本」', words.includes('有剧本'), words.slice(0, 200))
     }
   }
 
