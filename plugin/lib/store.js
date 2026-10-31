@@ -804,6 +804,30 @@ export async function writeCard(root, relPath, data, sections, options = {}) {
   return withWriteLock(at.abs, () => writeCardNow(root, relPath, at.abs, data, sections, options))
 }
 
+/**
+ * 读一张卡 → 改 → 写回，整段排在同一队列里。
+ *
+ * 只给 `writeCard` 加锁是不够的：一次「补信息」在别处是「读出旧内容、拼上新的、
+ * 再写回」，中间跨了好几个 await。两个窗口同时补同一张卡时，两边读到的是同一份
+ * 旧内容，后写的那一份照着旧底稿改，前一次补的就没了——而且快照里也没有，
+ * 因为两次写前的旧内容是一样的。所以读也得在队列里。
+ *
+ * `mutate(read)` 拿到 `{data, sections, text}`（readCard 的返回），要么回
+ * `{ ok: true, data, sections }`，要么回 `{ ok: false, error }` 表示这次不写。
+ */
+export async function updateCard(root, relPath, mutate, options = {}) {
+  const at = await resolveIn(root, relPath)
+  if (!at.ok) return { ok: false, path: relPath, error: at.error }
+  return withWriteLock(at.abs, async () => {
+    const read = await readCard(root, relPath)
+    if (read.ok !== true) return read
+    const next = typeof mutate === 'function' ? await mutate(read) : null
+    if (next === null || next === undefined) return { ok: false, path: relPath, error: '这一版没能算出来，这次没写。' }
+    if (next.ok === false) return { ...next, path: next.path ?? relPath }
+    return writeCardNow(root, relPath, at.abs, next.data, next.sections, options)
+  })
+}
+
 async function writeCardNow(root, relPath, abs, data, sections, options = {}) {
   const validation = core.validateCard(data)
   if (!validation.ok && options.force !== true) {
@@ -2306,6 +2330,7 @@ export default {
   cardRelPath,
   readCard,
   writeCard,
+  updateCard,
   listAll,
   isBackupName,
   listWithdrawn,

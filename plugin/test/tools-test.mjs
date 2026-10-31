@@ -720,5 +720,42 @@ console.log('\n=== 11. 聊完那一篇得真的落在磁盘上 ===')
   t('没有额外加「略过多少字」的说明', !got.includes('没带进来'), got.slice(-160))
 }
 
+// 两个人同时往同一张卡里补东西：两份都得留下。
+//
+// 这条以前没人测，也真的丢过：工具里是「读旧内容 → 合并 → 写回」，中间跨了
+// 好几个 await，锁只罩住了最后一步。两个窗口同时补，后写的那份照着它读到的
+// 旧底稿改，前一次补的没了——连快照里都没有（两次写前的旧内容一模一样）。
+{
+  const ws = await mkdtemp(path.join(tmpdir(), 'lc-race-'))
+  await store.openWorkspace(ws, { create: true })
+  await mkdir(path.join(ws, 'materials'), { recursive: true })
+  await writeFile(path.join(ws, 'materials', 'race.md'), '他说「先记账」，也说过「爱皱眉」，说完就去洗碗了。', 'utf8')
+  const reg = new Map()
+  registerTools({ tools: { register: (x) => reg.set(x.name, x) } }, { workspace: ws })
+  const call = async (n, a) => (await reg.get(n).execute(a ?? {})).text
+  const quote = '说完就去洗碗了'
+  await call('lifecard_refine_card', {
+    target: 'self', approved: true, from: 'material', material: 'race.md', name: '我',
+    sections: [{ title: '自述', body: '先记下来再说。', quote }],
+  })
+  const [a, b] = await Promise.all([
+    call('lifecard_refine_card', {
+      target: 'self', approved: true, from: 'material', material: 'race.md', name: '我',
+      sections: [{ title: '口癖', body: 'A 写的口癖。', quote }],
+    }),
+    call('lifecard_refine_card', {
+      target: 'self', approved: true, from: 'material', material: 'race.md', name: '我',
+      sections: [{ title: '外貌', body: 'B 写的外貌。', quote }],
+    }),
+  ])
+  const card = await store.readCard(ws, 'people/我.card.md')
+  const text = card.ok === true ? card.text : ''
+  t('两张同时补都回了话', a.trim() !== '' && b.trim() !== '', `${a} | ${b}`)
+  t('先补的那一份还在', text.includes('A 写的口癖'), a)
+  t('后补的那一份也在', text.includes('B 写的外貌'), b)
+  t('原来的自述一个字没动', text.includes('先记下来再说'))
+  await rm(ws, { recursive: true, force: true })
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

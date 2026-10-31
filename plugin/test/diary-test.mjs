@@ -393,6 +393,29 @@ try {
     }
   }
 
+  console.log('\n=== 9c. 同一天两个人一起写：不许后一份把前一份顶掉 ===')
+  {
+    const dir = await fs.mkdtemp(path.join(tmpdir(), 'lc-diary-race-'))
+    try {
+      // 两边都读到「这一天还没有」，谁先落盘谁赢，后到的那一份必须被拦下来，
+      // 而不是整篇盖掉前一份、把前一份赶到看不见的隐藏目录里。
+      const [a, b] = await Promise.all([
+        diary.writeDiary(dir, { date: '2026-10-20', 今天最值得讲的一件事: 'A 先落盘的那一段。' }, new Date(), { expect: { text: null } }),
+        diary.writeDiary(dir, { date: '2026-10-20', 今天最值得讲的一件事: 'B 后到的那一段。' }, new Date(), { expect: { text: null } }),
+      ])
+      const okCount = [a, b].filter((r) => r.ok === true).length
+      t('两份里只有一份落盘', okCount === 1, `${a.ok} / ${b.ok}`)
+      t('另一份被拦下来并说清原因', [a, b].some((r) => r.ok === false && r.conflict === true && String(r.error).includes('改过了')) || [a, b].some((r) => r.ok === false && r.conflict === true), `${a.error ?? ''} | ${b.error ?? ''}`)
+      const got = await diary.readDiary(dir, '2026-10-20')
+      const body = String(got.data?.['今天最值得讲的一件事'] ?? '')
+      t('落盘那一份是完整的', body.includes('先落盘') || body.includes('后到'), body)
+      t('没落盘的那一份没有偷偷混进去', !(body.includes('先落盘') && body.includes('后到')), body)
+      t('落盘的是先到的 A', a.ok === true ? body.includes('A 先落盘') : body.includes('B 后到'), body)
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
+    }
+  }
+
   console.log('\n=== 8. 键都齐了 ===')
   {
     const want = ['DIARY_SECTIONS', 'DIARY_LIST_SECTIONS', 'DIMENSIONS', 'dateFileName', 'diaryFileName', 'diaryRootFrom',

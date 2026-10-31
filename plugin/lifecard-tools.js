@@ -455,34 +455,41 @@ export function registerTools(ctx, config) {
 
       const existingRel = await findExisting(root, rel, id)
       if (existingRel !== null) {
-        const already = await store.readCard(root, existingRel)
-        if (already.ok !== true) {
-          if (already.withdrawn === true || isWithdrawnAt(root, existingRel)) return withdrawnNote(existingRel, '卡')
-          return `已经有一张同名的卡（${existingRel}），可这会儿读不出来：${String(already.error ?? '读不出来')}。先把它弄好，再来写。`
+        if (mode === 'replace' && args.confirm_replace !== true) {
+          return [
+            `已经有一张同名的卡：${existingRel}`,
+            '整张重写会连身份、关系、原来写过的小节一起换掉，换完就找不回来了。',
+            '确定要整张重写，就再调一次，带 mode: "replace" 和 confirm_replace: true。',
+            '只想往里补，就不用改参数——默认只补空缺，原来的字一个不动。',
+          ].join('\n')
+        }
+        // 读旧内容 → 合并 → 写回，三件事必须在同一个队列里（`store.updateCard`）。
+        // 拆开做的话，两个窗口同时补同一张卡时，后写的那份照着它读到的旧底稿改，
+        // 前一次补的就没了——连快照里都没有，因为两次写前的旧内容一模一样。
+        let added = []
+        let filled = []
+        let nothing = false
+        const saved = await store.updateCard(root, existingRel, (already) => {
+          if (mode === 'replace') return { ok: true, data: incoming, sections }
+          const mergedData = mergeData(already.data, incoming)
+          const mergedSections = mergeSections(already.sections, sections)
+          added = mergedSections.added
+          filled = mergedData.filled
+          if (added.length === 0 && filled.length === 0) { nothing = true; return { ok: false, error: '没有可补的' } }
+          return { ok: true, data: mergedData.data, sections: mergedSections.sections }
+        })
+        if (nothing) return `这张卡已经有了，这次没有可补的：${existingRel}\n原有的内容一个字没动。\nmerged: true`
+        if (saved.ok !== true) {
+          if (saved.withdrawn === true || isWithdrawnAt(root, existingRel)) return withdrawnNote(existingRel, '卡')
+          if (saved.error === '文件不存在' || saved.code !== undefined) return `已经有一张同名的卡（${existingRel}），可这会儿读不出来：${String(saved.error ?? '读不出来')}。先把它弄好，再来写。`
+          return `没能写成：${String(saved.error ?? '存盘失败')}`
         }
         if (mode === 'replace') {
-          if (args.confirm_replace !== true) {
-            return [
-              `已经有一张同名的卡：${existingRel}`,
-              '整张重写会连身份、关系、原来写过的小节一起换掉，换完就找不回来了。',
-              '确定要整张重写，就再调一次，带 mode: "replace" 和 confirm_replace: true。',
-              '只想往里补，就不用改参数——默认只补空缺，原来的字一个不动。',
-            ].join('\n')
-          }
-          const replaced = await store.writeCard(root, existingRel, incoming, sections)
-          if (replaced.ok !== true) return `没能写成：${String(replaced.error ?? '存盘失败')}`
-          return `整张换掉了：${replaced.path}\n${sections.length} 段，每段都对着材料里的原句核过。这次是按用户第二次确认整张覆盖写的。`
+          return `整张换掉了：${saved.path}\n${sections.length} 段，每段都对着材料里的原句核过。这次是按用户第二次确认整张覆盖写的。`
         }
-        const mergedData = mergeData(already.data, incoming)
-        const mergedSections = mergeSections(already.sections, sections)
-        if (mergedSections.added.length === 0 && mergedData.filled.length === 0) {
-          return `这张卡已经有了，这次没有可补的：${existingRel}\n原有的内容一个字没动。\nmerged: true`
-        }
-        const saved = await store.writeCard(root, existingRel, mergedData.data, mergedSections.sections)
-        if (saved.ok !== true) return `没能写成：${String(saved.error ?? '存盘失败')}`
         const bits = []
-        if (mergedSections.added.length > 0) bits.push(`补了 ${mergedSections.added.length} 节：${mergedSections.added.join('、')}`)
-        if (mergedData.filled.length > 0) bits.push(`补了 ${mergedData.filled.length} 项：${mergedData.filled.join('、')}`)
+        if (added.length > 0) bits.push(`补了 ${added.length} 节：${added.join('、')}`)
+        if (filled.length > 0) bits.push(`补了 ${filled.length} 项：${filled.join('、')}`)
         return [
           `补好了（没有重写）：${saved.path}`,
           ...bits,
@@ -584,39 +591,46 @@ export function registerTools(ctx, config) {
 
       const existingRel = await findWorld(root, rel, name)
       if (existingRel !== null) {
-        const already = await store.readCard(root, existingRel)
-        if (already.ok !== true) {
-          if (already.withdrawn === true || isWithdrawnAt(root, existingRel)) return withdrawnNote(existingRel, '世界书')
-          return `已经有一本同名的世界书（${existingRel}），可这会儿读不出来：${String(already.error ?? '读不出来')}。先把它弄好，再来写。`
+        if (mode === 'replace' && args.confirm_replace !== true) {
+          return [
+            `已经有一本同名的世界书：${existingRel}`,
+            '整份重写会把原来的条目全换掉，换完就找不回来了。',
+            '确定要整份重写，就再调一次，带 mode: "replace" 和 confirm_replace: true。',
+            '只想往里加，就不用改参数——默认只补空缺，原来的条目一个不动。',
+          ].join('\n')
+        }
+        // 同上：读旧条目 → 并新的 → 写回，得在同一个队列里。
+        let merged = null
+        let filled = []
+        const saved = await store.updateCard(root, existingRel, (already) => {
+          if (mode === 'replace') {
+            const body = entries.map((e) => renderWorldEntry(e)).join('\n')
+            return { ok: true, data: incoming, sections: [{ title: '世界书条目', body }] }
+          }
+          const oldBody = core.sectionBody(already.sections ?? [], '世界书条目')
+          const mergedBlocks = mergeWorldBlocks(oldBody, entries)
+          merged = mergedBlocks
+          const mergedData = mergeData(already.data, { ...incoming, entry_count: 0 })
+          mergedData.data.entry_count = mergedBlocks.total
+          filled = mergedData.filled
+          const hasSection = (already.sections ?? []).some((one) => one?.title === '世界书条目')
+          const sections = hasSection
+            ? (already.sections ?? []).map((one) => (one?.title === '世界书条目' ? { title: '世界书条目', body: mergedBlocks.body } : one))
+            : [...(already.sections ?? []), { title: '世界书条目', body: mergedBlocks.body }]
+          return { ok: true, data: mergedData.data, sections }
+        })
+        if (saved.ok !== true) {
+          if (saved.withdrawn === true || isWithdrawnAt(root, existingRel)) return withdrawnNote(existingRel, '世界书')
+          if (saved.error === '文件不存在' || saved.code !== undefined) return `已经有一本同名的世界书（${existingRel}），可这会儿读不出来：${String(saved.error ?? '读不出来')}。先把它弄好，再来写。`
+          return `没能写成：${String(saved.error ?? '存盘失败')}`
         }
         if (mode === 'replace') {
-          if (args.confirm_replace !== true) {
-            return [
-              `已经有一本同名的世界书：${existingRel}`,
-              '整份重写会把原来的条目全换掉，换完就找不回来了。',
-              '确定要整份重写，就再调一次，带 mode: "replace" 和 confirm_replace: true。',
-              '只想往里加，就不用改参数——默认只补空缺，原来的条目一个不动。',
-            ].join('\n')
-          }
-          const body = entries.map((e) => renderWorldEntry(e)).join('\n')
-          const replaced = await store.writeCard(root, existingRel, incoming, [{ title: '世界书条目', body }])
-          if (replaced.ok !== true) return `没能写成：${String(replaced.error ?? '存盘失败')}`
-          return `整份换掉了：${replaced.path}\n${entries.length} 条，每条都对着材料里的原句核过。这次是按用户第二次确认整份覆盖写的。`
+          return `整份换掉了：${saved.path}\n${entries.length} 条，每条都对着材料里的原句核过。这次是按用户第二次确认整份覆盖写的。`
         }
-        const oldBody = core.sectionBody(already.sections ?? [], '世界书条目')
-        const merged = mergeWorldBlocks(oldBody, entries)
-        const mergedData = mergeData(already.data, { ...incoming, entry_count: 0 })
-        mergedData.data.entry_count = merged.total
-        const hasSection = (already.sections ?? []).some((one) => one?.title === '世界书条目')
-        const sections = hasSection
-          ? (already.sections ?? []).map((one) => (one?.title === '世界书条目' ? { title: '世界书条目', body: merged.body } : one))
-          : [...(already.sections ?? []), { title: '世界书条目', body: merged.body }]
-        const saved = await store.writeCard(root, existingRel, mergedData.data, sections)
-        if (saved.ok !== true) return `没能写成：${String(saved.error ?? '存盘失败')}`
         const bits = []
-        if (merged.added.length > 0) bits.push(`新加 ${merged.added.length} 条：${merged.added.join('、')}`)
-        if (merged.joined.length > 0) bits.push(`并进已有条目 ${merged.joined.length} 条：${merged.joined.join('、')}`)
-        if (mergedData.filled.length > 0) bits.push(`补了 ${mergedData.filled.length} 项：${mergedData.filled.join('、')}`)
+        if (merged !== null && merged.added.length > 0) bits.push(`新加 ${merged.added.length} 条：${merged.added.join('、')}`)
+        if (merged !== null && merged.joined.length > 0) bits.push(`并进已有条目 ${merged.joined.length} 条：${merged.joined.join('、')}`)
+        if (filled.length > 0) bits.push(`补了 ${filled.length} 项：${filled.join('、')}`)
         if (bits.length === 0) bits.push('这次的条目都已经在里面了')
         return [
           `补好了（没有重写）：${saved.path}`,
@@ -747,14 +761,11 @@ export function registerTools(ctx, config) {
       const existing = held === null ? null : held.card ?? held
       const existingRel = existing === null ? null : (existing.path ?? held.path ?? null)
 
+      // 这里只「看一眼」有没有这张卡，真正读旧内容、合并、写回都在下面的
+      // `store.updateCard` 里一次做完——中间另起的 await 就是并发丢卡的缝。
       let card = null
       if (existingRel !== null) {
-        const read = await store.readCard(root, existingRel)
-        if (read.ok !== true) {
-          if (read.withdrawn === true || isWithdrawnAt(root, existingRel)) return withdrawnNote(existingRel, '卡')
-          return `这张卡这会儿读不出来：${String(read.error ?? '读不出来')}。先把它弄好，再来改。`
-        }
-        card = read
+        card = { path: existingRel }
       }
 
       if (card === null) {
@@ -791,34 +802,41 @@ export function registerTools(ctx, config) {
         ].filter((x) => x !== '').join('\n') + pinNote
       }
 
-      const data = card.data ?? {}
-      if (mode === 'replace') {
-        if (args.confirm_replace !== true) {
-          return [
-            `这张卡现在是这样：${existingRel}`,
-            '整份重写会把原来写过的内容一起换掉，换完就找不回来了。',
-            '确定要整份重写，就再调一次，带 mode: "replace" 和 confirm_replace: true。',
-            '只想往里补，就不用改参数——默认只补空缺，原来的字一个不动。',
-          ].join('\n')
+      if (mode === 'replace' && args.confirm_replace !== true) {
+        return [
+          `这张卡现在是这样：${existingRel}`,
+          '整份重写会把原来写过的内容一起换掉，换完就找不回来了。',
+          '确定要整份重写，就再调一次，带 mode: "replace" 和 confirm_replace: true。',
+          '只想往里补，就不用改参数——默认只补空缺，原来的字一个不动。',
+        ].join('\n')
+      }
+      let added = []
+      let filled = []
+      let nothing = false
+      const saved = await store.updateCard(root, existingRel, (already) => {
+        if (mode === 'replace') {
+          const incoming = { ...already.data }
+          for (const f of fields) incoming[f.key] = f.value
+          return { ok: true, data: incoming, sections }
         }
-        const incoming = { ...data }
-        for (const f of fields) incoming[f.key] = f.value
-        const saved = await store.writeCard(root, existingRel, incoming, sections)
-        if (saved.ok !== true) return `没能写成：${String(saved.error ?? '存盘失败')}`
-        return `整份换掉了：${saved.path}\n这是按用户第二次确认整份覆盖写的。`
+        const incoming = Object.fromEntries(fields.map((f) => [f.key, f.value]))
+        const mergedData = mergeData(already.data, incoming)
+        const mergedSections = mergeSections(already.sections, sections)
+        added = mergedSections.added
+        filled = mergedData.filled
+        if (added.length === 0 && filled.length === 0) { nothing = true; return { ok: false, error: '没有可补的' } }
+        return { ok: true, data: mergedData.data, sections: mergedSections.sections }
+      })
+      if (nothing) return `这张卡已经有了，这次没有可补的：${existingRel}\n原有的内容一个字没动。\nmerged: true`
+      if (saved.ok !== true) {
+        if (saved.withdrawn === true || isWithdrawnAt(root, existingRel)) return withdrawnNote(existingRel, '卡')
+        if (saved.error === '文件不存在' || saved.code !== undefined) return `这张卡这会儿读不出来：${String(saved.error ?? '读不出来')}。先把它弄好，再来改。`
+        return `没能写成：${String(saved.error ?? '存盘失败')}`
       }
-
-      const incoming = Object.fromEntries(fields.map((f) => [f.key, f.value]))
-      const mergedData = mergeData(data, incoming)
-      const mergedSections = mergeSections(card.sections, sections)
-      if (mergedSections.added.length === 0 && mergedData.filled.length === 0) {
-        return `这张卡已经有了，这次没有可补的：${existingRel}\n原有的内容一个字没动。\nmerged: true`
-      }
-      const saved = await store.writeCard(root, existingRel, mergedData.data, mergedSections.sections)
-      if (saved.ok !== true) return `没能写成：${String(saved.error ?? '存盘失败')}`
+      if (mode === 'replace') return `整份换掉了：${saved.path}\n这是按用户第二次确认整份覆盖写的。`
       const bits = []
-      if (mergedSections.added.length > 0) bits.push(`补了 ${mergedSections.added.length} 节：${mergedSections.added.join('、')}`)
-      if (mergedData.filled.length > 0) bits.push(`补了 ${mergedData.filled.length} 项：${mergedData.filled.join('、')}`)
+      if (added.length > 0) bits.push(`补了 ${added.length} 节：${added.join('、')}`)
+      if (filled.length > 0) bits.push(`补了 ${filled.length} 项：${filled.join('、')}`)
       return [
         `补好了（没有重写）：${saved.path}`,
         ...bits,

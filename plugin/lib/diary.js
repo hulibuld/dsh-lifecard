@@ -535,16 +535,25 @@ export async function writeDiary(dir, data, now = new Date(), options = {}) {
     let renderOptions = {}
     let snapshot = ''
     const existed = old.kind === 'text'
-    if (existed) {
-      const expect = options?.expect
-      const wantText = expect !== null && typeof expect === 'object' ? expect.text : undefined
-      if (typeof wantText === 'string' && wantText !== old.text) {
+    // 调用方读过之后才写：它看见的是什么样，磁盘上就得还是什么样。
+    // 两种对不上都算「被别处改过」——
+    //   ①它读到了内容，现在内容变了；
+    //   ②它读到「这天还没有」，现在却有了（两个人同时开始写全新的一天）。
+    // 第二种以前是漏的：两边都读到「没有」，后一份把前一份整篇顶掉，
+    // 前一份只剩在隐藏的旧版本目录里，界面上根本看不到。
+    const expect = options?.expect
+    if (expect !== null && typeof expect === 'object') {
+      const wantText = expect.text
+      const moved = typeof wantText === 'string' ? (existed ? wantText !== old.text : true) : (wantText === null || wantText === undefined ? existed : false)
+      if (moved) {
         return {
           ok: false,
           conflict: true,
           error: '这一天在别的地方又改过了。为了不把你外面改的东西盖掉，这次没存——重新打开这一篇再写一遍就行。',
         }
       }
+    }
+    if (existed) {
       const back = parseDiaryText(old.text)
       if (back.ok !== true) {
         return { ok: false, error: `这一天原来那一篇读不出来（${back.error}），为了不覆盖掉它，这次没存。` }
