@@ -2917,7 +2917,12 @@ function buildApi(ctx, workspace, config, options) {
       const ws = await root(body)
       const id = String(body?.id ?? '').trim()
       if (id === '') return { ok: false, error: '没有说是哪本书' }
-      return await novel.deleteChapter(ws, id, body?.index)
+      const gone = await novel.deleteChapter(ws, id, body?.index)
+      if (gone.ok !== true) return gone
+      // 这一章没了，它上面那份剧本留着就是一份谁也点不到的孤儿——
+      // 界面上只能按章翻，第 N 章都不存在了，那份剧本永远打不开也删不掉。
+      const script = await novel.deleteScript(ws, id, body?.index)
+      return script.ok === true ? gone : { ...gone, scriptKept: true }
     },
 
     /** 整本书不要了。 */
@@ -3507,6 +3512,167 @@ function buildApi(ctx, workspace, config, options) {
         usedCast: cast.length,
       }
     },
+
+    // ── 改成剧本 ────────────────────────────────────────────────
+    // 一章小说 → 一份能配音、能拍的剧本。落在 `books/<书>/scripts/<章号>.md`，
+    // 和章节文件同号，回头一眼能对上「第三章改出来的那份」。
+
+    /** 读这一章改出来的剧本（没改过也正常，返回空串）。 */
+    'novel.script.get': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      const target = await scriptTarget(ws, id, body?.index)
+      if (target.error !== undefined) return { ok: false, error: target.error }
+      const got = await novel.readScript(ws, id, target.index)
+      if (got.ok !== true) return got
+      const scan = novel.scanScript(got.text)
+      return { ...got, scan, report: novel.scriptReportText(scan) }
+    },
+
+    /** 存这一章的剧本（手改过的也走这里）。 */
+    'novel.script.save': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      const target = await scriptTarget(ws, id, body?.index)
+      if (target.error !== undefined) return { ok: false, error: target.error }
+      const raw = String(body?.text ?? '')
+      // 只剩空格（含全角空格）和换行：这人不小心清空了。
+      // 以前这里直接删文件，回话还说「存好了」——磁盘上那份就再也找不回来。
+      // 现在只回一句「空的，没往里存」，原来的那份一动不动。
+      if (raw.replace(/[\s\u3000]/g, '') === '') {
+        const scan = novel.scanScript('')
+        return { ok: false, blank: true, index: target.index, error: '这一份是空的，没往里存。原来那一份还在。' }
+      }
+      const saved = await novel.writeScript(ws, id, target.index, raw)
+      if (saved.ok !== true) return saved
+      // 扫的是真正落盘的那一份（writeScript 会先剥掉 ``` 围栏）。
+      // 扫原文的话，回执里的场数、字数会和磁盘上那份对不上。
+      const stored = await novel.readScript(ws, id, target.index)
+      const storedText = stored.ok === true ? stored.text : raw
+      const scan = novel.scanScript(storedText)
+      return { ...saved, scan, report: novel.scriptReportText(scan) }
+    },
+
+    /** 这本书改过哪几章。 */
+    'novel.script.list': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      const book = await novel.readBook(ws, id)
+      if (book.ok !== true) return { ok: false, error: '这本书不在了。回到书架看一眼，可能被移走了。' }
+      return await novel.listScripts(ws, id)
+    },
+
+    /** 删掉这一章改出来的剧本。章节本身不动。 */
+    'novel.script.delete': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      const target = await scriptTarget(ws, id, body?.index)
+      if (target.error !== undefined) return { ok: false, error: target.error }
+      return await novel.deleteScript(ws, id, target.index)
+    },
+
+    /**
+     * 让 AI 把这一章改成剧本。
+     *
+     * 只给这一章的正文 + 人 + 设定 + 上一章剧本的最后一场。
+     * 不给大纲：改剧本不是重写故事，章后面的事它不需要知道——知道了会忍不住
+     * 提前把底抖出来，那是改编里最容易炸的一处。
+     */
+    'novel.script.draft': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      const book = await novel.readBook(ws, id)
+      if (book.ok !== true) return book
+      // 没给章号就用最后一章；给了但不合法要说出来，不能悄悄改成第 1 章去改。
+      const rawIndex = body?.index
+      const gaveIndex = rawIndex !== undefined && rawIndex !== null && String(rawIndex).trim() !== ''
+      if (gaveIndex === true && novel.isValidChapterIndex(rawIndex) !== true) {
+        return { ok: false, error: '章号不对，没法知道你说的是哪一章。' }
+      }
+      const index = gaveIndex === true
+        ? Number(String(rawIndex).trim())
+        : (book.chapters.length === 0 ? 1 : book.chapters[book.chapters.length - 1].index)
+      const chapter = await novel.readChapter(ws, id, index)
+      if (chapter.ok !== true) return chapter
+      const chapterBody = String(chapter.body ?? '').trim()
+      if (chapterBody === '') return { ok: false, error: `第 ${index} 章还是空的，没有东西可以改。`, index }
+      if (chapterBody.length > 20000) {
+        return { ok: false, error: '这一章太长（超过两万字），一次改不完。先分成两章再改。', index }
+      }
+
+      // 上一章改出来的剧本，最后一场整段带上：谁站在哪、手上有什么、门开没开。
+      let previousTail = ''
+      if (index > 1) {
+        const prev = await novel.readScript(ws, id, index - 1)
+        if (prev.ok === true && String(prev.text ?? '').trim() !== '') {
+          const parsed = novel.parseScriptScenes(prev.text)
+          const last = parsed.scenes[parsed.scenes.length - 1]
+          previousTail = last === undefined ? novel.tailOf(prev.text, 600) : last.raw.join('\n').trim()
+        }
+      }
+
+      // 世界设定（改剧本时全量给：场的布景、道具、天气都得对得上）
+      const worldNotes = []
+      const worldRel = typeof body?.world === 'string' && body.world.trim() !== '' ? body.world.trim() : ''
+      if (worldRel !== '') {
+        const world = await store.readCard(ws, worldRel)
+        if (world.ok === true) {
+          for (const entry of core.parseWorldEntries(world.sections)) {
+            const content = String(entry?.content ?? '').trim()
+            if (content !== '') worldNotes.push(content)
+          }
+        }
+      }
+
+      const cast = await gatherCast(ws, body?.cast)
+      const firstLine = chapterBody.split(/\r?\n/).find((line) => line.trim() !== '') ?? ''
+      const user = novel.buildScriptPrompt({
+        title: String(book.data?.title ?? id),
+        genre: String(book.data?.genre ?? ''),
+        idea: String(book.idea ?? ''),
+        chapterNo: index,
+        chapterTitle: firstLine.replace(/^#+\s*/, '').trim().slice(0, 60),
+        chapterBody,
+        cast,
+        worldEntries: worldNotes,
+        previousTail,
+        ask: body?.ask,
+        sceneHint: body?.scenes,
+      })
+      const called = await callModel(ctx, {
+        system: novel.buildScriptSystemNote(),
+        user,
+        model: body?.model,
+      })
+      if (called.ok !== true) {
+        return { ok: false, error: `这次没改成：${called.error ?? '过一会儿再试一次'}`, index }
+      }
+      const text = novel.stripFence(called.text)
+      if (text === '') return { ok: false, error: 'AI 这次什么都没给，再点一次试试。', index }
+
+      const scan = novel.scanScript(text)
+      return {
+        ok: true,
+        index,
+        text,
+        scan,
+        report: novel.scriptReportText(scan),
+        // 不落盘：改出来的东西人要先看、能删掉半场、能整段重写。存盘由 script.save 做。
+        usedCast: cast.length,
+        usedWorld: worldNotes.length,
+        continued: previousTail !== '',
+      }
+    },
   }
 }
 
@@ -3517,6 +3683,31 @@ function buildApi(ctx, workspace, config, options) {
  * 它才不会把「说话很冲的那个人」写成温和的——那是长篇最容易崩的地方。
  * 每张卡只取前 500 字：卡可能写得很长，全贴会把大纲和上一章挤掉。
  */
+/**
+ * 章号闸。
+ *
+ * `chapterFileName` 里有 `Math.max(1, Math.min(999, Math.floor(Number(index) || 1)))`
+ * —— 它把 0、-1、'abc'、null 一律**悄悄**夹成 1。对「读」来说没问题，
+ * 对「写」就是灾难：`novel.script.save({index:0})` 会盖掉第 1 章原来那份剧本，
+ * 而且回话说的是「存好了」。
+ *
+ * 所以写之前先在这里拦一道：章号得是正整数，而且这一章得真的存在。
+ * 返回 `{ index }` 或者 `{ error }`。
+ */
+async function scriptTarget(ws, id, rawIndex) {
+  if (novel.isValidChapterIndex(rawIndex) !== true) {
+    return { error: '章号不对，没法知道你说的是哪一章。' }
+  }
+  const index = Number(String(rawIndex).trim())
+  const book = await novel.readBook(ws, id)
+  if (book.ok !== true) return { error: '这本书不在了。回到书架看一眼，可能被移走了。' }
+  const exists = Array.isArray(book.chapters) && book.chapters.some((c) => Number(c.index) === index)
+  if (!exists) {
+    return { error: `这本书没有第 ${index} 章。先翻到真正的那一章再存。` }
+  }
+  return { index }
+}
+
 async function gatherCast(ws, wants) {
   const out = []
   const list = Array.isArray(wants) ? wants.slice(0, 8) : []
@@ -4137,6 +4328,14 @@ function registerInterviewSkill(ctx) {
     name: 'lifecard-novel-writing',
     fallback: '中文小说与长文的写法：先分清用不用人物卡，按传统文学的标准写正文，要连载节奏就切。',
     label: '写作',
+  })
+  // 小说改剧本。「改剧本」按钮背后的提示词在 lib/novel.js 里，这份 skill 是给
+  // 用户在对话里直接说「把这一章改成剧本」用的——两条路走的是同一套规矩。
+  registerBundledSkill(ctx, {
+    dir: 'novel-to-script',
+    name: 'novel-to-script',
+    fallback: '小说改剧本：分场、把叙述换成 △ 动作、把心理换成演得出来的东西、台词按标点分工。',
+    label: '改剧本',
   })
   // 这三份是写作用得上的通用手艺，随包一起发：装插件即等于有，
   // 换台机器不必再单独装一遍。名字与内容都保持原样，方便用户照旧用

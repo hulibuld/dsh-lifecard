@@ -2114,6 +2114,34 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
 }
 
 {
+  // 改成剧本：改出来的那一份要能摆出来、能存、能删。
+  // 槽位按 BookView 里 useState 的次序排：0 书、1 大纲、2 章号、3 正文、12 剧本、13 报告。
+  const BOOK = { ok: true, id: 'demo', data: { title: '长夜' }, chapters: [{ index: 1 }] }
+  const SCRIPT = '第1场\n旧书店·门厅　夜　内\n【出场人物】林小雨\n△ 她站在门里，伞尖滴水。\n林小雨（把伞往里递）说："雨太大了。"'
+  const tree = renderOne('改成剧本（有一份改好的）', seen.get('BookView'), { bookId: 'demo', flash: () => {}, onBack: () => {} },
+    { 0: BOOK, 1: { ok: true, chapters: 1, text: '', theme: '', ending: '' }, 2: 1, 3: '第一章写了一半', 12: SCRIPT, 13: '共 1 场，台词 1 句，动作 1 行。' })
+  const words = textOf(expand(tree))
+  t('有「改成剧本」这一节', words.includes('改成剧本'), words.slice(0, 300))
+  // 正文在 textarea 的 value 里，textOf 取不到，所以认带出来的字数和按钮。
+  t('剧本摆出来了（字数和「重改一份」都出来了）', words.includes('51 字') && words.includes('重改一份'), words.slice(-300))
+  t('说清改出来的是什么', words.includes('能配音') || words.includes('△'), words.slice(-300))
+  t('有存好的按钮', words.includes('存好这份剧本'), words.slice(-300))
+  t('有删掉的按钮', words.includes('删掉这份'), words.slice(-300))
+  t('数出来的结果也摆着', words.includes('共 1 场'), words.slice(-300))
+  t('字数列出来', words.includes('字'), words.slice(-200))
+  // 改剧本这一节自己报错：全页那个 err 在最底下，剧本框本身就三百像素高，
+  // 报错落到屏幕外等于没报。
+  const withErr = renderOne('改成剧本（这一节自己的报错）', seen.get('BookView'), { bookId: 'demo', flash: () => {}, onBack: () => {} },
+    { 0: BOOK, 1: { ok: true, chapters: 1, text: '', theme: '', ending: '' }, 2: 1, 3: '第一章写了一半', 12: SCRIPT, 13: '', 15: '这一章还空着，没什么可改的。' })
+  const errWords = textOf(expand(withErr))
+  t('改剧本这一节的报错就摆在这一节里', errWords.includes('这一章还空着'), errWords.slice(-260))
+  // 哪一章已经改过剧本：章列表上给个标记，不然只有翻进去才知道。
+  const withMark = renderOne('改过剧本的章有标记', seen.get('BookView'), { bookId: 'demo', flash: () => {}, onBack: () => {} },
+    { 0: BOOK, 1: { ok: true, chapters: 1, text: '', theme: '', ending: '' }, 2: 1, 3: '第一章写了一半', 16: [1] })
+  t('改过剧本的那一章有标记', textOf(expand(withMark)).includes('有剧本'), textOf(expand(withMark)).slice(0, 400))
+}
+
+{
   // P1：简历文件读不出来时，以前只有一个永远转的圈。
   const tree = renderOne('简历读不出来（有话说）', seen.get('CareerView'), { flash: () => {}, onBack: () => {} }, { 0: null, 6: '你的简历这一份读不出来' })
   const words = textOf(expand(tree))

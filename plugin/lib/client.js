@@ -1212,6 +1212,10 @@ function LifeCardTab(props) {
   // 首页那几个按钮是「从头开始」的意思：上一次打开的是谁，到这一页就作废。
   // 不这样清，刚看完某人的卡再回首页点「整理 N 份材料」，那一页会默默
   // 还选着刚才那个人。
+  // 书那一屏（BookView）自己知道手头有没有没存的正文和剧本。顶栏的返回和换门
+  // 都在外面这一层，直接切屏的话那一屏就卸载了，谁也来不及问一句——
+  // 人写了一段正文点顶上那个返回，字就没了，屏幕上连个提示都没有。
+  // 所以 BookView 挂载时把「先收好再走」这个函数放在这里，外面切屏前先调它。
   const go = useCallback((next) => {
     // 离开那一屏就把带过去的东西清掉：不留着上一次的「整理谁」「读哪一份材料」，
     // 也不留着「这张建议卡属于谁」。以前 pendingAbout 只写不清——点过一次
@@ -1394,6 +1398,27 @@ function LifeCardTab(props) {
   // 会把后面每一个槽都错开一格。
   const [handoff, setHandoff] = useState(null)
   const [chatsNote, setChatsNote] = useState(null)
+  // 书那一屏（BookView）自己知道手头有没有没存的正文和剧本。顶栏的返回和换门
+  // 都在外面这一层，直接切屏的话那一屏就卸载了，谁也来不及问一句。
+  // 所以 BookView 挂载时把「先收好再走」这个函数放在这里，切屏前先调它。
+  //
+  // 这三个 hook 必须排在 App 所有 hook 的最后：测试（render-all、doors-test）
+  // 是按序号把预置状态摆进 hookStore 的，插在中间会把后面每个槽位都顶歪。
+  const bookFlush = useRef(null)
+  // 手头干净时同步返回 true：切屏不该为了「没东西要存」多等一帧。
+  // 真有没存的东西才返回一个 promise，那时候等一下是对的。
+  const leaveBook = useCallback(() => {
+    const f = bookFlush.current
+    if (typeof f !== 'function') return true
+    return f()
+  }, [])
+  // 顶栏返回、换门都走这里：先请那一屏把没存的收好，收好了再走。
+  const leaveThen = useCallback((next) => {
+    const r = leaveBook()
+    if (r === true) { next(); return }
+    Promise.resolve(r).then((ok) => { if (ok === true) next() }).catch(() => null)
+  }, [leaveBook])
+
   const startInterview = useCallback((opts) => {
     const started = openInterviewSession(opts === undefined || opts === null ? {} : opts)
     const settle = (result) => {
@@ -1636,7 +1661,15 @@ function LifeCardTab(props) {
       // 顶部返回一律当成「回首页」：上次打开的是谁、刚才点的是哪份材料、
       // 看的是哪本世界书，到这里都作废。不这样清，从 A 的卡退回来再点别人的
       // 材料，分析页会默默还认着 A，读出来的东西全记到 A 名下。
-      canBack ? h('button', { className: 'lc-btn ghost sm', onClick: () => { go(VIEWS.home); setError(null); setProposal(null); setActiveWorld(null) }, title: '回到列表', type: 'button' }, h(Icon, { name: 'back', size: 14 })) : null,
+      canBack ? h('button', {
+        className: 'lc-btn ghost sm',
+        onClick: () => {
+          // 先问这一屏有没有没存的东西（书那一屏会自己存）；存不上就留在原地。
+          leaveThen(() => { go(VIEWS.home); setError(null); setProposal(null); setActiveWorld(null) })
+        },
+        title: '回到列表',
+        type: 'button',
+      }, h(Icon, { name: 'back', size: 14 })) : null,
       h('div', { className: 'lc-grow lc-ellipsis' },
         h('div', { className: 'lc-title lc-ellipsis' }, titles[view] ?? 'Life Cards'),
         mode === 'real' && view !== VIEWS.doors
@@ -1651,7 +1684,10 @@ function LifeCardTab(props) {
         ? null
         : h('button', {
             className: 'lc-btn ghost sm',
-            onClick: () => { setView(VIEWS.doors); setError(null); setProposal(null); setActiveWorld(null); setActiveCard(null) },
+            onClick: () => {
+              // 换门也是离开这一屏，一样先把没存的收好。
+              leaveThen(() => { setView(VIEWS.doors); setError(null); setProposal(null); setActiveWorld(null); setActiveCard(null) })
+            },
             title: '换成另一扇门',
             type: 'button',
           }, '换门'),
@@ -1846,6 +1882,7 @@ function LifeCardTab(props) {
         return h(BookView, {
           bookId: String(activeBook?.id ?? ''),
           flash,
+          flushRef: bookFlush,
           onBack: () => { setActiveBook(null); setView(VIEWS.novel) },
         })
       case VIEWS.doctor:
@@ -3401,7 +3438,7 @@ function copyText(text) {
   }
 }
 
-function BookView({ bookId, onBack, flash }) {
+function BookView({ bookId, onBack, flash, flushRef }) {
   const [book, setBook] = useState(null)
   const [outline, setOutline] = useState(null)
   const [chapterIndex, setChapterIndex] = useState(0)
@@ -3415,8 +3452,24 @@ function BookView({ bookId, onBack, flash }) {
   const [outlineText, setOutlineText] = useState('')
   // 这一章的正文有没有还没存下的改动。切章之前必须先处理，否则写的东西会没。
   const [bodyDirty, setBodyDirty] = useState(false)
+  // 「改成剧本」。排在所有 hook 最后：上面那些槽位有测试按序号摆状态，
+  // 插在中间会让它们集体错位。
+  const [scriptText, setScriptText] = useState('')
+  const [scriptReport, setScriptReport] = useState('')
+  // 剧本有没有改了没存的。和正文的 bodyDirty 一个道理：切章之前得拦一下，
+  // 否则人手改的那几场会静静消失，而且没有任何提示。
+  const [scriptDirty, setScriptDirty] = useState(false)
+  // 改剧本这一节的错误单独放：全页那个 err 在最底下，一节剧本三百多像素高，
+  // 报错落在屏幕外，人只会觉得「点了没反应」。
+  const [scriptErr, setScriptErr] = useState(null)
+  // 这本书哪几章已经改出过剧本。后台一直有这个清单（`novel.script.list`），
+  // 界面从来没调过——于是「哪一章改过」只存在于文件夹里。
+  const [scripted, setScripted] = useState([])
+  // 这一章的正文有没有真正读到。读失败（网络、后台报错、文件被占住）时不能让人
+  // 接着在空框里写字再按「存好这一章」——那会把空白写进另一章的文件，一整章原稿就没了。
+  const [chapterBroken, setChapterBroken] = useState(false)
 
-  const load = async (want) => {
+  const load = async (want, opts) => {
     setErr(null)
     try {
       const r = await call('novel.get', { id: bookId })
@@ -3424,19 +3477,145 @@ function BookView({ bookId, onBack, flash }) {
       setBook(r)
       const o = await call('novel.outline.get', { id: bookId })
       if (o?.ok === true) { setOutline(o); setOutlineText(String(o.text ?? '')) }
+      // 哪几章已经改出过剧本（画章列表上的小标记用）。拿不到就算了，不是要紧事。
+      const scripts = await call('novel.script.list', { id: bookId }).catch(() => null)
+      setScripted(scripts?.ok === true && Array.isArray(scripts.scripts)
+        ? scripts.scripts.map((x) => Number(x.index))
+        : [])
       // 默认打开：有章节就打开最后一章，没有就从第一章开始
       const target = Number(want) > 0 ? Number(want) : (r.chapters.length === 0 ? 1 : r.chapters[r.chapters.length - 1].index)
+      // 先翻章再改章号：翻章被拦下时，章号不能已经跑到新的一章去。
+      const opened = await openChapter(target, opts)
+      if (opened === 'error') {
+        // 出错时章号也得跟标题对上：以前这里直接返回、章号停在旧值（初值是 0），
+        // 屏幕上写着「写第 0 章」，点存就被后台当成「接在最后一章后面」，凭空多一章。
+        // 正文没读到，存的动作已经按 chapterBroken 禁掉了。
+        setChapterIndex(target)
+        return
+      }
+      // 被拦下，或者这中间又有人点了别的章：什么都不改。
+      if (opened !== true) return
       setChapterIndex(target)
-      await openChapter(target)
     } catch (e) { setErr(humanizeError(e)) }
+    // 上一本书那份剧本没存上：现在才说，说了才算数。
+    if (carryErr.current !== null) { setErr(String(carryErr.current)); carryErr.current = null }
   }
 
-  const openChapter = async (index) => {
-    setErr(null); setReview(null); setDraft(null)
+  // 剧本改了没存，要走之前先替人存好。
+  //
+  // 这里以前弹的是「回去就没了」，可组件卸载那一刻又偷偷存了一份——弹窗说不要，
+  // 实际存了，人点了「好」以为自己放弃成功，其实没有。现在只剩一种立场：真存。
+  // 存成了说一句「先替你存好了」；存不上才问要不要放弃这一份。
+  const settleScript = async (why) => {
+    if (scriptDirty !== true || scriptText.trim() === '') return true
+    const myBook = bookId
+    const myIndex = chapterIndex
+    const sent = scriptText
+    setBusy('scriptSave'); setScriptErr(null)
+    try {
+      const r = await call('novel.script.save', { id: myBook, index: myIndex, text: sent })
+      if (r?.ok === true) {
+        setScriptDirty(false)
+        setScripted((old) => (old.includes(myIndex) ? old : [...old, myIndex].sort((a, b) => a - b)))
+        flash?.(`第 ${myIndex} 章的剧本先替你存好了`)
+        return true
+      }
+      setScriptErr(r?.error ?? '这一份剧本没存上')
+    } catch (e) { setScriptErr(humanizeError(e)) } finally { setBusy('') }
+    // 存不上：只剩「放弃这一份」和「留下」两条路，问清了再走。
+    const go = typeof window !== 'undefined' && typeof window.confirm === 'function'
+      ? window.confirm(`第 ${myIndex} 章这份剧本没存上。\n\n${why}的话这一份就没了。还走吗？`)
+      : true
+    return go === true
+  }
+
+  // 改剧本也要对号：点了「把这一章改成剧本」之后又翻章、又换书，
+  // 草稿晚回来会落进现在这一章的框里，人一按「存好这份剧本」，
+  // 第 5 章的内容就写成第 6 章的文件。换书之后更糟：A 书的稿子会存成 B 书的。
+  // 所以草稿出发前记下「哪本书、哪一章」，回来对不上就整份丢掉。
+  const scriptTicket = useRef(0)
+
+  // 每翻一次章就加一，回来的东西先对一下号。
+  // 手快连点两章（或者网络慢）时，前一章的剧本会在后一章之后才回来，
+  // 落在框里就成了「标题是第 3 章，剧本是第 2 章的」——这种错对不上账，人只会觉得插件疯了。
+  const chapterTicket = useRef(0)
+  // 框里此刻摆的是第几章、还有没有一章正在读。
+  // 不能用 chapterIndex 判「点的就是我现在这一章」：章号要等读完才前进，
+  // 人点第 2 章、它还在路上时，chapterIndex 还停在旧值（比如 3）。
+  // 这时候再点第 3 章，会被当成「点的是自己这一章」而什么都不做，
+  // 于是框里留着第 2 章的正文、章号写着第 3 章。
+  const loadedRef = useRef(0)
+  const pullingRef = useRef(0)
+
+  /**
+   * 翻到某一章。
+   *
+   * `opts.sameChapter` 是给「刚把这一章存好、要重读一遍」用的：那时候没换章，
+   * 不该弹「剧本还没存，换过去就没了」——人点了「好」，手改的剧本反倒没了。
+   * 带上它就别去动剧本框，剧本跟正文是两份东西，各存各的。
+   *
+   * 返回 true 表示框里已经是这一章；返回 'stale' 表示这中间又有人点了别的章，
+   * 这一次的结果该整份丢掉，调用方也不许再改章号。
+   */
+  const openChapter = async (index, opts) => {
+    const sameChapter = opts !== undefined && opts !== null && opts.sameChapter === true
+    // `settled`：调用方已经把要存的存过了（换书那一段），这里不许再拦一次。
+    // 不然人会看到一个「第 2 章改出来的剧本还没存」的框，说的却是上一本书的章，
+    // 点「取消」也照换不误——那框就是个摆设。
+    const settled = opts !== undefined && opts !== null && opts.settled === true
+    // 改过剧本还没存就切章，得先说一声。同一章重读不算切章。
+    if (settled !== true && sameChapter !== true && (await settleScript('换过去')) !== true) return false
+    const mine = ++chapterTicket.current
+    pullingRef.current = Number(index)
+    // 换章 / 换书了：还在路上的剧本草稿一律作废。
+    scriptTicket.current += 1
+    setErr(null); setReview(null); setDraft(null); setScriptErr(null)
+    if (sameChapter !== true) { setScriptText(''); setScriptReport(''); setScriptDirty(false) }
     try {
       const r = await call('novel.chapter.get', { id: bookId, index })
-      setBody(r?.ok === true ? String(r.body ?? '') : '')
-    } catch (e) { setErr(humanizeError(e)) }
+      if (mine !== chapterTicket.current) return 'stale'
+      if (r?.ok !== true) {
+        // 后台说这一章读不出来（文件被占住、内容坏了）：不能当「这一章是空的」处理。
+        // 当真当成空的话，人会在空框里写一段，再按「存好这一章」，
+        // 存进去的是**这一章**的文件，原来那一份就被盖掉了。
+        // 章号照旧前进——屏幕上的标题得跟点的那一章对上。
+        setBody('')
+        setChapterBroken(true)
+        setErr(String(r?.error ?? '这一章没读出来。'))
+        loadedRef.current = Number(index)
+        pullingRef.current = 0
+        return true
+      }
+      setBody(String(r.body ?? ''))
+      setChapterBroken(false)
+      if (sameChapter === true) return true
+      // 这一章以前改过剧本没有——改过就直接摆出来，不用再问一次。
+      const s = await call('novel.script.get', { id: bookId, index })
+      if (mine !== chapterTicket.current) return 'stale'
+      if (s?.ok === true) {
+        if (String(s.text ?? '').trim() !== '') {
+          setScriptText(String(s.text))
+          setScriptReport(String(s.report ?? ''))
+        }
+      } else {
+        // 剧本读坏了不能当没这回事：框不渲染、章列表还挂着「有剧本」，
+        // 人只会以为自己改的东西没了，而且屏幕上没有一句话。
+        setScriptErr(String(s?.error ?? '这一章的剧本读不出来。'))
+      }
+      setChapterBroken(false)
+      loadedRef.current = Number(index)
+      pullingRef.current = 0
+      return true
+    } catch (e) {
+      if (mine === chapterTicket.current) {
+        pullingRef.current = 0
+        setErr(humanizeError(e))
+        // 正文没读到：把这一章标成「别动」。以前这里直接返回，章号停在旧值，
+        // 人点「存好这一章」就把眼下这个空框写进**另一章**的文件，原稿就没了。
+        setChapterBroken(true)
+      }
+      return 'error'
+    }
   }
 
   // 切章之前先把没存的正文收好。存不上就留在这一章，别让人以为写进去了。
@@ -3452,9 +3631,15 @@ function BookView({ bookId, onBack, flash }) {
   }
 
   const goChapter = async (index) => {
+    // 点的是自己正待着的这一章：不用重读。以前会照样重读一遍，
+    // 手改的剧本会因为一次「换过去」被磁盘上那一份换掉。
+    // 但票号还是要往前走一步：刚才点过别的章、它那份还在路上，
+    // 此刻也该作废——不然它回来照样落进这一章的框。
+    if (Number(index) === Number(loadedRef.current) && pullingRef.current === 0) return
     if ((await keepBody()) !== true) return
+    // 剧本那边没存就被拦下时，章号也不能跟着变——否则标题写着新章、框里还是旧章。
+    if ((await openChapter(index)) !== true) return
     setChapterIndex(index)
-    await openChapter(index)
   }
 
   /**
@@ -3465,22 +3650,143 @@ function BookView({ bookId, onBack, flash }) {
    */
   const removeChapter = async (c) => {
     const n = Number(c?.index ?? 0)
+    // 有剧本的章，确认框里得说清剧本也一起没：那一份是人花了一次 AI 改出来的。
+    const extra = scripted.includes(n)
+      ? '这一章改出来的剧本也一起删。'
+      : ''
     const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
-      ? window.confirm(`把第 ${n} 章删掉？\n\n这一章的正文一起删，删了就真没了。别的章不受影响；大纲里那一行还在，你可以重写。`)
+      ? window.confirm(`把第 ${n} 章删掉？\n\n这一章的正文一起删，删了就真没了。${extra}别的章不受影响；大纲里那一行还在，你可以重写。`)
       : true
     if (ok !== true) return
+    // 删的是**这一章**时，它上面那份没存的剧本才跟着作废。
+    // 删别的章却去清当前章的状态，等于把人家正在写的正文和剧本一起抹了——
+    // 以前就是这样：停在第 2 章写了一大段，顺手删掉第 1 章，第 2 章写的全没了，
+    // 正文连问都没问一句。
+    const deletingCurrent = n === chapterIndex
+    if (deletingCurrent !== true) {
+      // 删别的章：当前章该存的先存好，别让它被下面的重读顺手丢掉。
+      if ((await keepBody()) !== true) return
+      // 剧本也替它存回去。这里不问「走不走」——人没打算走，只是在删别的章；
+      // 问了也只有一个正确答案，反倒把「删第 1 章」这件事拦下来。
+      if (scriptDirty === true && scriptText.trim() !== '') {
+        let saved = false
+        try {
+          const r = await call('novel.script.save', { id: bookId, index: chapterIndex, text: scriptText })
+          if (r?.ok === true) { saved = true; setScriptDirty(false) }
+          else setErr(r?.error ?? '这一章的剧本没存上，先别删')
+        } catch (e) { setErr(humanizeError(e)) }
+        // 存不上就别删：这一删，下面那次重读会把框里东西换掉，手改的就真没了。
+        if (saved !== true) return
+      }
+    }
     setErr(null)
-    setBodyDirty(false)
     try {
       const r = await call('novel.chapter.delete', { id: bookId, index: n })
       if (r?.ok !== true) { setErr(r?.error ?? '这一章没删掉'); return }
+      // 删成功了才清当前章的状态。以前这两行写在删之前：后台一报错就 return，
+      // 清空却已经生效，手写的正文和剧本在屏幕上没了、磁盘上也没存过。
+      if (deletingCurrent === true) {
+        setBodyDirty(false)
+        setScriptText(''); setScriptReport(''); setScriptDirty(false)
+        setScriptErr(null)
+      }
+      setScripted((old) => old.filter((x) => x !== n))
       flash?.(`删掉了第 ${n} 章`)
-      // 重新读一遍这本书：章列表少一条，正文换成还在的那一章。
-      await load(n > 1 ? n - 1 : 0)
+      // 重新读一遍这本书：章列表少一条。
+      // 删的不是当前章时留在原地重读（人可能正写着），删的就是当前章才往前挪。
+      // 挪的时候给 0：让 load 自己落到「现在还存在的最后一章」。
+      // 以前传 n-1，而 n-1 可能刚在上一步被删掉，屏幕就停在一个没有的章号上。
+      if (deletingCurrent === true) await load(0, { sameChapter: false })
+      else await load(chapterIndex, { sameChapter: true })
     } catch (e) { setErr(humanizeError(e)) }
   }
 
-  useEffect(() => { load(0) }, [bookId])
+  // 上一本是哪本。换书时要在下面那个 effect 里认出「这是换了一本」。
+  const lastBookId = useRef('')
+  // 换书时替上一本存剧本，存失败了要报，可紧接着的 load() 会把 err 清掉。
+  // 先存在这里，等 load 读完了再摆到屏幕上。
+  const carryErr = useRef(null)
+  // 换书（从书架再点一本进来）时组件不卸载、只是 bookId 变了：
+  // 上一本改了没存的剧本会留在框里，跟着新书一起显示，看着像这本书的剧本；
+  // 反过来，它也会被静悄悄丢掉。所以换书这一刻先替上一本存回去。
+  // 注意此刻 scriptText / scriptDirty / chapterIndex 还是上一本的值（下面才清），
+  // 正好用得上——晚了就没了。
+  useEffect(() => {
+    const before = lastBookId.current
+    if (before !== '' && before !== bookId) {
+      // 换书了：上一本还在路上的剧本草稿作废，不许它落进新书的框里。
+      scriptTicket.current += 1
+      // 上一本没存的剧本替它存回**原来那本**（不是新这本）。
+      // 存的时候顺手报一下成没成：失败还得让新书那边看得见，
+      // 不然人会以为「点了一下就都存好了」。
+      if (scriptDirty === true && scriptText.trim() !== '') {
+        const oldId = before
+        const oldIndex = chapterIndex
+        const oldText = scriptText
+        // 先把这一刻的「哪本书、哪一章、什么内容」定下来，卸载兜底那份也一起作废：
+        // 不然同一份稿会同时写进上一本和下一本。
+        leaveRef.current = { id: oldId, index: oldIndex, text: oldText, dirty: true, taken: true }
+        call('novel.script.save', { id: oldId, index: oldIndex, text: oldText })
+          .then((r) => {
+            // 提示要能活过紧接着的那次 load（load 开头会清 err）：
+            // 失败时先用一个不会被清掉的位置接着，等读完再摆出来。
+            if (r?.ok === true) flash?.(`上一本书第 ${oldIndex} 章的剧本替你存好了`)
+            else carryErr.current = String(r?.error ?? '上一本书的剧本没存上')
+          })
+          .catch(() => { carryErr.current = '上一本书的剧本没存上' })
+      }
+    }
+    lastBookId.current = String(bookId ?? '')
+    setScriptText(''); setScriptReport(''); setScriptDirty(false)
+    setBody(''); setDraft(null); setReview(null); setBodyDirty(false)
+    load(0, { settled: true })
+  }, [bookId])
+
+  // 离开这一屏时（点顶上那个返回、换门、切到别的页）组件直接卸载，
+  // 没有第二次机会弹窗问「剧本还没存，现在走吗」——上面那个 effect 只在换书时跑。
+  // 所以卸载这一刻自己把没存的剧本收好：人没按「存好这份剧本」，
+  // 不等于想把它丢掉。
+  // `taken` 是给换书那一段用的：那一份已经有人存了，卸载兜底不许再存一遍，
+  // 更不许把 A 书的内容写成 B 书的（id 与 text 配不上对时就是这么串过去的）。
+  const leaveRef = useRef({ id: '', index: 0, text: '', dirty: false, taken: false })
+  leaveRef.current = {
+    id: bookId, index: chapterIndex, text: scriptText, dirty: scriptDirty,
+    // 每帧重写的只是「当前值」，taken 只在换书那一刻被置上；
+    // 置上之后要一直有效到这一帧结束，所以从上一帧继承。
+    taken: leaveRef.current.taken === true && leaveRef.current.id === bookId ? true : false,
+  }
+  // 正文和剧本是两份东西，可离开这一屏时都得收好。以前只兜了剧本：
+  // 写完一段正文点顶上的返回，字就没了，而且屏幕上不会有一句话。
+  const bodyLeaveRef = useRef({ id: '', index: 0, body: '', dirty: false })
+  bodyLeaveRef.current = { id: bookId, index: chapterIndex, body, dirty: bodyDirty }
+  useEffect(() => () => {
+    const now = leaveRef.current
+    if (now.taken !== true && now.dirty === true && String(now.text).trim() !== '') {
+      // 这一份已经没地方报错了（组件都卸载了），只能尽量存住。
+      // 真正的「存不上怎么办」已经在 settleScript 里问过人了。
+      call('novel.script.save', { id: now.id, index: now.index, text: now.text }).catch(() => null)
+    }
+    const nb = bodyLeaveRef.current
+    if (nb.dirty === true && String(nb.body).trim() !== '') {
+      call('novel.chapter.save', { id: nb.id, index: nb.index, body: nb.body }).catch(() => null)
+    }
+  }, [])
+
+  // 外面那一层（顶栏返回、换门）没法知道这一屏手头有没有没存的东西。
+  // 把「先收好再走」放在它给的槽里：切屏前先调，收不上就留在这一屏。
+  useEffect(() => {
+    if (flushRef === undefined || flushRef === null) return
+    flushRef.current = () => {
+      // 什么都没改：同步放行，外面那一层就不用等一帧。
+      if (bodyDirty !== true && scriptDirty !== true) return true
+      return (async () => {
+        const bodyOk = await keepBody()
+        if (bodyOk !== true) return false
+        return settleScript('换到别处')
+      })()
+    }
+    return () => { flushRef.current = null }
+  })
 
   const doPlan = async () => {
     setBusy('plan'); setErr(null)
@@ -3530,7 +3836,8 @@ function BookView({ bookId, onBack, flash }) {
       if (r?.ok !== true) { setErr(r?.error ?? '没存上'); return }
       setBody(merged); setDraft(null); setBodyDirty(false)
       flash?.(`第 ${chapterIndex} 章存好了`)
-      await load(chapterIndex)
+      // 同一章重读：别碰剧本框，也别弹「剧本还没存」。
+      await load(chapterIndex, { sameChapter: true })
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
   }
 
@@ -3541,7 +3848,7 @@ function BookView({ bookId, onBack, flash }) {
       if (r?.ok !== true) { setErr(r?.error ?? '没存上'); return }
       setBodyDirty(false)
       flash?.(`第 ${chapterIndex} 章存好了`)
-      await load(chapterIndex)
+      await load(chapterIndex, { sameChapter: true })
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
   }
 
@@ -3555,6 +3862,119 @@ function BookView({ bookId, onBack, flash }) {
       if (r?.ok !== true) { setErr(r?.error ?? '这次没审成'); return }
       setReview(String(r.review ?? ''))
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  /**
+   * 把这一章改成剧本。
+   *
+   * 改的是**存下来的那一版**：正文有没存的改动先存一次，不然后台改的是旧稿，
+   * 用户盯着屏幕会以为它漏掉了刚写的那几句。
+   */
+  // 连点两下会真发两次（AI 那一侧是要花钱的）。按钮的 disabled 要等一次 await
+  // 之后才置位，同一帧里的两次点击都赶在它前面。所以用一个同步的锁挡。
+  const scriptLock = useRef(false)
+
+  const doScript = async () => {
+    if (scriptLock.current === true) return
+    if (body.trim() === '') { setScriptErr('这一章还空着，没什么可改的。'); return }
+    // 框里已经有一份、而且改过没存：点「重改一份」会把它整份盖掉。
+    // 不先问一句，人点错一次就是白改。
+    if (scriptDirty === true && scriptText.trim() !== '') {
+      const go = typeof window !== 'undefined' && typeof window.confirm === 'function'
+        ? window.confirm(`第 ${chapterIndex} 章这份剧本改了还没存，重改一次会把它整份盖掉。\n\n继续吗？`)
+        : true
+      if (go !== true) return
+    }
+    scriptLock.current = true
+    if ((await keepBody()) !== true) { scriptLock.current = false; return }
+    // 出发前记下是哪本书的哪一章：回来要是对不上，说明人已经翻到别处了。
+    const wantBook = bookId
+    const wantIndex = chapterIndex
+    const mine = ++scriptTicket.current
+    setBusy('script'); setErr(null); setScriptErr(null)
+    try {
+      const r = await call('novel.script.draft', { id: wantBook, index: wantIndex })
+      if (mine !== scriptTicket.current) return
+      if (r?.ok !== true) { setScriptErr(r?.error ?? '这次没改成。再点一次试试。'); return }
+      setScriptText(String(r.text ?? ''))
+      setScriptReport(String(r.report ?? ''))
+      // 改出来但还没落盘，所以算「没存」：这时候切章要拦。
+      setScriptDirty(true)
+    } catch (e) { if (mine === scriptTicket.current) setScriptErr(humanizeError(e)) } finally {
+      // 无条件复位。以前这里要票号还对得上才复位：人趁 AI 还在想的时候翻了章，
+      // 票号一过就永远不复位，整页五个按钮从此全禁用，只有退出这本书才恢复。
+      scriptLock.current = false
+      setBusy('')
+    }
+  }
+
+  const saveScript = async () => {
+    if (scriptLock.current === true) return
+    if (scriptText.trim() === '') { setScriptErr('剧本还是空的，没什么可存的。'); return }
+    // 记下这一次到底存的是哪一份：回来时框里的字已经不是这一份了，
+    // 就不能把「还没存」这个标记清掉，否则那几个字会被当成已存、然后默默丢掉。
+    const sent = scriptText
+    // 还要记下是哪本书的哪一章：人可能趁这次保存还在路上就翻了章、换了书。
+    // 那时候这个回包属于上一章，一个字都不能往现在这一章身上贴
+    // （以前会清掉现在这一章的「还没存」、把上一章的报告摆到这一章里）。
+    const myBook = bookId
+    const myIndex = chapterIndex
+    scriptLock.current = true
+    setBusy('scriptSave'); setErr(null); setScriptErr(null)
+    try {
+      const r = await call('novel.script.save', { id: myBook, index: myIndex, text: sent })
+      if (myBook !== bookId || myIndex !== chapterIndex) return
+      if (r?.ok !== true) { setScriptErr(r?.error ?? '没存上。这一份还在框里，再点一次就行。'); return }
+      setScriptReport(String(r.report ?? ''))
+      // 章列表上那个「有剧本」的小标记：存好之后立刻挂上，
+      // 不然得退出这本书再进来才看得见，人会以为自己没存上。
+      setScripted((old) => (old.includes(myIndex) ? old : [...old, myIndex].sort((a, b) => a - b)))
+      if (scriptText === sent) {
+        setScriptDirty(false)
+        flash?.(`第 ${myIndex} 章的剧本存好了`)
+      } else {
+        // 存的过程中又改了：这一版还没存，标记留着，按钮上说出来。
+        setScriptDirty(true)
+        flash?.('存好了。存的时候你又改了，新改的这一版还没存')
+      }
+    } catch (e) { if (myBook === bookId && myIndex === chapterIndex) setScriptErr(humanizeError(e)) } finally {
+      scriptLock.current = false
+      setBusy('')
+    }
+  }
+
+  /**
+   * 删掉这一章的剧本。
+   *
+   * 只删改编出来的那份，章节正文一点不动——所以这里说的「删」和删章不是一回事，
+   * 提示语里要把这件事说清，否则有人会以为连这一章一起删了。
+   */
+  const removeScript = async () => {
+    if (scriptLock.current === true) return
+    const myIndex = chapterIndex
+    // 手改过还没存的部分会跟着一起没，这句得说在确认框里。
+    const unsaved = scriptDirty === true && scriptText.trim() !== ''
+      ? '\n\n框里手改过、还没存的那部分也一起没。'
+      : ''
+    const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
+      ? window.confirm(`把第 ${myIndex} 章改出来的剧本删掉？\n\n只删这份剧本，小说正文不动。想再要一份，可以重新改一次。${unsaved}`)
+      : true
+    if (ok !== true) return
+    const myBook = bookId
+    scriptLock.current = true
+    setBusy('scriptDelete'); setErr(null); setScriptErr(null)
+    try {
+      const r = await call('novel.script.delete', { id: myBook, index: myIndex })
+      // 这一回包只属于那一章：人要是在等的时候翻到别处，
+      // 现在框里的东西是那一章的新内容，一个字都不能清。
+      if (myBook !== bookId || myIndex !== chapterIndex) return
+      if (r?.ok !== true) { setScriptErr(r?.error ?? '这份剧本没删掉'); return }
+      setScriptText(''); setScriptReport(''); setScriptDirty(false)
+      setScripted((old) => old.filter((n) => n !== myIndex))
+      flash?.(`删掉了第 ${myIndex} 章的剧本`)
+    } catch (e) {
+      if (myBook === bookId && myIndex === chapterIndex) setScriptErr(humanizeError(e))
+    } finally { scriptLock.current = false; setBusy('') }
   }
 
   if (book === null) {
@@ -3571,7 +3991,13 @@ function BookView({ bookId, onBack, flash }) {
 
   return h('div', { className: 'lc-pad lc-stack', style: { gap: 12 } },
     h('div', { className: 'lc-row' },
-      h(Btn, { size: 'sm', icon: 'back', onClick: async () => { if ((await keepBody()) === true) onBack() } }, '回书架'),
+      h(Btn, { size: 'sm', icon: 'back', onClick: async () => {
+        // 先替人存，存不上才问「还走吗」。以前这里是「回去就没了」+ 卸载时偷偷存，
+        // 说的话和做的事对不上。
+        if ((await keepBody()) !== true) return
+        if ((await settleScript('回去')) !== true) return
+        onBack()
+      } }, '回书架'),
       h('div', { className: 'lc-grow lc-ellipsis', style: { fontWeight: 700, fontSize: 16.5 } }, `《${title}》`),
       h('span', { className: 'lc-meta' }, `${chapters.length} 章`),
     ),
@@ -3635,6 +4061,10 @@ function BookView({ bookId, onBack, flash }) {
                 tone: Number(c.index) === Number(chapterIndex) ? 'primary' : undefined,
                 onClick: () => { goChapter(Number(c.index)) },
               }, `第 ${c.index} 章${String(c.title ?? '').trim() === '' ? '' : ` · ${String(c.title).slice(0, 16)}`}`),
+              // 这一章改过剧本：给一个小标记。不然只有翻进去才知道自己改没改过。
+              scripted.includes(Number(c.index))
+                ? h('span', { className: 'lc-meta', title: '这一章已经有一份剧本' }, '有剧本')
+                : null,
               h('div', { className: 'lc-grow' }),
               h(Btn, { size: 'sm', ghost: true, icon: 'trash', onClick: () => removeChapter(c) }, '删掉这一章'),
             )),
@@ -3681,18 +4111,29 @@ function BookView({ bookId, onBack, flash }) {
     h('div', { className: 'lc-sec' },
       h('div', { className: 'lc-row' },
         h('div', { className: 'lc-grow' }, h('span', { style: { fontWeight: 650 } }, '正文')),
-        h('span', { className: 'lc-meta' }, `${body.length} 字`),
+        // 正文改了没存也得说出来。剧本那边一直有这行标记，正文没有：
+        // 人写完一段直接去点顶上的返回，屏幕上没有任何东西拦过他一眼。
+        h('span', { className: 'lc-meta' },
+          bodyDirty ? `${body.length} 字 · 还没存` : `${body.length} 字`),
       ),
+      // 这一章的正文没读到（后台报错、文件被占住）：框锁成只读，并当场说清。
+      // 让它能改的话，人会在空框里写一段，再按「存好这一章」，
+      // 存进去的是**另一章**的文件，那一章的原稿就没了。
+      chapterBroken === true
+        ? h(Note, { tone: 'err', icon: 'warning' },
+            '这一章没读出来，所以先锁住了。退出这本书再进来一次；还是不行，就用访达看一眼那个文件夹还在不在。')
+        : null,
       h('textarea', {
         className: 'lc-textarea',
         value: body,
         spellCheck: false,
+        readOnly: chapterBroken === true,
         placeholder: '这一章还空着。让 AI 写一段，或者自己动手。',
         style: { minHeight: 260, marginTop: 6, lineHeight: 1.85 },
         onChange: (e) => { setBody(e.target.value); setBodyDirty(true) },
       }),
       h('div', { className: 'lc-row' },
-        h(Btn, { size: 'sm', tone: 'primary', icon: 'check', disabled: busy !== '', onClick: saveBody }, busy === 'save' ? '正在存…' : '存好这一章'),
+        h(Btn, { size: 'sm', tone: 'primary', icon: 'check', disabled: busy !== '' || chapterBroken === true, onClick: saveBody }, busy === 'save' ? '正在存…' : '存好这一章'),
         h(Btn, { size: 'sm', icon: 'doctor', disabled: busy !== '' || body.trim() === '', onClick: doReview },
           busy === 'review' ? '正在挑毛病…' : '挑挑毛病'),
         h('div', { className: 'lc-grow' }),
@@ -3707,6 +4148,67 @@ function BookView({ bookId, onBack, flash }) {
             h(Note, { tone: 'warn', icon: 'warning' }, '它挑出来的问题（不是夸奖，也不用全听）'),
             h('div', { style: { whiteSpace: 'pre-wrap', lineHeight: 1.8, fontSize: 14 } }, review),
           ),
+    ),
+
+    // ── 改成剧本 ──
+    // 用户丢来一份《小说改剧本》，要的就是这一件事：章写完了，能不能变成能拍的东西。
+    // 放在正文下面而不是单独一屏：改剧本看的永远是「这一章」，跟正文分开会让人
+    // 在两屏之间来回确认自己改的是哪一章。
+    h('div', { className: 'lc-sec' },
+      h('div', { className: 'lc-row' },
+        h('div', { className: 'lc-grow' }, h('span', { style: { fontWeight: 650 } }, '改成剧本')),
+        h(Btn, { size: 'sm', tone: 'analyze', icon: 'spark', disabled: busy !== '' || body.trim() === '' || chapterBroken === true, onClick: doScript },
+          busy === 'script' ? '正在改…' : (scriptText.trim() === '' ? '把这一章改成剧本' : '重改一份')),
+      ),
+      h('div', { className: 'lc-meta', style: { marginTop: 4, lineHeight: 1.7 } },
+        // 先说「不会动正文」：人第一眼最怕的是自己的小说被改掉。
+        '只读这一章的正文，小说一个字都不动；改出来的剧本单独存一份。',
+        h('br'),
+        '改出来的是能配音、能拍的剧本：切成一场一场，叙述变成 △ 动作，人物的话变成台词。',
+        h('br'),
+        '小说里那些拍不出来的东西（他心里一沉、命运的齿轮），改的时候会被丢下。'),
+      scriptReport === ''
+        ? null
+        : h('div', {
+            className: 'lc-meta',
+            style: {
+              marginTop: 6, whiteSpace: 'pre-wrap', lineHeight: 1.8,
+              padding: '8px 10px', borderRadius: 8, background: 'var(--lc-analyze-soft)',
+            },
+          }, scriptReport),
+      // 框里有字、或者改过还没存、或者有报告——都得把框和按钮摆出来。
+      // 以前只判「有字」：人把框里的字全删掉，存/删两个按钮跟着一起消失，
+      // 想清空清不掉、想删也删不了，还以为点了没反应。
+      scriptText === '' && scriptDirty !== true && scriptReport === ''
+        ? null
+        : h('div', { className: 'lc-stack', style: { marginTop: 6 } },
+            h('textarea', {
+              className: 'lc-textarea',
+              value: scriptText,
+              spellCheck: false,
+              // 正在存 / 正在重改 / 正在删的时候都不让改：
+              // 改了的字会在回包那一刻被当成「已存」清掉标记，或者被 AI 那一版整份盖掉。
+              readOnly: busy === 'scriptSave' || busy === 'script' || busy === 'scriptDelete',
+              style: { minHeight: 300, lineHeight: 1.8 },
+              onChange: (e) => { setScriptText(e.target.value); setScriptDirty(true) },
+            }),
+            h('div', { className: 'lc-row' },
+              h(Btn, { size: 'sm', tone: 'primary', icon: 'check', disabled: busy !== '' || scriptText.trim() === '', onClick: saveScript },
+                busy === 'scriptSave' ? '正在存…' : '存好这份剧本'),
+              // 「删掉这份」写全：不写清是剧本，人会以为删的是小说正文。
+              h(Btn, { size: 'sm', ghost: true, icon: 'trash', disabled: busy !== '', onClick: removeScript }, '删掉这份剧本'),
+              h('div', { className: 'lc-grow' }),
+              // 字数去掉空白再数：报告里、存好之后的回执里都是这个口径，
+              // 这里多算的空格和换行只会让人以为「存完少了几十个字」。
+              h('span', { className: 'lc-meta' },
+                scriptDirty
+                  ? `${scriptText.replace(/\s/g, '').length} 字 · 还没存`
+                  : `${scriptText.replace(/\s/g, '').length} 字`),
+            ),
+          ),
+      // 这一节的报错就摆在这一节里。放全页最底下等于没报——
+      // 剧本框本身就三百像素高，报错落到屏幕外，人只会觉得「点了没反应」。
+      scriptErr === null ? null : h(Note, { tone: 'err', icon: 'warning' }, scriptErr),
     ),
 
     err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
@@ -7341,6 +7843,9 @@ const inject = ['slots']
 		// 测试专用口子：这两条路要等宿主服务就绪（ctx.inject）才分得清，
 		// 假宿主里造不出 inject，所以允许测试直接把两个服务塞进来。
 		exports.__openInterviewSession = openInterviewSession;
+		// 测试专用口子：写小说那一页只有从根部点进去才会出现，而它的换书逻辑
+		// （bookId 变了但组件不卸载）在假根部里绕太远，直接渲染这个组件最省事。
+		exports.__BookView = BookView;
 		exports.__setHostServices = (remote, ui) => {
 			REMOTE_SESSION = remote === undefined ? null : remote;
 			UI_WORKSPACE = ui === undefined ? null : ui;
