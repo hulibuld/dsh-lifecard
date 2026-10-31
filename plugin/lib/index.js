@@ -3290,6 +3290,82 @@ function buildApi(ctx, workspace, config, options) {
       return { ok: true, target, text: String(called.text ?? '').trim() }
     },
 
+    /**
+     * 从一张人物卡里把「能写进简历的东西」摘出来。
+     *
+     * 只摘不写：这一趟不碰简历文件。用户先看见摘了什么、来自哪一句，
+     * 自己划掉不要的，再点一次才并进去。模型这一步只许抄原文，
+     * 每条都要过逐字比对（捡不了就整条丢掉，不悄悄放宽）。
+     */
+    'career.mine': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
+      const wanted = String(body?.card ?? '').trim()
+      if (wanted === '') return { ok: false, error: '先挑一张卡。挑好我才能从里面往出摘。' }
+      const rel = await store.findCardByRelOrId(ws, wanted)
+      if (rel === null || rel === undefined) return { ok: false, error: `没找到「${wanted}」这张卡。` }
+      const card = await store.readCard(ws, rel)
+      if (card.ok !== true) return { ok: false, error: card.error ?? '这张卡读不出来。' }
+      // 卡的正文才是材料。只拿 name 去问，模型只能靠猜。
+      const text = String(card.text ?? '').trim()
+      if (text === '') return { ok: false, error: '这张卡还是空的，里面没有能摘的东西。' }
+      const name = String(card.data?.name ?? '').trim()
+      const built = career.buildMinePrompt({ cardText: text, name })
+      const called = await callModel(ctx, { system: built.system, user: built.user, model: body?.model })
+      if (called.ok !== true) return { ok: false, error: `这次没摘出来：${called.error ?? '过一会儿再试一次'}` }
+      const parsed = extractJson(called.text)
+      if (parsed === null) return { ok: false, error: '这次回来的东西看不明白，再点一次试试。' }
+      const raw = Array.isArray(parsed?.items) ? parsed.items : []
+      // 材料表：材料名要和模型写的 evidence.material 对得上，这里只有一份，
+      // 所以名字就叫这个（模型写全路径也认，verifyQuote 两头都能对上）。
+      const materials = { [rel]: text }
+      const kept = []
+      const dropped = []
+      for (const one of raw) {
+        if (one === null || typeof one !== 'object') continue
+        const slot = String(one.slot ?? '').trim()
+        const line = String(one.text ?? '').trim()
+        const quote = String(one.quote ?? '').trim()
+        if (!career.MINE_SLOTS.includes(slot) || line === '') { dropped.push({ text: line, why: '这一条没说清放到哪儿' }); continue }
+        const check = core.verifyQuote({ evidence: { material: rel, quote } }, materials)
+        if (check.ok !== true) { dropped.push({ text: line, why: check.reason ?? '原文里找不到这一句' }); continue }
+        kept.push({ slot, text: line, quote, line: check.line })
+      }
+      return {
+        ok: true,
+        card: { id: String(card.data?.id ?? ''), name, path: rel },
+        groups: career.groupMined(kept),
+        items: kept,
+        dropped,
+        labels: career.MINE_SLOT_LABELS,
+      }
+    },
+
+    /**
+     * 把挑中的几条并进简历。只往后加，不改用户自己写的那几行。
+     *
+     * 为什么不在这里再调一次模型：摘出来的那一句就是要写进去的那一句。
+     * 再让它「润色一下」，就会多出没发生过的细节。
+     */
+    'career.merge': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
+      const rows = Array.isArray(body?.items) ? body.items : []
+      const items = rows
+        .map((one) => ({
+          slot: String(one?.slot ?? '').trim(),
+          text: String(one?.text ?? '').trim(),
+        }))
+        .filter((one) => career.MINE_SLOTS.includes(one.slot) && one.text !== '')
+      if (items.length === 0) return { ok: false, error: '一条都没挑，那就没东西可并。' }
+      const profile = await career.readProfile(ws)
+      if (profile.ok !== true) return profile
+      const mined = career.groupMined(items)
+      const merged = career.mergeProfile(profile.sections ?? {}, mined)
+      if (merged.added.length === 0) return { ok: true, added: 0, profile: merged.profile, note: '这几条简历里本来就有，没重复加。' }
+      const saved = await career.writeProfile(ws, { ...(profile.data ?? {}), ...merged.profile })
+      if (saved.ok !== true) return saved
+      return { ok: true, added: merged.added.length, profile: merged.profile, path: saved.path }
+    },
+
     /** 看差距：目标要求的 vs 你现在有的。 */
     'career.gap': async (body) => {
       const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')

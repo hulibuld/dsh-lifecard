@@ -2150,6 +2150,39 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   const tree = renderOne('简历读不出来（有话说）', seen.get('CareerView'), { flash: () => {}, onBack: () => {} }, { 0: null, 6: '你的简历这一份读不出来' })
   const words = textOf(expand(tree))
   t('简历读不出来时说清楚', words.includes('读不出来'), words.slice(0, 300))
+  // 从卡里读那一段：没有卡时不能只给一个空下拉（点了没反应等于坏）。
+  const noCards = renderOne('简历与规划（一张卡都还没有）', seen.get('CareerView'), { flash: () => {}, cards: [], onOpenCard: () => {}, onBack: () => {} },
+    { 0: { 基本情况: '', 学过什么: '', 做过什么: '', 会用哪些工具: '', 想去哪: '', 还差什么: '' }, 7: false })
+  const noCardWords = textOf(expand(noCards))
+  t('一张卡都没有时说得下去', noCardWords.includes('现在还没有卡'), noCardWords.slice(0, 400))
+  t('一张卡都没有时不摆空下拉', !noCardWords.includes('挑一张卡'), noCardWords.slice(0, 400))
+
+  const withCards = renderOne('简历与规划（有卡可挑）', seen.get('CareerView'), { flash: () => {}, cards: [{ id: 'lin', name: '林知远', relation: '同学', path: 'people/lin.card.md' }], onOpenCard: () => {}, onBack: () => {} },
+    { 0: { 基本情况: '', 学过什么: '', 做过什么: '', 会用哪些工具: '', 想去哪: '', 还差什么: '' }, 7: false })
+  const cardWords = textOf(expand(withCards))
+  t('有卡时可以挑', cardWords.includes('挑一张卡') && cardWords.includes('读读看'), cardWords.slice(0, 400))
+  t('说清摘的是原话', cardWords.includes('原话'), cardWords.slice(0, 600))
+
+  // 摘完那一段：勾掉的要看得出来，并进去的按钮在下面。
+  const MINE = {
+    ok: true,
+    card: { id: 'lin', name: '林知远', path: 'people/lin.card.md' },
+    items: [
+      { slot: 'work', text: '在校刊做编辑，做了两年', quote: '在校刊做编辑' },
+      { slot: 'education', text: '大四', quote: '大四' },
+    ],
+    groups: { education: ['大四'], work: ['在校刊做编辑，做了两年'], skills: [], want: [] },
+    dropped: [{ text: '出版过一本诗集', why: '引文在材料里找不到逐字对应（可能是模型补的）' }],
+    labels: { education: '学校与课程', work: '做过的事', skills: '会用的工具', want: '想去哪' },
+  }
+  const minedTree = renderOne('简历与规划（摘出来了）', seen.get('CareerView'), { flash: () => {}, cards: [{ id: 'lin', name: '林知远', path: 'people/lin.card.md' }], onOpenCard: () => {}, onBack: () => {} },
+    { 0: { 基本情况: '', 学过什么: '', 做过什么: '', 会用哪些工具: '', 想去哪: '', 还差什么: '' }, 7: false, 8: 'people/lin.card.md', 9: MINE, 10: { [['work', '在校刊做编辑，做了两年'].join('\u0000')]: true, [['education', '大四'].join('\u0000')]: true } })
+  const minedWords = textOf(expand(minedTree))
+  t('摘出来的摆出来了', minedWords.includes('在校刊做编辑，做了两年'), minedWords.slice(0, 600))
+  t('每条带着原文', minedWords.includes('原文：在校刊做编辑'), minedWords.slice(0, 800))
+  t('格子名说人话', minedWords.includes('做过的事'), minedWords.slice(0, 800))
+  t('被拦下的也说一句', minedWords.includes('没敢用'), minedWords.slice(0, 900))
+  t('有并进去的按钮', minedWords.includes('把勾着的并进简历'), minedWords.slice(0, 900))
   t('给一个「再试一次」', words.includes('再试一次'), words.slice(0, 300))
 }
 

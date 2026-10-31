@@ -1964,7 +1964,7 @@ function LifeCardTab(props) {
           onTalk: (name) => startInterview({ about: name, mode }),
         })
       case VIEWS.career:
-        return h(CareerView, { flash, onBack: () => setView(VIEWS.home) })
+        return h(CareerView, { flash, cards: listing?.cards ?? [], onOpenCard: openCard, onBack: () => setView(VIEWS.home) })
       case VIEWS.jobs:
         return h(JobsView, { onBack: () => setView(VIEWS.home), flash })
       default:
@@ -3770,7 +3770,12 @@ function cutName(name, n) {
  * 简历这东西最怕 AI 编。先把真实情况填进去，AI 只做整理和措辞，
  * 不编经历——不然投出去被问一句就露了。
  */
-function CareerView({ onBack, flash }) {
+/** 一条摘抄的身份：格子加文字。勾选表拿它当键。 */
+function oneKey(one) {
+  return `${String(one?.slot ?? '')}\u0000${String(one?.text ?? '')}`
+}
+
+function CareerView({ onBack, flash, cards, onOpenCard }) {
   const [profile, setProfile] = useState(null)
   const [target, setTarget] = useState('')
   const [goal, setGoal] = useState('')
@@ -3779,6 +3784,11 @@ function CareerView({ onBack, flash }) {
   const [busy, setBusy] = useState('')
   const [err, setErr] = useState(null)
   const [dirty, setDirty] = useState(false)
+  // 从卡里读这一段：pick 是挑中的那张卡的 id；mine 是摘出来的结果；
+  // picked 是用户勾掉了哪几条（默认全勾）。
+  const [pick, setPick] = useState('')
+  const [mine, setMine] = useState(null)
+  const [picked, setPicked] = useState({})
 
   /** 把读回来的东西摆到界面上。读不出来就照实说，别让它只停在转圈上。 */
   const applyRead = (r) => {
@@ -3834,6 +3844,43 @@ function CareerView({ onBack, flash }) {
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
   }
 
+  /**
+   * 从一张卡里往出摘。
+   *
+   * 只摘、不写。摘完先摆出来，用户自己划掉不要的，再点一次才并进简历——
+   * 卡是「这个人是谁」，简历是「他做过什么」，这两件事不能一步跨过去。
+   */
+  const mineFrom = async () => {
+    const want = String(pick ?? '').trim()
+    if (want === '') { setErr('先挑一张卡。'); return }
+    setBusy('mine'); setErr(null); setMine(null)
+    try {
+      const r = await call('career.mine', { card: want })
+      if (r?.ok !== true) { setErr(r?.error ?? '没摘出来'); return }
+      // 默认全勾：摘出来的是从他自己的卡里抄的，错也错不到哪去；
+      // 真不想要的那条，点一下就去掉了。
+      const all = {}
+      for (const one of r.items ?? []) all[oneKey(one)] = true
+      setPicked(all)
+      setMine(r)
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  /** 把勾着的几条并进简历，然后重读一遍——界面上的数和磁盘上的要是同一份。 */
+  const mergePicked = async () => {
+    const rows = (mine?.items ?? []).filter((one) => picked[oneKey(one)] === true)
+    if (rows.length === 0) { setErr('一条都没勾，那就没东西可并。'); return }
+    setBusy('merge'); setErr(null)
+    try {
+      const r = await call('career.merge', { items: rows.map((one) => ({ slot: one.slot, text: one.text })) })
+      if (r?.ok !== true) { setErr(r?.error ?? '没并进去'); return }
+      setProfile(buildCareerForm(r.profile ?? {}))
+      setDirty(false)
+      setMine(null)
+      flash?.(r.added === 0 ? (r.note ?? '这几条本来就有') : `并进去 ${r.added} 条`)
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
   // 先看有没有出错：出错的渲染在下面（要 profile 读出来才轮得到），
   // 所以这里必须自己先把错说出来，否则用户看到的是一辈子转圈。
   if (profile === null) {
@@ -3872,6 +3919,58 @@ function CareerView({ onBack, flash }) {
       field('会用哪些工具', '会用哪些工具（一行一个）', 2, 'Word\n剪映'),
       field('想去哪', '想去哪', 3, '公司加岗位，或者学校加专业。写具体一点。'),
       field('还差什么', '你自己觉得还差什么（一行一条）', 3, '六级还没过\n没写过正式的报告'),
+    ),
+
+    // 「从卡里读」放在六格表单下面、「让 AI 帮忙」上面：
+    // 它是「往这六格里添东西」，不是让 AI 代写。顺序反了人会以为
+    // 必须先有卡才能写简历——其实照样能手填。
+    h('div', { className: 'lc-sec lc-stack' },
+      h('div', { className: 'lc-fhint' }, '从一张卡里读'),
+      h('div', { className: 'lc-meta' }, '读过的人、写过的日记要是已经攒成一张卡，可以让它把里面写过的事摘出来。摘的就是原话，你自己划。'),
+      (cards ?? []).length === 0
+        ? h('div', { className: 'lc-meta' }, '现在还没有卡。可以先去建一张，也可以就在上面自己填。')
+        : h('div', { className: 'lc-row' },
+            h('select', {
+              className: 'lc-select', value: pick, style: { flex: 1, minWidth: 0 },
+              onChange: (e) => { setPick(e.target.value); setMine(null); setErr(null) },
+            },
+              h('option', { value: '' }, '挑一张卡'),
+              (cards ?? []).map((c) => h('option', { key: String(c.path ?? c.id ?? c.name), value: String(c.path ?? c.id ?? '') },
+                `${String(c.name ?? '（还没起名字）')}${c.relation ? ` · ${c.relation}` : ''}`)),
+            ),
+            h(Btn, { size: 'sm', icon: 'spark', disabled: busy !== '' || pick === '', onClick: mineFrom },
+              busy === 'mine' ? '读着…' : '读读看'),
+          ),
+      mine === null ? null : h('div', { className: 'lc-stack' },
+        h('div', { className: 'lc-fhint' }, `从「${mine.card?.name || '这张卡'}」里摘出来这些。不想要的点一下去掉。`),
+        (mine.items ?? []).length === 0
+          ? h(Note, { tone: 'warn', icon: 'warning' }, '这张卡里没有能直接写进简历的事。也许它记的是这个人是什么样，不是他做过什么——那就自己填。')
+          : h('div', { className: 'lc-stack', style: { gap: 6 } },
+              (mine.items ?? []).map((one) => {
+                const key = oneKey(one)
+                const on = picked[key] === true
+                return h('div', {
+                  key, className: 'lc-opt', role: 'button',
+                  'data-picked': on ? 'yes' : 'no',
+                  style: on ? undefined : { opacity: 0.45 },
+                  onClick: () => setPicked({ ...picked, [key]: !on }),
+                },
+                  h('div', { className: 'lc-row', style: { alignItems: 'baseline', gap: 8 } },
+                    h('div', { className: 'lc-tag' }, (mine.labels ?? {})[one.slot] ?? one.slot),
+                    h('div', { className: 'lc-grow' }, one.text),
+                  ),
+                  h('div', { className: 'lc-quote' }, `原文：${one.quote}`),
+                )
+              }),
+            ),
+        (mine.dropped ?? []).length === 0 ? null : h('div', { className: 'lc-meta' },
+          `还有 ${mine.dropped.length} 条没敢用，因为原文里找不到那一句，或者没说清该放哪儿。`),
+        (mine.items ?? []).length === 0 ? null : h('div', { className: 'lc-row' },
+          h(Btn, { tone: 'primary', disabled: busy !== '', onClick: mergePicked },
+            busy === 'merge' ? '并着…' : '把勾着的并进简历'),
+          h(Btn, { size: 'sm', disabled: busy !== '', onClick: () => { setMine(null); setErr(null) } }, '不要了'),
+        ),
+      ),
     ),
 
     h('div', { className: 'lc-sec lc-stack' },

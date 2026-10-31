@@ -332,6 +332,99 @@ export function buildResumePrompt({ profile, target } = {}) {
   return { system, user }
 }
 
+/**
+ * 从一张人物卡的正文里把「能写进简历的东西」掏出来。
+ *
+ * 为什么不让模型直接读卡：卡是「这个人是谁」，简历是「他做过什么」。
+ * 模型一步跨过去，最容易做的事就是把卡的自我介绍改写成一条条经历——
+ * 读起来很像简历，其实一个字经历都没有。所以拆成两步：
+ *   第一步 只许摘抄。材料是卡的正文，每条都要带原文（有逐字比对兜着）。
+ *   第二步 才让模型照抄下来的东西组织成简历。
+ * 中间这一步用户看得见：摘了什么、来自哪一句，他可以一条条划掉。
+ */
+
+/** 摘抄那一步的提示词。只许抄，不许写。 */
+export function buildMinePrompt({ cardText, name } = {}) {
+  const who = String(name ?? '').trim()
+  const system = [
+    '你在帮人从一张人物记录里往外掏「能写进简历的事实」。',
+    '',
+    '只做一件事：把原文里确实写着的事实摘出来。',
+    '- 每条都必须是原文里能找到的一句话，一字不改地放进 quote。',
+    '- 不要改写，不要合并两句，不要替他把「喜欢看书」升格成「阅读量大」。',
+    '- 不要写任何评价、能力判断、性格描述。原文没写的，不要有。',
+    '- 一条事实只能放进一个格子。放不进去就不摘。',
+    '',
+    '四个格子：',
+    '- education：学校、专业、年级、课程、成绩这类。',
+    '- work：做过的事。有时间的把时间一起摘进来。',
+    '- skills：会用哪些工具、会做什么手艺。',
+    '- want：他明确写了自己想去哪、想做什么。',
+    '',
+    '输出只有一个 JSON 对象，不要解释，不要 Markdown 围栏：',
+    '{"items":[{"slot":"work","text":"摘出来的那一句","quote":"材料里逐字的一句"}]}',
+    '摘不出来就给 {"items":[]}。宁可少，不要凑。',
+  ].join('\n')
+
+  const user = [
+    who === '' ? '下面是这张卡的正文：' : `下面是「${who}」这张卡的正文：`,
+    '',
+    String(cardText ?? '').trim() || '（这张卡还是空的。）',
+    '',
+    '把里面能写进简历的事实摘出来。原话摘，不要改写。',
+  ].join('\n')
+
+  return { system, user }
+}
+
+/** 四个格子各自对应简历里哪一个小节。 */
+export const MINE_SLOTS = ['education', 'work', 'skills', 'want']
+
+/** 格子名说给人听的说法。 */
+export const MINE_SLOT_LABELS = {
+  education: '学校与课程',
+  work: '做过的事',
+  skills: '会用的工具',
+  want: '想去哪',
+}
+
+/** 把摘出来的条目按格子归好，每格一行一条。 */
+export function groupMined(items) {
+  const out = { education: [], work: [], skills: [], want: [] }
+  for (const one of Array.isArray(items) ? items : []) {
+    const slot = String(one?.slot ?? '').trim()
+    const text = String(one?.text ?? '').trim()
+    if (!MINE_SLOTS.includes(slot) || text === '') continue
+    if (out[slot].includes(text)) continue
+    out[slot].push(text)
+  }
+  return out
+}
+
+/**
+ * 把摘出来的东西并进现有简历。
+ *
+ * 只往后加，不改原来写着的：用户自己填的句子比模型摘的更准，
+ * 而且他可能已经改过一遍了。
+ */
+export function mergeProfile(profile, mined) {
+  const next = { ...(profile ?? {}) }
+  const added = []
+  const table = [['education', '学过什么'], ['work', '做过什么'], ['skills', '会用哪些工具'], ['want', '想去哪']]
+  for (const [slot, key] of table) {
+    // asItems 会先剥掉行首的 `- `，所以这里拿到的就是一行一条的纯文字；
+    // 写回去也写纯文字——textarea 里带着 `- ` 会让人以为要自己加。
+    const rows = asItems(next[key])
+    for (const line of mined?.[slot] ?? []) {
+      if (rows.some((row) => row.trim() === line.trim())) continue
+      rows.push(line)
+      added.push({ slot, key, text: line })
+    }
+    next[key] = rows.join('\n')
+  }
+  return { profile: next, added }
+}
+
 /** 做长期规划的那两段话。每一步都要能动手，也要能判断做完没做完。 */
 export function buildPathPrompt({ profile, goal, horizon } = {}) {
   const aim = String(goal ?? '').trim()
@@ -485,4 +578,9 @@ export default {
   buildPathPrompt,
   buildGapPrompt,
   parseSteps,
+  buildMinePrompt,
+  MINE_SLOTS,
+  MINE_SLOT_LABELS,
+  groupMined,
+  mergeProfile,
 }
