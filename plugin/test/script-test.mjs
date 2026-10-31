@@ -432,6 +432,21 @@ console.log('\n=== 16. 模型把剧本包进三引号里，得先剥掉 ===')
   t('只有半截围栏也好办', novel.stripFence('```\n第1场\n客厅 日 内').trim().startsWith('第1场'), novel.stripFence('```\n第1场\n客厅 日 内'))
 }
 
+console.log('\n=== 17. 场号的几种真实写法都要认 ===')
+{
+  const one = (head) => novel.parseScriptScenes([head, '【出场人物】甲', '△ 站着。'].join('\n'))
+  t('「第1场 旧书店 夜 内」一行写完', one('第1场 旧书店 夜 内').scenes[0].place === '旧书店', one('第1场 旧书店 夜 内').scenes[0])
+  t('「【第1场】」带方括号', one('【第1场】旧书店 夜 内').counts.scenes === 1, '')
+  t('「1. 旧书店 夜 内」有人就这么写', one('1. 旧书店 夜 内').scenes[0].place === '旧书店', '')
+  t('「场景1 旧书店 夜 内」也认', one('场景1 旧书店 夜 内').scenes[0].place === '旧书店', '')
+  t('全角数字「１.」认得出', one('１. 旧书店 夜 内').counts.scenes === 1, '')
+  t('全角「场景３」号是 3', one('场景３ 门口 夜 外').scenes[0].no === 3, one('场景３ 门口 夜 外').scenes[0].no)
+  t('「第一场：旧书店」冒号后面当场名', one('第一场：旧书店').scenes[0].place === '旧书店', one('第一场：旧书店').scenes[0])
+  const withNo = (head) => novel.parseScriptScenes(['第1场', head, '【出场人物】甲', '△ 站着。'].join('\n')).scenes[0]
+  t('场名带「内」字不被拆', withNo('内务府 日 内').place === '内务府' && withNo('内务府 日 内').inOut === '内', withNo('内务府 日 内'))
+  t('场名带「外」字不被拆', withNo('外滩 夜 外').place === '外滩' && withNo('外滩 夜 外').inOut === '外', withNo('外滩 夜 外'))
+}
+
 await fs.rm(ws, { recursive: true, force: true })
 
 console.log(`\n${pass} passed, ${fail} failed`)

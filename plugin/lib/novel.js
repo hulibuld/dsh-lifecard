@@ -761,10 +761,12 @@ export function parseScriptScenes(text) {
 
   for (const rawLine of lines) {
     const raw = String(rawLine ?? '').trim()
-    const sceneHit = /^第\s*([0-9一二三四五六七八九十百零〇两]+)\s*场\s*(.*)$/.exec(raw)
+    // 场号前面可能是「【第1场】」「场景1」「1.」，后面可能是「：旧书店」。
+    // 模型和人都爱写成这几种，只认「第N场」会把一份好剧本读成 0 场。
+    const sceneHit = /^(?:[【\[]?第\s*([0-9０-９一二三四五六七八九十百零〇两]+)\s*场[】\]]?|场景\s*([0-9０-９一二三四五六七八九十百零〇两]+)|([0-9０-９]{1,3})\s*[.．、])\s*[：:]?\s*(.*)$/.exec(raw)
     if (sceneHit !== null) {
       current = {
-        no: sceneNumber(sceneHit[1]),
+        no: sceneNumber(firstFilled(sceneHit[1], sceneHit[2], sceneHit[3])),
         place: '', dayNight: '', inOut: '',
         cast: [], props: [], actions: [], dialogues: [], thoughts: [], other: [],
         // 原始行留着：上一章改出来的剧本，最后一场要整段带进下一章，
@@ -773,7 +775,7 @@ export function parseScriptScenes(text) {
       }
       scenes.push(current)
       mode = ''
-      const inline = String(sceneHit[2] ?? '').trim()
+      const inline = String(sceneHit[4] ?? '').trim()
       const head = inline === '' ? null : parseSceneHeadLine(inline)
       if (head !== null && (head.dayNight !== '' || head.inOut !== '' || head.place !== '')) {
         current.place = head.place
@@ -865,7 +867,8 @@ export function parseScriptScenes(text) {
  * 「一场都没有」，后面的检查一条也跑不起来。
  */
 function sceneNumber(text) {
-  const raw = String(text ?? '').trim()
+  // 全角数字（「１」）经常从别的软件里粘过来，先归一成半角。
+  const raw = String(text ?? '').trim().replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
   if (/^\d+$/.test(raw)) return Number(raw)
   const DIGIT = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 }
   if (raw === '十') return 10
@@ -879,6 +882,12 @@ function sceneNumber(text) {
   }
   total = section + digit
   return total > 0 ? total : 1
+}
+
+/** 几个捕获组里取第一个有字的。 */
+function firstFilled(...values) {
+  for (const value of values) if (value !== undefined && String(value).trim() !== '') return String(value).trim()
+  return ''
 }
 
 /** 这行看着像一串名字吗（短、不带句读、不带动作）。 */
