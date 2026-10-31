@@ -337,5 +337,72 @@ if (typeof BookView === 'function') {
   globalThis.fetch = realFetch
 }
 
+// ── 「重改一份」不许悄悄盖掉改了没存的那一份 ────────────────────────────
+if (typeof BookView === 'function') {
+  stores.clear()
+  calls.length = 0
+  const realFetch = globalThis.fetch
+  let confirmAsked = 0
+  let confirmAnswer = false
+  const realConfirm = fakeWindow.confirm
+  fakeWindow.confirm = () => { confirmAsked += 1; return confirmAnswer }
+  globalThis.fetch = async (url, opts = {}) => {
+    const method = String(url).split('/').pop()
+    const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : {}
+    const reply = (payload) => ({ ok: true, status: 200, json: async () => payload })
+    if (method === 'novel.get') return reply({ ok: true, data: { title: '雨里的门' }, idea: '', chapters: [{ index: 1 }] })
+    if (method === 'novel.outline.get') return reply({ ok: true, text: '', chapters: [] })
+    if (method === 'novel.chapter.get') return reply({ ok: true, body: '第一章的正文。' })
+    if (method === 'novel.script.get') return reply({ ok: true, text: SCRIPT_OF.a, report: '' })
+    calls.push({ method, body })
+    return reply({ ok: true, text: '第1场\n客厅 日 内\n△ 新的。', report: '' })
+  }
+
+  const propsR = { bookId: 'a', onBack: () => {}, flash: () => {} }
+  let treeR = renderComponent(BookView, propsR)
+  await settle()
+  treeR = renderComponent(BookView, propsR)
+  await settle()
+
+  const boxR = collect(treeR, (x) => x.type === 'textarea').find((x) => String(x.props?.value ?? '').includes('他把碗放下'))
+  if (boxR !== undefined) {
+    boxR.props.onChange({ target: { value: boxR.props.value + '\n△ 手改的。' } })
+    treeR = renderComponent(BookView, propsR)
+    await settle()
+
+    const redo = collect(treeR, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+      && String(textOf(x)).includes('重改一份'))[0]
+    t('改过之后按钮变成「重改一份」', redo !== undefined, '')
+
+    if (redo !== undefined) {
+      // 人点「取消」：一次模型调用都不该发出去，框里那一份也不许动。
+      confirmAnswer = false
+      calls.length = 0
+      confirmAsked = 0
+      redo.props.onClick()
+      await settle()
+      t('重改之前先问一句', confirmAsked === 1, String(confirmAsked))
+      t('点取消就不重改', calls.filter((c) => c.method === 'novel.script.draft').length === 0, JSON.stringify(calls.map((c) => c.method)))
+      treeR = renderComponent(BookView, propsR)
+      await settle()
+      const stillThere = collect(treeR, (x) => x.type === 'textarea').some((x) => String(x.props?.value ?? '').includes('手改的'))
+      t('点取消之后手改的那份还在', stillThere, '')
+
+      // 人点「继续」：这时才真的重改。
+      confirmAnswer = true
+      calls.length = 0
+      confirmAsked = 0
+      const redo2 = collect(treeR, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+        && String(textOf(x)).includes('重改一份'))[0]
+      if (redo2 !== undefined) redo2.props.onClick()
+      await settle()
+      t('点继续才真的重改', calls.filter((c) => c.method === 'novel.script.draft').length === 1, JSON.stringify(calls.map((c) => c.method)))
+    }
+  }
+
+  fakeWindow.confirm = realConfirm
+  globalThis.fetch = realFetch
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

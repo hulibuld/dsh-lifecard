@@ -3635,6 +3635,14 @@ function BookView({ bookId, onBack, flash }) {
    */
   const doScript = async () => {
     if (body.trim() === '') { setErr('这一章还空着，没什么可改的。'); return }
+    // 框里已经有一份、而且改过没存：点「重改一份」会把它整份盖掉。
+    // 不先问一句，人点错一次就是白改。
+    if (scriptDirty === true && scriptText.trim() !== '') {
+      const go = typeof window !== 'undefined' && typeof window.confirm === 'function'
+        ? window.confirm(`第 ${chapterIndex} 章这份剧本改了还没存，重改一次会把它整份盖掉。\n\n继续吗？`)
+        : true
+      if (go !== true) return
+    }
     if ((await keepBody()) !== true) return
     setBusy('script'); setErr(null)
     try {
