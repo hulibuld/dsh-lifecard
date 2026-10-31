@@ -136,6 +136,12 @@ console.log('\n=== 5. 给 AI 的话：这一章的计划、上一章结尾、设
   t('要求不解释刚写出来的动作', prompt.includes('不解释刚写出来的东西'), '')
   t('要求比喻只在现场捞', prompt.includes('比喻只在现场捞'), '')
   t('对话框里的短回应允许留', prompt.includes('人物对话里「行」'), '')
+  // 群像、人各有声、不拿总结代替过程、视角以内 —— 这四条来自用户拿来的那份
+  // 「叙事守则」里能用的部分。写不进提示词就等于白说。
+  t('要求在场的人各有落点', prompt.includes('不要全站着当背景'), '')
+  t('要求台词不能互相换着说', prompt.includes('可以互换着说'), '')
+  t('不许用一句总结代替过程', prompt.includes('不拿一句总结代替过程') && prompt.includes('一番盘问之后'), '')
+  t('要求视角以内写', prompt.includes('视角以内写'), '')
 
   const outlinePrompt = novel.buildOutlinePrompt({
     title: '雾港', genre: '悬疑', idea: '三个人', cast: [], worldEntries: [], chapters: 8, ask: '',
