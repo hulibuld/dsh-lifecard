@@ -3502,7 +3502,7 @@ function BookView({ bookId, onBack, flash }) {
       if (sameChapter === true) return true
       // 这一章以前改过剧本没有——改过就直接摆出来，不用再问一次。
       const s = await call('novel.script.get', { id: bookId, index })
-      if (mine !== chapterTicket.current) return 'stale'
+      // MUTATION: 这一道把关被拿掉了
       if (s?.ok === true && String(s.text ?? '').trim() !== '') {
         setScriptText(String(s.text))
         setScriptReport(String(s.report ?? ''))

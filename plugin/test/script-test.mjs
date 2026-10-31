@@ -978,6 +978,23 @@ await fs.rm(ws, { recursive: true, force: true })
     await fs.rm(ws6, { recursive: true, force: true })
   }
 
+  // ⑲ 场记标签（时间/地点/服装/天气）不是台词，「音乐：」「光线：」却真是镜头话。
+  {
+    const base = '第1场\n客厅 日 内\n【出场人物】甲\n'
+    for (const line of ['时间：深夜。', '地点：客厅。', '服装：一身黑。', '天气：下雨。']) {
+      const got = novel.scanScript(`${base}${line}\n△站着。`)
+      const scene = novel.parseScriptScenes(`${base}${line}\n△站着。`).scenes[0]
+      t(`场记标签不当台词：${line}`, scene.dialogues.length === 0, JSON.stringify(scene.dialogues.map((d) => d.who)))
+      t(`场记标签不进演员表：${line}`, !scene.cast.includes(String(line).split('：')[0]), JSON.stringify(scene.cast))
+      t(`场记标签不报「没归位」：${line}`, !got.issues.some((x) => x.kind === 'stray'), JSON.stringify(got.issues.map((x) => x.kind)))
+    }
+    for (const line of ['音乐：轻快的钢琴。', '光线：偏暗。', '音效：雨声。', '镜头：从门外推进到脸上。']) {
+      const got = novel.scanScript(`${base}${line}\n△站着。`)
+      t(`写了镜头/音乐的话要报：${line}`, got.issues.some((x) => x.kind === 'camera'), JSON.stringify(got.issues.map((x) => x.kind)))
+      t(`同一行不重复报「没归位」：${line}`, !got.issues.some((x) => x.kind === 'stray'), JSON.stringify(got.issues.map((x) => x.kind)))
+    }
+  }
+
   // ⑱ 场号重了要说出来：排班和配音靠它对场次。
   {
     const dup = '第1场\n客厅 日 内\n【出场人物】甲\n△站着。\n第1场\n门外 夜 外\n【出场人物】乙\n△走着。'

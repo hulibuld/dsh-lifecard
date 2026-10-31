@@ -786,6 +786,21 @@ function isDayNightPart(part) {
 const NARRATOR_NAMES = ['旁白', '画外音', '画外', '字幕', '字幕卡', '说明字幕', '解说']
 
 /**
+ * 冒号左边这些字不是说话人，是场记标签。
+ *
+ * `音乐：轻快的钢琴。` `光线：偏暗。` 这种行以前会被读成「一个叫音乐的人在说话」：
+ * 演员表里凭空多出「音乐」「光线」两个角色，占掉一句台词，
+ * 而且因为台词正文里没有镜头词，扫描器一条不报——写了不该写的东西，却查不出来。
+ *
+ * 这里把它挡在台词之外：交给主循环按标签处理（收进备注，或者照常报成镜头话）。
+ */
+const STAGE_LABELS = [
+  '时间', '地点', '场景', '场次时间', '服装', '化妆', '备注', '说明', '注', '天气',
+  '氛围', '基调', '音效', '声音', '音乐', '配乐', '光线', '色温',
+  '镜头', '景别', '机位', '特写', '分镜', '时长', '转场',
+]
+
+/**
  * 拆一行台词：`林小雨（把伞推回去）说："雨停了。"`
  *
  * 也认不带引号的写法：`甲：走吧。`（中文剧本和话剧台本最标准的样子）。
@@ -843,7 +858,7 @@ export function parseDialogueLine(line) {
   // 名字里也不许有连续的空白（「他把碗放下 又拿起来」）。
   if (/\s{2,}/.test(who)) return null
   // 旁白不是人，不进台词、更不进演员表。
-  if (NARRATOR_NAMES.includes(who)) return null
+  if (NARRATOR_NAMES.includes(who) || STAGE_LABELS.includes(who)) return null
   // 「甲说："走。"乙说："等等。"」写在一行里：只认第一句，
   // 后面那半句跟着走，让上层报「这行没归位」，别把两个人的话拼成一句。
   // 判据要看「引号后面紧跟一个『某人说：』」——台词里套引号
@@ -982,7 +997,7 @@ export function parseScriptScenes(text) {
         // 自己写没写【出场人物】。台词里出现的人也会并进 cast，但那是「说过话的」，
         // 不等于「写清楚谁在这一场」——两个概念要分开，否则 no-cast 永远不报。
         declared: false,
-        cast: [], props: [], actions: [], dialogues: [], thoughts: [], beats: [], other: [],
+        cast: [], props: [], actions: [], dialogues: [], thoughts: [], beats: [], other: [], notes: [],
         // 原始行留着：上一章改出来的剧本，最后一场要整段带进下一章，
         // 靠「动作 + 台词」重建会丢掉场头那一行（客厅 日 内）。
         raw: [],
@@ -1027,6 +1042,20 @@ export function parseScriptScenes(text) {
       current.props.push(...splitNames(propHit[1]))
       continue
     }
+    // 「时间：深夜。」「地点：客厅。」这类场记信息。
+    // 它们是正经剧本里有的东西，但**不是台词**——以前会被读成「一个叫时间的
+    // 人在说话」，演员表里凭空多出「时间」「地点」两个角色，还占掉一句台词。
+    // 这里单独收着，不报「没归位」（人写的是对的东西，只是不在我们认的五种行里）。
+    // 注意别把「音乐：」「光线：」「音效：」收进来——那几样提示词里明写着不许写，
+    // 收进备注等于把它们藏起来，扫描器就再也报不出来了。
+    const noteHit = /^[【\[]?\s*(?:时间|地点|场景|场次时间|服装|化妆|备注|说明|注|天气)\s*[】\]]?\s*[：:]\s*(.*)$/.exec(raw)
+    if (noteHit !== null) {
+      const noteText = String(noteHit[1] ?? '').trim()
+      if (noteText !== '') current.notes.push(noteText)
+      mode = ''
+      continue
+    }
+
     // 动作行里夹着一句心里话（`△ 他站着。（心里想：他不回来了。）`）：
     // 把动作那段留下，心里那段拆出去单独算一条。这一条要在「△ 开头」那条之前，
     // 否则整行都进 actions，心里话就没人数了。
@@ -1163,6 +1192,7 @@ export function parseScriptScenes(text) {
       dialogues: scenes.reduce((n, s) => n + s.dialogues.length, 0),
       thoughts: scenes.reduce((n, s) => n + s.thoughts.length, 0),
       beats: scenes.reduce((n, s) => n + s.beats.length, 0),
+      notes: scenes.reduce((n, s) => n + s.notes.length, 0),
       scenesWithoutHead: scenes.filter((s) => s.dayNight === '' || s.inOut === '').length,
       emptyScenes: scenes.filter((s) => s.empty).length,
     },
@@ -1298,7 +1328,7 @@ const CAMERA_PATTERNS = [
   { word: '机位角度', re: /俯拍|仰拍|越轴|航拍|俯视镜头|仰视镜头/ },
   { word: '定格', re: /定格\s*[：:]|(?:加|来|给|插)(?:一个|个)?定格|画面定格|定格画面/ },
   { word: '闪回', re: /闪回\s*[：:]|(?:插|加|来)(?:一个|个)?(?:回忆)?闪回|闪回镜头/ },
-  { word: '配乐', re: /配乐\s*[：:]|(?:配乐|音乐)\s*(?:起|响起|进来|淡入|淡出)|插入?(?:一段)?(?:配乐|音乐)/ },
+  { word: '配乐', re: /(?:配乐|音乐|音效|声音)\s*[：:]|(?:配乐|音乐)\s*(?:起|响起|进来|淡入|淡出)|插入?(?:一段)?(?:配乐|音乐)/ },
   { word: '光线', re: /光线\s*[：:]|色温\s*[：:]|(?:打光|布光)\s*[：:]/ },
   // 「黑场」「淡入」「淡出」都是戏里也可能出现的词（院子里的黑场子、像淡入的夜）。
   // 跟转场动词搭配才算分镜。
@@ -1412,7 +1442,12 @@ export function scanScript(text) {
         continue
       }
       const word = cameraWordIn(line)
-      if (word !== '') cameraHits.push({ scene: scene.no, word, sample: line })
+      if (word !== '') {
+        // 同一行不再报「没归位」：人写的是镜头话，说清这一件就够了。
+        // 一行数两遍只会让他觉得这个检查在瞎报。
+        cameraHits.push({ scene: scene.no, word, sample: line })
+        continue
+      }
       stray.push({ scene: scene.no, sample: line })
     }
   }
