@@ -64,8 +64,8 @@ console.log('\n=== 2. apply 时注册进 skills 服务 ===')
     llm: undefined,
   }
   api.apply(ctx, {})
-  t('六条 skill 都注册上了（访谈、写作、改剧本、写作手艺、盲评、视觉小说）',
-    registered.length === 6, registered.map((s) => s.name))
+  t('七条 skill 都注册上了（访谈、写作、改剧本、日记、写作手艺、盲评、视觉小说）',
+    registered.length === 7, registered.map((s) => s.name))
   const interview = registered.find((s) => s.name === 'lifecard-interview')
   const writing = registered.find((s) => s.name === 'lifecard-novel-writing')
   t('访谈 skill 在', interview !== undefined)
@@ -74,6 +74,16 @@ console.log('\n=== 2. apply 时注册进 skills 服务 ===')
   t('改剧本 skill 在', scripting !== undefined)
   t('改剧本：有描述', scripting !== undefined && typeof scripting.description === 'string' && scripting.description.length > 10)
   t('改剧本：讲清了分场与 △ 动作', scripting !== undefined && scripting.content.includes('分场') && scripting.content.includes('△'))
+
+  // 日记那份 skill：它是「点一下就开始写」那条路的正文，用户不会去调它，
+  // 但模型要靠它问对问题。
+  const diarySk = registered.find((s) => s.name === 'lifecard-diary')
+  t('日记 skill 在', diarySk !== undefined)
+  t('日记：有描述', typeof diarySk?.description === 'string' && diarySk.description.length > 10)
+  t('日记：讲清了先问一件事、不是问「今天过得怎么样」',
+    diarySk !== undefined && diarySk.content.includes('最值得讲'))
+  t('日记：讲了情绪要往深里问', diarySk !== undefined && diarySk.content.includes('往下三层'))
+  t('日记：讲了改卡要先问过用户', diarySk !== undefined && diarySk.content.includes('approved'))
 
   t('访谈：有描述', typeof interview.description === 'string' && interview.description.length > 10)
   t('访谈：内容不含 frontmatter', !interview.content.startsWith('---'))

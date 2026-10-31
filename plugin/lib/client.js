@@ -841,7 +841,7 @@ const SECTIONS_REL = [
 
 // ── 主界面 ────────────────────────────────────────────────────────
 
-const VIEWS = { doors: 'doors', novel: 'novel', book: 'book', game: 'game', career: 'career', tavern: 'tavern', tavernChat: 'tavernChat', home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs' }
+const VIEWS = { doors: 'doors', novel: 'novel', book: 'book', game: 'game', career: 'career', tavern: 'tavern', tavernChat: 'tavernChat', home: 'home', card: 'card', diary: 'diary', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs' }
 
 // ── 开一个新会话去问 ──────────────────────────────────────────────
 //
@@ -896,6 +896,18 @@ function openInterviewSession({ about, mode, ask } = {}) {
   const preset = DOOR_PRESET[mode === 'tavern' ? 'tavern' : mode === 'novel' ? 'novel' : 'real']
   // 这条路要等网络，是异步的；下面几条退路有同步的，调用方两种都接。
   return openInterviewSessionByServer(prompt, preset)
+}
+
+/**
+ * 开今天这一篇日记。
+ *
+ * 第一句由后台拼（要带上前几天写的、带上「我」那张卡里已有的东西），
+ * 这边只管把这句话和预设一起塞进新会话。
+ */
+function openDiarySession(started) {
+  const prompt = String(started?.text ?? '').trim()
+  if (prompt === '') return { ok: false, prompt: '', reason: '今天这一篇的那句话没拼出来' }
+  return openInterviewSessionByServer(prompt, String(started?.preset ?? 'lc-diary'))
 }
 
 /**
@@ -1442,6 +1454,34 @@ function LifeCardTab(props) {
     settle(started)
   }, [flash])
 
+  /**
+   * 点「写日记」。
+   *
+   * 分三种情况：还没定文件夹 → 先去挑位置；定好了 → 后台拼第一句、开新会话；
+   * 后台连不上 → 照实说，不静默。
+   */
+  const startDiary = useCallback(async () => {
+    setBusy('diary'); setError(null)
+    try {
+      const info = await call('diary.info', {})
+      if (info?.ok !== true) { setError(info?.error ?? '日记那边没能打开'); return }
+      if (info.ready !== true) { setView(VIEWS.diary); return }
+      const started = await call('diary.start', {})
+      if (started?.ok !== true) { setError(started?.error ?? '今天这一篇没能开起来'); return }
+      const done = await openDiarySession(started)
+      if (done?.ok === true) {
+        setHandoff(null)
+        flash(done.note !== undefined ? String(done.note) : '已经在新对话里了，跟着它写就行', done.note === undefined ? 'ok' : 'warn')
+        return
+      }
+      setHandoff(done)
+    } catch (e) {
+      setError(humanizeError(e))
+    } finally {
+      setBusy('')
+    }
+  }, [flash])
+
   /** 打开一本书，进到那一屏。 */
   const openBook = (book) => {
     setActiveBook({ id: book?.id ?? '', title: book?.title ?? '' })
@@ -1652,6 +1692,7 @@ function LifeCardTab(props) {
       [VIEWS.newCard]: '新建一张卡',
       [VIEWS.world]: activeWorld?.data?.name ?? '这本世界书',
       [VIEWS.jobs]: '下一步',
+      [VIEWS.diary]: '写日记',
     }
     // 「选个文件夹」页一般不该有返回按钮（还没地方可回），
     // 但已经选过文件夹、是从首页主动进来换的时候要能退回去。
@@ -1804,7 +1845,7 @@ function LifeCardTab(props) {
         // 直接退回首页，用户点了没反应，还以为坏了。现在把清单单独摊开。
         return activeCard === null
           ? proposal === null
-            ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
+            ? h(HomeView, { state, listing, mode, onDiary: startDiary, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
             : h('div', { className: 'lc-pad lc-stack' },
                 proposal.about === undefined || String(proposal.about).trim() === ''
                   ? null
@@ -1866,7 +1907,7 @@ function LifeCardTab(props) {
         })
       case VIEWS.world:
         return activeWorld === null
-          ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
+          ? h(HomeView, { state, listing, mode, onDiary: startDiary, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
           : h(WorldView, {
               world: activeWorld,
               listing,
@@ -1887,12 +1928,18 @@ function LifeCardTab(props) {
         })
       case VIEWS.doctor:
         return h(DoctorView, { report: doctor, onOpenCard: openCard, onRun: () => runDoctor(true) })
+      case VIEWS.diary:
+        return h(DiaryView, {
+          flash,
+          onBack: () => setView(VIEWS.home),
+          onStart: startDiary,
+        })
       case VIEWS.career:
         return h(CareerView, { flash, onBack: () => setView(VIEWS.home) })
       case VIEWS.jobs:
         return h(JobsView, { onBack: () => setView(VIEWS.home), flash })
       default:
-        return h(HomeView, { state, listing, mode, onStartInterview: startInterview, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
+        return h(HomeView, { state, listing, mode, onDiary: startDiary, onStartInterview: startInterview, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
     }
   }
 
@@ -2215,7 +2262,7 @@ function DoorsView({ onPick, state, features, hidden, onHide, onShow }) {
   )
 }
 
-function HomeView({ state, listing, mode, onStartInterview, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial, chats, onOpenChat, onForkCard, onDeleteCard, onRestoreCard, onPurgeCard, onEditCard, books, onOpenBook, onCreateBook, onDeleteBook, chatsNote, pinId, onPickPin }) {
+function HomeView({ state, listing, mode, onStartInterview, onDiary, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial, chats, onOpenChat, onForkCard, onDeleteCard, onRestoreCard, onPurgeCard, onEditCard, books, onOpenBook, onCreateBook, onDeleteBook, chatsNote, pinId, onPickPin }) {
   // 这扇门是不是「真实人物记录」。写小说、酒馆那两扇门里不该出现
   // 「贴一份招聘说明」「从记忆里认人」这类动作——那是记录真人才用得上的。
   const isReal = mode !== 'novel' && mode !== 'tavern'
@@ -2370,6 +2417,15 @@ function HomeView({ state, listing, mode, onStartInterview, onOpen, onOpenWorld,
         desc: '一张空表，一个字段一个字段地写。',
         onClick: () => onNavigate(VIEWS.newCard),
       }),
+      // 还没建卡的人也能写日记：日记不落在档案里，它自己有一个文件夹。
+      isReal
+        ? h(Action, {
+            tone: 'doctor', icon: 'pencil',
+            title: '今天写一篇日记',
+            desc: '不用先建卡。它会问你今天哪件事最值得讲。',
+            onClick: () => onDiary?.(),
+          })
+        : null,
       // 写小说最常用的其实不是填表：手里已经有一篇小说、一段人物小传，
       // 想让它读成人设。这条路以前只在「真实人物」那扇门里有。
       h(Action, {
@@ -2412,6 +2468,12 @@ function HomeView({ state, listing, mode, onStartInterview, onOpen, onOpenWorld,
         : null,
       isReal
         ? h(Btn, { size: 'sm', icon: 'book', onClick: () => onNavigate(VIEWS.career), title: '把自己的情况写清楚，让 AI 帮你看简历、算差距、规划怎么走' }, '简历与规划')
+        : null,
+      // 写日记：点一下就开新对话，进去直接开始写。
+      // 不摆在这一排的最后面，是因为它是每天都会用一次的东西，
+      // 而「下一步」「简历与规划」是一阵子用一次。
+      isReal
+        ? h(Btn, { tone: 'doctor', size: 'sm', icon: 'pencil', onClick: () => onDiary?.(), title: '今天哪件事最值得讲——开一个新对话，它带你写' }, '写日记')
         : null,
       h('div', { className: 'lc-grow' }),
       // 「贴一段文章让 AI 读」不是只有记录真人才用得上：写小说、酒馆里
@@ -3253,6 +3315,140 @@ function GameView({ bookId, onBack, flash }) {
     ),
     err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
     h('div', { className: 'lc-meta' }, '每一步都会存下来，退出再进来还能接着走。'),
+  )
+}
+
+/**
+ * 写日记。
+ *
+ * 这一屏只干一件事：把「今天这一篇」开起来。
+ *
+ * 为什么日记不放在档案文件夹里：日记是每天写的东西，量比卡大得多，混在
+ * people/ 里会把真正要看的那几张卡挤没。所以第一次进来问一次放哪儿，
+ * 之后每天那一篇就落在那里——用户自己挑的位置，随时能在访达里翻。
+ *
+ * 一天一篇、摊平不分目录：好找，也方便丢进同步盘。
+ */
+function DiaryView({ onBack, flash, onStart }) {
+  const [info, setInfo] = useState(null)
+  const [dir, setDir] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+
+  const load = async () => {
+    setErr(null)
+    try {
+      const r = await call('diary.info', {})
+      if (r?.ok !== true) { setErr(r?.error ?? '日记读不出来'); return }
+      setInfo(r)
+      setDir(String(r.dir ?? ''))
+      // 已经定过位置就直接是「开始写」那一屏，不用再点一次。
+      if (r.ready !== true) setEditing(true)
+    } catch (e) { setErr(humanizeError(e)) }
+  }
+
+  useEffect(() => {
+    let gone = false
+    call('diary.info', {})
+      .then((r) => {
+        if (gone) return
+        if (r?.ok !== true) { setErr(r?.error ?? '日记读不出来'); return }
+        setInfo(r)
+        setDir(String(r.dir ?? ''))
+        if (r.ready !== true) setEditing(true)
+      })
+      .catch((e) => { if (!gone) setErr(humanizeError(e)) })
+    return () => { gone = true }
+  }, [])
+
+  const keep = async () => {
+    setBusy(true); setErr(null)
+    try {
+      const r = await call('diary.dir.set', { dir })
+      if (r?.ok !== true) { setErr(r?.error ?? '这个位置没能用起来'); return }
+      flash?.('好了，以后每天那一篇就存在这儿')
+      setEditing(false)
+      await load()
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
+  }
+
+  if (info === null) {
+    return h('div', { className: 'lc-pad lc-stack' },
+      h(Btn, { size: 'sm', icon: 'back', onClick: onBack }, '回首页'),
+      err === null
+        ? h(Spinner)
+        : h('div', { className: 'lc-stack' },
+            h(Note, { tone: 'err', icon: 'warning' }, err),
+            h(Btn, { block: true, onClick: () => { load() } }, '再试一次'),
+          ),
+    )
+  }
+
+  if (editing === true) {
+    return h('div', { className: 'lc-pad lc-stack' },
+      h(Btn, { size: 'sm', icon: 'back', onClick: onBack }, '回首页'),
+      h('div', { className: 'lc-empty', style: { paddingBottom: 12 } },
+        h('div', { className: 'lc-empty-icon' }, h(Icon, { name: 'folder', size: 22 })),
+        h('h3', null, '日记放在哪个文件夹'),
+        h('div', { className: 'lc-meta' }, '日记不跟人物卡混在一起。', h('br'), '一天一篇纯文本，你随时能在访达（Finder）里找到。'),
+      ),
+      h(Field, { label: '放在哪里', hint: '下面这个位置就行，直接点最下面的按钮。' },
+        h('input', {
+          className: 'lc-input', value: dir, spellCheck: false,
+          placeholder: '/Users/你/Documents/我的日记',
+          onChange: (e) => setDir(e.target.value),
+        }),
+      ),
+      err === null ? null : h(Err, { text: err }),
+      keepButton(busy, dir, keep),
+    )
+  }
+
+  const recent = Array.isArray(info.recent) ? info.recent : []
+  return h('div', { className: 'lc-pad lc-stack' },
+    h(Btn, { size: 'sm', icon: 'back', onClick: onBack }, '回首页'),
+    h('div', { className: 'lc-meta' }, `存在：${String(info.dir ?? '')}`),
+    h('div', { className: 'lc-empty', style: { padding: '14px 8px 10px' } },
+      h('div', { className: 'lc-empty-icon' }, h(Icon, { name: 'pencil', size: 22 })),
+      h('h3', null, info.todayDone === true ? '今天已经写过一篇' : '今天还没写'),
+      h('div', { className: 'lc-meta' },
+        info.todayDone === true
+          ? '再点一次会接着那一篇往下改，前面写的不会丢。'
+          : '不用先建卡。点一下就开始问今天哪件事最值得讲。'),
+    ),
+    h(Btn, {
+      tone: 'primary', big: true, block: true, icon: 'pencil',
+      disabled: busy === true,
+      onClick: () => { if (busy === true) return; onStart?.() },
+    }, busy === true ? '正在开…' : (info.todayDone === true ? '接着写今天这一篇' : '今天就写这一篇')),
+    h('div', { className: 'lc-meta' }, '会在新对话里问。不想讲就换一件，跳过也行。'),
+    err === null ? null : h(Err, { text: err }),
+    recent.length === 0
+      ? null
+      : h('div', { className: 'lc-sec' },
+          h(GroupTitle, { icon: 'history' }, `写过 ${String(info.count ?? recent.length)} 天`),
+          h('div', { className: 'lc-stack', style: { gap: 4 } },
+            recent.map((one) => h('div', { key: one.date, className: 'lc-row' },
+              h('div', { className: 'lc-grow lc-ellipsis' }, String(one.date ?? '')),
+              h('div', { className: 'lc-meta' }, `${Math.max(1, Math.round(Number(one.chars ?? 0) / 3))} 字`),
+            )),
+          ),
+        ),
+    h('div', { className: 'lc-row', style: { marginTop: 4 } },
+      h(Btn, { size: 'sm', icon: 'folder', onClick: () => { setEditing(true) } }, '换个文件夹'),
+    ),
+  )
+}
+
+/** 日记那一屏底部那个「就用这个文件夹」按钮。写成一个函数是为了不让条件挤在一行里。 */
+function keepButton(busy, dir, keep) {
+  return h('div', { style: { marginTop: 4 } },
+    h(Btn, {
+      tone: 'primary', big: true, block: true, icon: 'check',
+      disabled: busy === true || String(dir ?? '').trim() === '',
+      onClick: keep,
+    }, busy === true ? '正在准备…' : '就用这个文件夹'),
   )
 }
 
@@ -7846,6 +8042,7 @@ const inject = ['slots']
 		// 测试专用口子：写小说那一页只有从根部点进去才会出现，而它的换书逻辑
 		// （bookId 变了但组件不卸载）在假根部里绕太远，直接渲染这个组件最省事。
 		exports.__BookView = BookView;
+		exports.__DiaryView = DiaryView;
 		exports.__setHostServices = (remote, ui) => {
 			REMOTE_SESSION = remote === undefined ? null : remote;
 			UI_WORKSPACE = ui === undefined ? null : ui;

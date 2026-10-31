@@ -20,6 +20,7 @@ import * as codec from './codec.js'
 import * as store from './store.js'
 import * as prose from './prose.js'
 import * as prompts from './prompts.js'
+import * as diary from './diary.js'
 
 import * as score from './score.js'
 import * as memory from './memory.js'
@@ -1037,6 +1038,7 @@ function buildApi(ctx, workspace, config, options) {
           real: String(pins.real ?? ''),
           tavern: String(pins.tavern ?? ''),
           novel: String(pins.novel ?? ''),
+          diary: String(pins.diary ?? ''),
         },
       }
     },
@@ -1069,13 +1071,13 @@ function buildApi(ctx, workspace, config, options) {
     'card.defaults.set': async (body) => {
       const ws = await root(body)
       const mode = String(body?.mode ?? '')
-      if (mode !== 'real' && mode !== 'tavern' && mode !== 'novel') {
+      if (mode !== 'real' && mode !== 'tavern' && mode !== 'novel' && mode !== 'diary') {
         return { ok: false, error: '不知道你说的是哪扇门。' }
       }
       const id = String(body?.id ?? '').trim()
       const cfg = await store.readConfigState(ws)
       if (cfg.ok !== true) return { ok: false, error: cfg.error ?? '这个文件夹里的设置读不出来。' }
-      const pins = { real: '', tavern: '', novel: '', ...(cfg.config?.default_cards ?? {}) }
+      const pins = { real: '', tavern: '', novel: '', diary: '', ...(cfg.config?.default_cards ?? {}) }
       pins[mode] = id
       await store.writeConfig(ws, { default_cards: pins })
       return { ok: true, cards: pins }
@@ -3219,6 +3221,152 @@ function buildApi(ctx, workspace, config, options) {
       return { ok: true, goal, horizon, text, steps: career.parseSteps(text) }
     },
 
+    // ── 写日记：一天一篇，AI 带着写 ──────────────────────────────
+    //
+    // 日记不放在这个工作区里：第一次点「写日记」时问一句放哪儿，
+    // 之后每天那篇就落在那里（见 diary_dir 配置）。这一层只做三件事：
+    // 读写那一天的文件、拼出「今天该问什么」、把写下的东西整理成几条事实。
+
+    /** 日记文件夹在哪儿、今天写了没有。 */
+    'diary.info': async (body) => {
+      const ws = await root(body)
+      const where = await diaryDirOf(ws)
+      if (where.ok !== true) return where
+      const today = store.localDate()
+      if (where.dir === '') return { ok: true, dir: '', ready: false, today, todayDone: false, count: 0 }
+      const listed = await diary.listDiaries(where.dir, { limit: 400 })
+      const recent = listed.ok === true ? listed.diaries.slice(0, 7) : []
+      return {
+        ok: true,
+        dir: where.dir,
+        ready: true,
+        today,
+        todayDone: recent.some((d) => d.date === today),
+        count: listed.ok === true ? listed.diaries.length : 0,
+        recent,
+      }
+    },
+
+    /** 定下日记放哪儿（会顺手建好文件夹）。 */
+    'diary.dir.set': async (body) => {
+      const ws = await root(body)
+      const raw = String(body?.dir ?? '').trim()
+      if (raw === '') return { ok: false, error: '没有说是哪个文件夹。' }
+      const dir = diary.diaryRootFrom({ diary_dir: raw })
+      const made = await fs.mkdir(dir, { recursive: true }).then(() => true).catch(() => false)
+      if (!made) return { ok: false, error: '这个文件夹建不出来。换一个位置，或者检查一下有没有写的权限。' }
+      const writable = await fs.writeFile(path.join(dir, '.lifecard-diary-probe'), 'x', 'utf8')
+        .then(() => fs.rm(path.join(dir, '.lifecard-diary-probe'), { force: true }))
+        .then(() => true)
+        .catch(() => false)
+      if (writable !== true) return { ok: false, error: '这个文件夹写不进去。换一个位置，或者检查一下有没有写的权限。' }
+      const saved = await store.writeConfig(ws, { diary_dir: dir })
+      if (saved?.ok === false) return { ok: false, error: saved.error ?? '位置没记住，下次还得再挑一次。' }
+      return { ok: true, dir }
+    },
+
+    /** 读某一天（不传就是今天）。 */
+    'diary.get': async (body) => {
+      const ws = await root(body)
+      const where = await diaryDirOf(ws)
+      if (where.ok !== true) return where
+      if (where.dir === '') return { ok: true, dir: '', ready: false, date: String(body?.date ?? '') || store.localDate(), data: null }
+      const date = String(body?.date ?? '').trim() === '' ? store.localDate() : String(body.date).trim()
+      if (diary.dateFileName(date) === '') return { ok: false, error: '日期看起来不对，应该是 2026-10-31 这种样子。' }
+      const got = await diary.readDiary(where.dir, date)
+      if (got.ok !== true) return got
+      return { ok: true, dir: where.dir, ready: true, date, data: got.data, missing: got.missing === true }
+    },
+
+    /** 存某一天。 */
+    'diary.save': async (body) => {
+      const ws = await root(body)
+      const where = await diaryDirOf(ws)
+      if (where.ok !== true) return where
+      if (where.dir === '') return { ok: false, error: '还没有定日记放在哪个文件夹。' }
+      const date = String(body?.date ?? '').trim() === '' ? store.localDate() : String(body.date).trim()
+      if (diary.dateFileName(date) === '') return { ok: false, error: '日期看起来不对，应该是 2026-10-31 这种样子。' }
+      const saved = await diary.writeDiary(where.dir, { ...(body?.data ?? {}), date })
+      if (saved.ok !== true) return saved
+      return { ok: true, dir: where.dir, date, path: saved.path }
+    },
+
+    /** 最近写过哪几天。 */
+    'diary.list': async (body) => {
+      const ws = await root(body)
+      const where = await diaryDirOf(ws)
+      if (where.ok !== true) return where
+      if (where.dir === '') return { ok: true, dir: '', ready: false, diaries: [] }
+      const listed = await diary.listDiaries(where.dir, { limit: Number(body?.limit) > 0 ? Number(body.limit) : 400 })
+      if (listed.ok !== true) return listed
+      return { ok: true, dir: where.dir, ready: true, diaries: listed.diaries }
+    },
+
+    /**
+     * 开今天这一场：给出预设名和第一句。
+     *
+     * 为什么不让客户端自己拼：要带上前几天写的、带着「我」那张卡里已经有的东西，
+     * 还要知道今天写过没有。这些都只有后台读得到。
+     */
+    'diary.start': async (body) => {
+      const ws = await root(body)
+      const where = await diaryDirOf(ws)
+      if (where.ok !== true) return where
+      const today = store.localDate()
+      let recent = ''
+      let todayDone = false
+      if (where.dir !== '') {
+        const listed = await diary.listDiaries(where.dir, { limit: 40 })
+        if (listed.ok === true) {
+          todayDone = listed.diaries.some((d) => d.date === today)
+          const picked = listed.diaries.filter((d) => d.date !== today).slice(0, 3)
+          const texts = []
+          for (const item of picked) {
+            const got = await diary.readDiary(where.dir, item.date)
+            if (got.ok === true && got.data !== null) texts.push({ date: item.date, data: got.data })
+          }
+          recent = diary.recentBlock(picked.map((d) => d.date), texts)
+        }
+      }
+      const pin = pinnedCardIdSync(ws, 'diary')
+      let cardName = ''
+      let persona = ''
+      if (pin !== '') {
+        const abs = cardPathSync(ws, pin)
+        const raw = abs === '' ? null : readCachedSync(abs)
+        if (raw !== null) {
+          const parsed = core.parseCard(raw)
+          if (parsed.ok === true) {
+            cardName = String(parsed.data?.name ?? '').trim()
+            persona = ['自述', '性格', '口癖', '不会说的话', '不会做的事']
+              .map((title) => core.sectionBody(parsed.sections, title))
+              .filter((part) => typeof part === 'string' && part.trim() !== '')
+              .join('\n\n')
+          }
+        }
+      }
+      const text = ['/lifecard-diary', `今天是 ${today}。带我写今天这一篇。`, recent === '' ? '' : `\n前几天写过这些：\n${recent}`]
+        .filter((line) => line !== '')
+        .join('\n')
+      return { ok: true, preset: 'lc-diary', date: today, dir: where.dir, todayDone, cardName, personaChars: persona.length, text }
+    },
+
+    /** 把某一天写下的东西整理成「关于这个人的几条事实」，给改卡用。 */
+    'diary.digest': async (body) => {
+      const ws = await root(body)
+      const where = await diaryDirOf(ws)
+      if (where.ok !== true) return where
+      if (where.dir === '') return { ok: false, error: '还没有定日记放在哪个文件夹。' }
+      const date = String(body?.date ?? '').trim() === '' ? store.localDate() : String(body.date).trim()
+      const got = await diary.readDiary(where.dir, date)
+      if (got.ok !== true) return got
+      if (got.data === null) return { ok: false, error: '这一天还没写。' }
+      const built = diary.buildDigestPrompt({ date, text: diary.diaryBlock(got.data) })
+      const called = await callModel(ctx, { system: built.system, user: built.user, model: body?.model })
+      if (called.ok !== true) return { ok: false, error: `这次没整理出来：${called.error ?? '过一会儿再试一次'}` }
+      return { ok: true, date, text: String(called.text ?? '').trim() }
+    },
+
     // ── 文字小说游戏：进到情节里，你来选，它来推 ────────────────
 
     /** 一本书能开哪几局。 */
@@ -4044,11 +4192,11 @@ function cardPathSync(root, id) {
 async function clearPinsFor(ws, rel, data) {
   const state = await store.readConfigState(ws)
   if (state.ok !== true) return
-  const pins = { real: '', tavern: '', novel: '', ...(state.config?.default_cards ?? {}) }
+  const pins = { real: '', tavern: '', novel: '', diary: '', ...(state.config?.default_cards ?? {}) }
   const id = String(data?.id ?? '')
   const stem = path.posix.basename(rel).replace(/\.card\.md$/i, '')
   let changed = false
-  for (const mode of ['real', 'tavern', 'novel']) {
+  for (const mode of ['real', 'tavern', 'novel', 'diary']) {
     const picked = String(pins[mode] ?? '')
     if (picked !== '' && (picked === id || picked === rel || picked === stem)) {
       pins[mode] = ''
@@ -4069,6 +4217,19 @@ function pinnedCardIdSync(root, mode) {
   } catch {
     return ''
   }
+}
+
+/**
+ * 日记放在哪个文件夹。
+ *
+ * 和别的东西不一样：日记**不在这个工作区里**，它是用户在第一次点「写日记」时
+ * 自己挑的一个位置。所以这里不回落到工作区，没定过就老实说没定。
+ */
+async function diaryDirOf(ws) {
+  const state = await store.readConfigState(ws)
+  if (state.ok !== true) return { ok: false, error: state.error ?? '这个文件夹里的设置读不出来。' }
+  const dir = diary.diaryRootFrom(state.config ?? {})
+  return { ok: true, dir }
 }
 
 /** 把世界书条目排成人能读、模型也好读的样子。 */
@@ -4221,6 +4382,7 @@ function modeFromPresetRegistry(ctx, agent) {
     const blob = JSON.stringify(rows)
     if (blob.includes('lc-tavern')) return 'tavern'
     if (blob.includes('lc-novel')) return 'novel'
+    if (blob.includes('lc-diary')) return 'diary'
   } catch {
     /* 问不到就当不知道 */
   }
@@ -4233,6 +4395,7 @@ function modeForAgent(agent) {
   if (preset === '') return ''
   if (preset.includes('lc-tavern')) return 'tavern'
   if (preset.includes('lc-novel')) return 'novel'
+  if (preset.includes('lc-diary')) return 'diary'
   return ''
 }
 
@@ -4336,6 +4499,14 @@ function registerInterviewSkill(ctx) {
     name: 'novel-to-script',
     fallback: '小说改剧本：分场、把叙述换成 △ 动作、把心理换成演得出来的东西、台词按标点分工。',
     label: '改剧本',
+  })
+  // 带写日记的那份手艺。它不只是「怎么问」，还写着写完之后怎么反哺
+  // 「我」那张卡和日记助手那张卡——两条路都在这一份里。
+  registerBundledSkill(ctx, {
+    dir: 'lifecard-diary',
+    name: 'lifecard-diary',
+    fallback: '带写今天这一篇日记：一件事、情绪三层、一个能做的决定，末尾四样各打个分。',
+    label: '日记',
   })
   // 这三份是写作用得上的通用手艺，随包一起发：装插件即等于有，
   // 换台机器不必再单独装一遍。名字与内容都保持原样，方便用户照旧用

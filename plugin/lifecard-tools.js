@@ -17,6 +17,7 @@ import { readdir } from 'node:fs/promises'
 
 import * as core from './lib/core.js'
 import * as store from './lib/store.js'
+import { diaryRootFrom, readDiary, listDiaries, diaryBlock } from './lib/diary.js'
 
 // 这几个和 lib/index.js 里是同一套约定。故意在这里重写一遍、不从 index.js
 // import：工具是被主插件在 apply 里调起来的，反过来 import index.js 会绕成
@@ -625,6 +626,198 @@ export function registerTools(ctx, config) {
     },
   )
 
+  // ── 写日记顺手养卡：改「我」那张，和陪你写日记的那个助手 ────────────
+  //
+  // 日记写得越久，越会攒下卡上没有的东西：新认识的人、新的底线、一个说法
+  // 被推翻了、一件小事反复出现。这里只做两件事——把「我」那张卡补准，
+  // 把日记助手的性子按用户的原话调准。规矩和提炼成卡那组一样：没同意不写、
+  // 每一条都要指得出是哪一天哪句话，对不上整次拒绝。
+
+  register(
+    'lifecard_refine_card',
+    [
+      '写日记时顺手把两张卡养准：用户在真实人物记录里那**张「我」自己的卡**，和**陪你写日记的那个助手**。',
+      '**只有用户明确同意之后才调用。**先把打算改什么列给他看（改哪一节、改成什么、依据哪一天哪句话），',
+      '等他说「可以」，再带 approved: true 调这一次。',
+      '每一条都要附一句依据原话（quote），写之前逐字比对；对不上整次不写。',
+      '不给 approved: true 时不写任何东西，只告诉你还差哪一步。',
+      '默认只补空缺：原来写过的小节和字段一个字都不动，返回里会说补了哪几节。',
+      '只有用户明确要求整节重写时，才带 mode: "replace" 与 confirm_replace: true。',
+    ].join('\n'),
+    {
+      target: {
+        type: 'string',
+        enum: ['self', 'diary'],
+        description: '改哪张卡：self 是用户自己那张（「我」），diary 是陪你写日记的那个助手。',
+      },
+      approved: { type: 'boolean', description: '用户是否已经明确同意写入。必须为 true 才会真的改卡。' },
+      from: {
+        type: 'string',
+        enum: ['diary', 'material'],
+        description: '依据从哪来：diary（默认，最近写的日记）还是 material（导入的材料）。',
+      },
+      date: { type: 'string', description: '只拿这一天的日记做依据，例如 2026-10-31。不填就看最近写的几篇。' },
+      material: { type: 'string', description: 'from 是 material 时必填：材料的路径或文件名。' },
+      name: { type: 'string', description: '这张卡还没有的时候，用它起名字。改已有的卡不用填。' },
+      fields: {
+        type: 'array',
+        description: '结构字段。每项 { key, value, quote }：key 是字段名（如 relation / tags / competency），value 是新值，quote 是依据原话。',
+      },
+      sections: {
+        type: 'array',
+        description: '正文小节。每项 { title, body, quote }：title 用已有的小节名（自述/性格/关系史/口癖/外貌/不会说的话…），body 是要写进去的话，quote 是依据原话。',
+      },
+      mode: {
+        type: 'string',
+        enum: ['merge', 'replace'],
+        description: '已有内容怎么办：merge（默认）只补空缺；replace 整份重写，必须同时带 confirm_replace: true。',
+      },
+      confirm_replace: { type: 'boolean', description: '整份重写时的第二次确认。' },
+    },
+    ['target', 'approved'],
+    async (args) => {
+      const root = await resolveRoot(config)
+      const target = String(args.target ?? '').trim()
+      if (target !== 'self' && target !== 'diary') {
+        return '要说清改哪一张：target 写 self（用户自己那张）或 diary（陪你写日记的那个助手）。'
+      }
+
+      const rowsSections = Array.isArray(args.sections) ? args.sections : []
+      const rowsFields = Array.isArray(args.fields) ? args.fields : []
+      if (rowsSections.length === 0 && rowsFields.length === 0) {
+        return '一处要改的都没有，那就没东西可写。先定下要补哪几节、哪几个字段。'
+      }
+
+      const got = await refineSource(root, args)
+      if (got.ok !== true) return got.error
+      const source = got.text
+
+      const bad = []
+      const sections = []
+      for (const row of rowsSections) {
+        const title = String(row?.title ?? '').trim()
+        const body = String(row?.body ?? '').trim()
+        const quote = String(row?.quote ?? '').trim()
+        if (title === '' || body === '') { bad.push('（有一节没写小节名或内容是空的）'); continue }
+        if (quote === '') { bad.push(`「${title}」这一节没给原句`); continue }
+        if (!hasQuote(source, quote)) { bad.push(`「${title}」引的原句在${got.where}里找不到：${quote.slice(0, 40)}…`); continue }
+        sections.push({ title, body })
+      }
+      const fields = []
+      for (const row of rowsFields) {
+        const key = String(row?.key ?? '').trim()
+        const quote = String(row?.quote ?? '').trim()
+        if (key === '') { bad.push('（有一个字段没写字段名）'); continue }
+        if (row?.value === undefined || row?.value === null) { bad.push(`字段 ${key} 没给新值`); continue }
+        if (quote === '') { bad.push(`字段 ${key} 没给原句`); continue }
+        if (!hasQuote(source, quote)) { bad.push(`字段 ${key} 引的原句在${got.where}里找不到：${quote.slice(0, 40)}…`); continue }
+        if (!core.PROPOSAL_FIELDS.includes(key)) { bad.push(`字段 ${key} 不是卡上允许写的名字`); continue }
+        fields.push({ key, value: row.value })
+      }
+      if (bad.length > 0) {
+        return `这一版没写。下面这些对不上：\n${bad.map((b) => `- ${b}`).join('\n')}\n\n改好之后再来一次。`
+      }
+
+      const held = target === 'self' ? await findSelfCard(root) : await findDiaryAssistant(root)
+      if (args.approved !== true) {
+        const lines = [
+          '还没写。先把这一版列给用户看，等他明确说要，再带 approved: true 重调一次。',
+          '',
+          `改哪张：${target === 'self' ? '「我」那张卡' : '日记助手那张卡'}`,
+          held === null ? '这张卡现在还没有，等你说要，会新建一张。' : `现在是：${held.card?.path ?? held.path}`,
+          `依据：${got.where}`,
+        ]
+        if (sections.length > 0) lines.push('', '补这几节：', ...sections.map((x) => `- ${x.title}：${x.body.slice(0, 60)}${x.body.length > 60 ? '…' : ''}`))
+        if (fields.length > 0) lines.push('', '补这几个字段：', ...fields.map((x) => `- ${x.key}：${String(x.value).slice(0, 60)}`))
+        return lines.join('\n')
+      }
+
+      const mode = args.mode === 'replace' ? 'replace' : 'merge'
+      const existing = held === null ? null : held.card ?? held
+      const existingRel = existing === null ? null : (existing.path ?? held.path ?? null)
+
+      let card = null
+      if (existingRel !== null) {
+        const read = await store.readCard(root, existingRel)
+        if (read.ok !== true) {
+          if (read.withdrawn === true || isWithdrawnAt(root, existingRel)) return withdrawnNote(existingRel, '卡')
+          return `这张卡这会儿读不出来：${String(read.error ?? '读不出来')}。先把它弄好，再来改。`
+        }
+        card = read
+      }
+
+      if (card === null) {
+        const fallbackName = target === 'self' ? '我' : '日记助手'
+        const name = String(args.name ?? '').trim() === '' ? fallbackName : String(args.name).trim()
+        const id = core.safeId(name)
+        const incoming = {
+          lifecard: core.DATA_VERSION,
+          id,
+          kind: target === 'self' ? 'self' : 'fictional',
+          name,
+          world: 'reality',
+        }
+        if (target === 'self') incoming.relation = '我'
+        const rel = store.cardRelPath(id, incoming.world)
+        const heldName = await store.withdrawnNameHit(root, rel, [id, name])
+        if (isWithdrawnAt(root, rel) || heldName !== null) return withdrawnNote(heldName?.path ?? rel, '卡')
+        const mergedData = mergeData(incoming, Object.fromEntries(fields.map((f) => [f.key, f.value])))
+        const saved = await store.writeCard(root, rel, mergedData.data, sections)
+        if (saved.ok !== true) return `没能写成：${String(saved.error ?? '存盘失败')}`
+        let pinNote = ''
+        if (target === 'diary') {
+          const state = await store.readConfigState(root)
+          const pins = { ...(state.config?.default_cards ?? {}), diary: id }
+          await store.writeConfig(root, { default_cards: pins })
+          pinNote = '\n写日记已经默认用这张卡了。'
+        }
+        return [
+          `建好了一张新卡：${saved.path}`,
+          sections.length > 0 ? `写了 ${sections.length} 节：${sections.map((x) => x.title).join('、')}` : '',
+          fields.length > 0 ? `写了 ${fields.length} 个字段：${fields.map((x) => x.key).join('、')}` : '',
+          `依据：${got.where}`,
+          '每一条都对着依据原句核过。',
+        ].filter((x) => x !== '').join('\n') + pinNote
+      }
+
+      const data = card.data ?? {}
+      if (mode === 'replace') {
+        if (args.confirm_replace !== true) {
+          return [
+            `这张卡现在是这样：${existingRel}`,
+            '整份重写会把原来写过的内容一起换掉，换完就找不回来了。',
+            '确定要整份重写，就再调一次，带 mode: "replace" 和 confirm_replace: true。',
+            '只想往里补，就不用改参数——默认只补空缺，原来的字一个不动。',
+          ].join('\n')
+        }
+        const incoming = { ...data }
+        for (const f of fields) incoming[f.key] = f.value
+        const saved = await store.writeCard(root, existingRel, incoming, sections)
+        if (saved.ok !== true) return `没能写成：${String(saved.error ?? '存盘失败')}`
+        return `整份换掉了：${saved.path}\n这是按用户第二次确认整份覆盖写的。`
+      }
+
+      const incoming = Object.fromEntries(fields.map((f) => [f.key, f.value]))
+      const mergedData = mergeData(data, incoming)
+      const mergedSections = mergeSections(card.sections, sections)
+      if (mergedSections.added.length === 0 && mergedData.filled.length === 0) {
+        return `这张卡已经有了，这次没有可补的：${existingRel}\n原有的内容一个字没动。\nmerged: true`
+      }
+      const saved = await store.writeCard(root, existingRel, mergedData.data, mergedSections.sections)
+      if (saved.ok !== true) return `没能写成：${String(saved.error ?? '存盘失败')}`
+      const bits = []
+      if (mergedSections.added.length > 0) bits.push(`补了 ${mergedSections.added.length} 节：${mergedSections.added.join('、')}`)
+      if (mergedData.filled.length > 0) bits.push(`补了 ${mergedData.filled.length} 项：${mergedData.filled.join('、')}`)
+      return [
+        `补好了（没有重写）：${saved.path}`,
+        ...bits,
+        `依据：${got.where}`,
+        '原来写过的内容一个字没动。',
+        'merged: true',
+      ].join('\n')
+    },
+  )
+
   return true
 }
 
@@ -638,6 +831,79 @@ function hasQuote(source, quote) {
   const q = squash(quote)
   if (q === '') return false
   return squash(source).includes(q)
+}
+
+/**
+ * 反哺卡时用的「依据」：一串能逐字比对的原文，外加一句「这是从哪儿来的」。
+ *
+ * 用户没挑日子就看最近写的三篇（和日记助手看到的一样）；挑了日子就只认那一天，
+ * 那一天的日记读不出来时宁可报错，也不退回「看最近几篇」——退回去就会
+ * 拿着一篇不相干的日记改卡，而且改完看不出来。
+ */
+async function refineSource(root, args) {
+  const from = String(args.from ?? 'diary').trim()
+  if (from === 'material') {
+    const materials = await store.readMaterials(root)
+    const picked = pickMaterial(materials, args.material)
+    if (picked === null) return { ok: false, error: `没找到「${String(args.material ?? '')}」这份材料，先确认材料名。` }
+    return { ok: true, text: String(materials[picked] ?? ''), where: `材料「${picked}」` }
+  }
+
+  const state = await store.readConfigState(root)
+  if (state.ok !== true) return { ok: false, error: '读不出来日记放在哪儿。' }
+  const dir = diaryRootFrom(state.config)
+  if (dir === '') return { ok: false, error: '还没有挑日记放在哪个文件夹，先让用户在首页点一次「写日记」。' }
+
+  const want = String(args.date ?? '').trim()
+  if (want !== '') {
+    const got = await readDiary(dir, want)
+    if (got.ok !== true) return { ok: false, error: String(got.error ?? '这一天的日记读不出来。') }
+    if (got.data === null) return { ok: false, error: `没有 ${want} 这一天写的日记。` }
+    return { ok: true, text: diaryBlock(got.data), where: `${want} 这一篇日记` }
+  }
+
+  const listed = await listDiaries(dir, { limit: 3 })
+  if (listed.ok !== true) return { ok: false, error: String(listed.error ?? '日记列不出来。') }
+  if (listed.diaries.length === 0) return { ok: false, error: '还一篇日记都没写过，没有可以当依据的东西。' }
+  const parts = []
+  const dates = []
+  for (const item of listed.diaries) {
+    const got = await readDiary(dir, item.date)
+    if (got.ok !== true || got.data === null) continue
+    parts.push(`【${item.date}】\n${diaryBlock(got.data)}`)
+    dates.push(item.date)
+  }
+  if (parts.length === 0) return { ok: false, error: '最近这几篇日记都读不出来。' }
+  return { ok: true, text: parts.join('\n\n'), where: `日记（${dates.join('、')}）` }
+}
+
+/** 用户自己那张卡（kind 是 self）。没有回 null。 */
+async function findSelfCard(root) {
+  const all = await store.listAll(root)
+  const cards = Array.isArray(all.cards) ? all.cards : []
+  const hit = cards.find((c) => String(c.kind ?? '') === 'self')
+  if (hit === undefined) {
+    // 老档案里「我」常常是 kind:real + relation:我（用户自己就是这么建的）。
+    // 认它，但只在没有真正的 self 卡时认。
+    const byRelation = cards.find((c) => String(c.relation ?? '').trim() === '我' && String(c.kind ?? '') === 'real')
+    if (byRelation === undefined) return null
+    const read = await store.readCard(root, byRelation.path)
+    return read.ok === true ? read : null
+  }
+  const read = await store.readCard(root, hit.path)
+  return read.ok === true ? read : null
+}
+
+/** 现在陪用户写日记的那个助手。没挑过就按「日记助手」这个名字找。回 null 表示还没有。 */
+async function findDiaryAssistant(root) {
+  const state = await store.readConfigState(root)
+  const pin = String(state.config?.default_cards?.diary ?? '').trim()
+  if (pin !== '') {
+    const card = await findCard(root, pin)
+    if (card !== null) return card
+  }
+  const named = await findCard(root, '日记助手')
+  return named === null ? null : named
 }
 
 /** 按路径、文件名、或独一无二的片段找那份材料。找不到回 null。 */

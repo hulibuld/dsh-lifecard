@@ -1,4 +1,4 @@
-// lifecard-tools：把卡和世界书交给模型的 9 个工具（7 个只读 + 2 个「批准后才写」）。
+// lifecard-tools：把卡和世界书交给模型的 10 个工具（7 个只读 + 3 个「批准后才写」）。
 //
 // 为什么值得单独测：这些工具将来是「LC 酒馆 / LC 小说 / LC 现实」三个预设
 // 唯一能读到用户档案的通道。它们坏掉不会让插件起不来——宿主会静默少几个
@@ -10,6 +10,7 @@ import path from 'node:path'
 import { registerTools } from '../lifecard-tools.js'
 import * as store from '../lib/store.js'
 import * as core from '../lib/core.js'
+import * as diary from '../lib/diary.js'
 
 let pass = 0, fail = 0
 const t = (n, c, x) => { if (c) { pass++; console.log('  PASS', n) } else { fail++; console.log('  FAIL', n, x === undefined ? '' : String(x).slice(0, 400)) } }
@@ -56,8 +57,8 @@ await seed()
 const registered = new Map()
 registerTools({ tools: { register: (def) => { registered.set(def.name, def) } } }, { workspace: root })
 
-console.log('\n=== 1. 九个工具都注册上了 ===')
-for (const name of ['lifecard_cards', 'lifecard_card', 'lifecard_default', 'lifecard_roleplay', 'lifecard_world', 'lifecard_materials', 'lifecard_material', 'lifecard_import_character', 'lifecard_import_world']) {
+console.log('\n=== 1. 十个工具都注册上了 ===')
+for (const name of ['lifecard_cards', 'lifecard_card', 'lifecard_default', 'lifecard_roleplay', 'lifecard_world', 'lifecard_materials', 'lifecard_material', 'lifecard_import_character', 'lifecard_import_world', 'lifecard_refine_card']) {
   t(`注册了 ${name}`, registered.has(name))
 }
 t('都带 parameters（模型要知道怎么传参）', [...registered.values()].every((d) => d.parameters?.type === 'object'))
@@ -443,6 +444,164 @@ console.log('\n=== 9. 同名已经有卡 / 世界书：默认只补空缺，整�
 }
 
 await rm(root, { recursive: true, force: true })
+
+console.log('\n=== 10. 写日记顺手养卡：改「我」那张，和陪你写日记的助手 ===')
+{
+  // 这一节要在上面那些用例之后跑：前面撤卡、彻底删卡、合并写都动过这个工作区，
+  // 从零起一个干净的家，免得把别人的残局当成自己的前置条件。
+  const ws = await mkdtemp(path.join(tmpdir(), 'lc-refine-'))
+  const diaryDir = await mkdtemp(path.join(tmpdir(), 'lc-diary-'))
+
+  const reg = new Map()
+  registerTools({ tools: { register: (x) => reg.set(x.name, x) } }, { workspace: ws })
+  const call = async (name, args) => (await reg.get(name).execute(args ?? {}))?.text ?? ''
+
+  await mkdir(path.join(ws, 'people'), { recursive: true })
+
+  console.log('\n--- 10.1 先得知道依据在哪儿 ---')
+  t('还没挑日记文件夹时，人话说明下一步', (await call('lifecard_refine_card', {
+    target: 'self', approved: true,
+    sections: [{ title: '性格', body: '累了会先坐着不动一会儿。', quote: '坐了一会儿才缓过来' }],
+  })).includes('写日记'), await call('lifecard_refine_card', { target: 'self', approved: true, sections: [{ title: '性格', body: 'x', quote: 'x' }] }))
+
+  await diary.writeDiary(diaryDir, {
+    date: '2026-10-28',
+    '今天最值得讲的一件事': '开会时被当众否掉了一版方案，回来路上买了两个包子。',
+    '当时在想什么': '脸上烧得厉害，想的不是方案哪里错，而是别人怎么看我。',
+    '情绪往下三层': '羞；再往下是怕被当成没用的人；为此回家把旧项目翻出来看了一遍。',
+    '我做了什么决定': '下次先私下把数字对齐，再上会。',
+    '下一步': ['把三张表里的口径核一遍'],
+  })
+  await diary.writeDiary(diaryDir, {
+    date: '2026-10-29',
+    '今天最值得讲的一件事': '妈妈打电话来问吃了什么。',
+    '当时在想什么': '有点烦，但还是说吃得挺好。',
+    '情绪往下三层': '烦；再往下是怕她担心；为此多说了一句周末回去。',
+    '我做了什么决定': '周末回去一趟。',
+    '下一步': ['周末买菜'],
+  })
+  await store.writeConfig(ws, { diary_dir: diaryDir })
+
+  const canRead = await call('lifecard_refine_card', {
+    target: 'self',
+    sections: [{ title: '性格', body: '在人多的地方被否掉会先脸红，然后不说话。', quote: '脸上烧得厉害' }],
+  })
+  t('挑好文件夹以后就能读依据了', canRead.includes('还没写') && canRead.includes('2026-10-29'), canRead)
+
+  console.log('\n--- 10.2 没批准：一个字都不许落盘 ---')
+  const noApprove = await call('lifecard_refine_card', {
+    target: 'self',
+    sections: [{ title: '性格', body: '在人多的地方被否掉会先脸红，然后不说话。', quote: '脸上烧得厉害' }],
+  })
+  t('没带 approved 时明说「还没写」', noApprove.includes('还没写'), noApprove)
+  t('没带 approved 时把要补的节列出来', noApprove.includes('性格') && noApprove.includes('先脸红'), noApprove)
+  t('没带 approved 时说清依据是哪几天', noApprove.includes('2026-10-28'), noApprove)
+  t('没批准就真的没建卡', (await store.readCard(ws, 'people/我.card.md')).ok !== true)
+
+  console.log('\n--- 10.3 原句对不上：整次拒绝 ---')
+  const badQuote = await call('lifecard_refine_card', {
+    target: 'self', approved: true,
+    sections: [
+      { title: '性格', body: '在人多的地方被否掉会先脸红。', quote: '脸上烧得厉害' },
+      { title: '口癖', body: '爱说「随便」。', quote: '我从来不说随便' },
+    ],
+  })
+  t('有一句对不上就整次不写', badQuote.includes('没写') && badQuote.includes('找不到'), badQuote)
+  t('说清是哪一节对不上', badQuote.includes('口癖'), badQuote)
+  t('被拒的时候连对得上的那节也不写', (await store.readCard(ws, 'people/我.card.md')).ok !== true)
+
+  const badKey = await call('lifecard_refine_card', {
+    target: 'self', approved: true,
+    fields: [{ key: '心情', value: '还行', quote: '买了两个包子' }],
+  })
+  t('字段名不在卡的字段里就拒绝', badKey.includes('不是卡上允许写的名字'), badKey)
+
+  console.log('\n--- 10.4 「我」那张卡：没有就新建一张 self ---')
+  const madeSelf = await call('lifecard_refine_card', {
+    target: 'self', approved: true,
+    fields: [{ key: 'relation', value: '我', quote: '脸上烧得厉害' }],
+    sections: [
+      { title: '性格', body: '在人多的地方被否掉会先脸红，然后不说话，回家才慢慢想。', quote: '脸上烧得厉害' },
+      { title: '不会做的事', body: '不会当场争辩，宁可事后把数字摆出来。', quote: '下次先私下把数字对齐' },
+    ],
+  })
+  const selfCard = await store.readCard(ws, 'people/我.card.md')
+  t('新建了一张「我」', madeSelf.includes('people/我.card.md') && selfCard.ok === true, madeSelf + ' / ' + selfCard.error)
+  t('kind 是 self（不是现实里的人）', selfCard.data?.kind === 'self', selfCard.data?.kind)
+  t('名字是「我」', selfCard.data?.name === '我', selfCard.data?.name)
+  t('两节都写进去了', String(core.sectionBody(selfCard.sections, '性格')).includes('先脸红') && String(core.sectionBody(selfCard.sections, '不会做的事')).includes('事后把数字摆出来'), JSON.stringify(selfCard.sections))
+  t('说清每一条都对过原句', madeSelf.includes('核过'), madeSelf)
+
+  console.log('\n--- 10.5 已经有卡：默认只补空缺 ---')
+  const merged = await call('lifecard_refine_card', {
+    target: 'self', approved: true,
+    sections: [
+      { title: '性格', body: '这一节原来有，不许被顶掉。', quote: '脸上烧得厉害' },
+      { title: '口癖', body: '烦的时候先沉默一会儿。', quote: '有点烦，但还是说吃得挺好' },
+    ],
+  })
+  const mergedCard = await store.readCard(ws, 'people/我.card.md')
+  t('补的时候说清没重写', merged.includes('补好了') && merged.includes('没有重写'), merged)
+  t('带 merged: true', merged.includes('merged: true'), merged)
+  t('原有那节一个字没动', String(core.sectionBody(mergedCard.sections, '性格')).includes('先脸红') && !String(core.sectionBody(mergedCard.sections, '性格')).includes('不许被顶掉'), core.sectionBody(mergedCard.sections, '性格'))
+  t('空着的那节补上了', String(core.sectionBody(mergedCard.sections, '口癖')).includes('先沉默'), core.sectionBody(mergedCard.sections, '口癖'))
+  t('身份没被改成别的', mergedCard.data?.kind === 'self', mergedCard.data?.kind)
+
+  const whole = await call('lifecard_refine_card', {
+    target: 'self', approved: true, mode: 'replace',
+    sections: [{ title: '自述', body: '整份换掉。', quote: '脸上烧得厉害' }],
+  })
+  t('整份重写要先问一次', whole.includes('confirm_replace') && whole.includes('确定'), whole)
+  t('没二次确认就真的没写', String(core.sectionBody((await store.readCard(ws, 'people/我.card.md')).sections, '自述')) === '')
+
+  console.log('\n--- 10.6 日记助手：没有就建出来，并且挂成默认那张 ---')
+  const stateBefore = await store.readConfigState(ws)
+  t('一开始没挂日记助手', String(stateBefore.config?.default_cards?.diary ?? '') === '', stateBefore.config?.default_cards?.diary)
+  const madeDiary = await call('lifecard_refine_card', {
+    target: 'diary', approved: true,
+    sections: [{ title: '性格', body: '用户说「别老追问」的时候，就少问一句，先让他自己说。', quote: '有点烦，但还是说吃得挺好' }],
+  })
+  const diaryCard = await store.readCard(ws, 'people/日记助手.card.md')
+  t('建出了日记助手这张卡', madeDiary.includes('people/日记助手.card.md') && diaryCard.ok === true, madeDiary)
+  t('日记助手是虚构角色', diaryCard.data?.kind === 'fictional', diaryCard.data?.kind)
+  const stateAfter = await store.readConfigState(ws)
+  t('自动写回了「写日记默认用这张卡」', String(stateAfter.config?.default_cards?.diary ?? '') === String(diaryCard.data?.id ?? ''), JSON.stringify(stateAfter.config?.default_cards))
+  t('返回里告诉用户挂上了', madeDiary.includes('写日记已经默认用这张卡'), madeDiary)
+  t('别的门的挑卡没被抹掉', stateAfter.config?.default_cards?.tavern === stateBefore.config?.default_cards?.tavern)
+
+  const again = await call('lifecard_refine_card', {
+    target: 'diary', approved: true,
+    sections: [{ title: '性格', body: '这一节已经有了，不许被顶掉。', quote: '脸上烧得厉害' }],
+  })
+  t('第二次改助手不会另建一张', again.includes('people/日记助手.card.md') && !again.includes('建好了一张新卡'), again)
+  t('助手原有的性子没被顶掉', String(core.sectionBody((await store.readCard(ws, 'people/日记助手.card.md')).sections, '性格')).includes('别老追问'))
+
+  console.log('\n--- 10.7 依据可以指定某一天，也可以来自材料 ---')
+  const onlyDay = await call('lifecard_refine_card', {
+    target: 'self', approved: true, date: '2026-10-29',
+    sections: [{ title: '关系史', body: '和妈妈之间常是一句话就带过去。', quote: '妈妈打电话来问吃了什么' }],
+  })
+  t('指定日期时用得上那天的原句', onlyDay.includes('补好了'), onlyDay)
+  t('指定日期时不能拿别的天的原句来凑', (await call('lifecard_refine_card', {
+    target: 'self', approved: true, date: '2026-10-29',
+    sections: [{ title: '关系史', body: 'x', quote: '脸上烧得厉害' }],
+  })).includes('找不到'))
+  t('那一天没写就明说，不偷偷退回最近几篇', (await call('lifecard_refine_card', {
+    target: 'self', approved: true, date: '2026-01-01',
+    sections: [{ title: '关系史', body: 'x', quote: '脸上烧得厉害' }],
+  })).includes('没有 2026-01-01'))
+
+  await mkdir(path.join(ws, 'materials'), { recursive: true })
+  await writeFile(path.join(ws, 'materials/2026-10-30-随笔.md'), '她说起话来总要先顿一下，才把后半句说出来。\n', 'utf8')
+  const fromMaterial = await call('lifecard_refine_card', {
+    target: 'self', approved: true, from: 'material', material: '2026-10-30-随笔.md',
+    sections: [{ title: '外貌', body: '说起话来先顿一下。', quote: '总要先顿一下' }],
+  })
+  t('依据也能来自导入的材料', fromMaterial.includes('补好了') && fromMaterial.includes('随笔'), fromMaterial)
+
+  await rm(ws, { recursive: true, force: true })
+  await rm(diaryDir, { recursive: true, force: true })
+}
 
 // 从网上下来的「破限」卡：整份都要给到模型，不许删。
 // （删了就不是那张卡了——用户为这件事专门纠正过一次。）
