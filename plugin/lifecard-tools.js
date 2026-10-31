@@ -3,10 +3,12 @@
  *
  * 为什么单独一个文件：酒馆和写小说原来是在插件自己的界面里说话。用户要的是
  * 「和正常对话一样，在新会话里打开」——那就不能自建聊天框，得让 DSH 的普通
- * 会话能读到这些卡。这个文件就是那条通路：一组只读工具，模型想演谁、想写谁，
- * 先来这儿把人和世界取走。
+ * 会话能读到这些卡。这个文件就是那条通路：模型想演谁、想写谁，先来这儿把人和
+ * 世界取走；聊出来的东西（日记）也从这儿写回去。
  *
- * 只读。改卡还是走插件界面，免得模型手一滑把用户写的东西洗掉。
+ * 默认只读。会写盘的只有四把工具，而且都有一道门：改卡走 approved + 原句核对，
+ * 写日记只写用户这一回亲口讲的那一天、绝不静默覆盖。其余工具只看不改，
+ * 免得模型手一滑把用户写的东西洗掉。
  *
  * 挂法（见 cordis.patch.yml）：宿主那一层插一行本文件，预设里的
  * plugins 再引用一次，于是「LC 酒馆 / LC 小说」这些门里也能用。
@@ -17,7 +19,7 @@ import { readdir } from 'node:fs/promises'
 
 import * as core from './lib/core.js'
 import * as store from './lib/store.js'
-import { diaryRootFrom, readDiary, listDiaries, diaryBlock } from './lib/diary.js'
+import { DIARY_SECTIONS, diaryRootFrom, readDiary, listDiaries, writeDiary, diaryBlock } from './lib/diary.js'
 
 // 这几个和 lib/index.js 里是同一套约定。故意在这里重写一遍、不从 index.js
 // import：工具是被主插件在 apply 里调起来的，反过来 import index.js 会绕成
@@ -132,10 +134,10 @@ function entriesToText(entries) {
 }
 
 /**
- * 把 5 个只读工具挂到 ctx.tools 上。
+ * 把这一组工具挂到 ctx.tools 上。
  *
  * 由 lib/index.js 的 apply 在 tools 服务就绪后调用（宿主那一层注册一次），
- * 所以不只是 LC 三个预设，任何预设里都能调。
+ * 所以不只是 LC 几个预设，任何预设里都能调。
  */
 export function registerTools(ctx, config) {
   if (ctx?.tools?.register === undefined) return false
@@ -818,7 +820,156 @@ export function registerTools(ctx, config) {
     },
   )
 
+  // ── 写今天这一篇 ──────────────────────────────────────────────────
+  //
+  // 为什么必须有个工具：日记是在**新会话**里聊的，聊天框里的字不会自己变成
+  // 文件。没有这个工具时，用户陪着 AI 聊完一整篇，那一篇只活在对话记录里，
+  // 磁盘上一个字都没有——「每天一篇存在自己文件夹里」这句承诺是空的。
+  //
+  // 它和上面几把工具不是一类：不改别人的卡、不改已经定下来的东西，只把用户
+  // 这一回亲口讲的话落到他指定的那一天。所以不要 approved，但**绝不静默覆盖**：
+  // 这一天已经有内容时，凡是「原来有、这次要写空的」小节都拦下来报给模型。
+  register(
+    'lifecard_diary_save',
+    [
+      '把今天这一篇日记存进用户自己的文件夹（一天一篇，文件名就是日期）。',
+      '**用户讲完、你把这五节收好之后**再调；不要边聊边存，也不要替他写。',
+      'section 的 title 只认这五个：今天最值得讲的一件事 / 当时在想什么 / 情绪往下三层 / 我做了什么决定 / 下一步。',
+      '「下一步」一条一行，写成他能勾掉的事。',
+      '这一天原来写过东西时，只会更新；凡是要把原来写的东西弄空的，会拦下来让你先问用户。',
+    ].join('\n'),
+    {
+      date: { type: 'string', description: '哪一天，例如 2026-10-31。不填就是今天。' },
+      sections: {
+        type: 'array',
+        description: '五节正文。每项 { title, body }：title 用那五个小节名之一，body 是用户自己说的话（不要替他润色成书面语）。',
+      },
+      scores: {
+        type: 'object',
+        description: '可选：健康 / 工作 / 关系 / 玩 各一个 0 到 10 的整数。用户不想打就别传。',
+      },
+      confirm_overwrite: {
+        type: 'boolean',
+        description: '这一天原来有内容、这次要少写几节时，问过用户、他确认要删，才传 true。',
+      },
+    },
+    ['sections'],
+    async (args) => {
+      const root = await resolveRoot(config)
+      const state = await store.readConfigState(root)
+      if (state.ok !== true) return '读不出来日记放在哪儿。'
+      const dir = diaryRootFrom(state.config)
+      if (dir === '') {
+        return '还没有挑日记放在哪个文件夹。让用户在首页点一次「写日记」，挑好位置之后再存。'
+      }
+
+      const date = String(args.date ?? '').trim() === '' ? store.localDate() : String(args.date).trim()
+      const rows = Array.isArray(args.sections) ? args.sections : []
+      if (rows.length === 0) return '一节都没有，那就没东西可存。'
+
+      const wanted = {}
+      const unknown = []
+      for (const row of rows) {
+        const title = matchSection(String(row?.title ?? '').trim())
+        const body = Array.isArray(row?.body)
+          ? row.body.map((x) => String(x ?? '').trim()).filter((x) => x !== '').join('\n')
+          : String(row?.body ?? '').trim()
+        if (title === '') { unknown.push(String(row?.title ?? '')); continue }
+        // 同一节写了两遍就接起来，别让后一段悄悄盖掉前一段。
+        wanted[title] = wanted[title] === undefined || wanted[title] === '' ? body : `${wanted[title]}\n${body}`
+      }
+      if (unknown.length > 0) {
+        return [
+          `这几节的标题我没认出来：${unknown.join('、')}`,
+          `只认这五个：${DIARY_SECTIONS.join(' / ')}。`,
+          '翻成上面的说法再来一次；实在有第六件事要说，就并进「今天最值得讲的一件事」。',
+        ].join('\n')
+      }
+
+      const scores = {}
+      const rawScores = args.scores !== null && typeof args.scores === 'object' ? args.scores : {}
+      for (const [key, value] of Object.entries(rawScores)) {
+        const n = Number(value)
+        if (!Number.isFinite(n)) continue
+        scores[String(key).trim()] = Math.max(0, Math.min(10, Math.round(n)))
+      }
+
+      const existing = await readDiary(dir, date)
+      if (existing.ok !== true) {
+        return `这一天读不出来，为了不把原来的东西弄丢，这次没写：${String(existing.error ?? '')}`
+      }
+
+      // 用户手改过这篇：多出来的小节我们存回去时会丢。宁可停下来说清楚。
+      // `今天这四样` 是我们自己写出来的那一段打分，不是用户手加的。
+      const known = new Set([...DIARY_SECTIONS, '今天这四样'])
+      const extra = (existing.sections ?? [])
+        .filter((s) => s?.title !== '_intro' && !known.has(String(s?.title ?? '')) && String(s?.body ?? '').trim() !== '')
+        .map((s) => String(s.title))
+      const intro = (existing.sections ?? []).find((s) => s?.title === '_intro')
+      if (String(intro?.body ?? '').trim() !== '') extra.unshift('开头那段')
+
+      const before = existing.data === null ? {} : existing.data
+      // 只有「这次明确写了这一节、而且写的是空」才算要弄空。没提到的那几节
+      // 是「接着写」，下面会原样留着——把「没提到」当成「要删」，接一句就拦一次。
+      const losing = DIARY_SECTIONS.filter((title) => {
+        if (!Object.hasOwn(wanted, title)) return false
+        const old = before[title]
+        const oldText = Array.isArray(old) ? old.join('') : String(old ?? '')
+        return oldText.trim() !== '' && String(wanted[title]).trim() === ''
+      })
+
+      if ((extra.length > 0 || losing.length > 0) && args.confirm_overwrite !== true) {
+        const lines = [`${date} 这一天已经有内容了，这次没写：`]
+        if (losing.length > 0) lines.push(`会弄空这几节：${losing.join('、')}`)
+        if (extra.length > 0) lines.push(`这一篇里还有我认不出的小节：${extra.join('、')}——写回去会把它丢掉`)
+        lines.push('先问一句用户：是改这一天，还是另起一天。他确认要删再带 confirm_overwrite: true。')
+        return lines.join('\n')
+      }
+
+      const payload = { ...wanted, date }
+      if (Object.keys(scores).length > 0) payload.scores = scores
+      // 已经写过、这次没提到的节，把原来的留着——「接着写」不该把上午写的删掉。
+      for (const title of DIARY_SECTIONS) {
+        if (payload[title] !== undefined) continue
+        const old = before[title]
+        if (Array.isArray(old) ? old.length > 0 : String(old ?? '').trim() !== '') payload[title] = old
+      }
+      if (Object.keys(scores).length === 0 && before.scores !== null && typeof before.scores === 'object') {
+        payload.scores = before.scores
+      }
+
+      const saved = await writeDiary(dir, payload)
+      if (saved.ok !== true) return `没能存下来：${String(saved.error ?? '写盘失败')}`
+      const wrote = DIARY_SECTIONS.filter((title) => {
+        const value = payload[title]
+        return Array.isArray(value) ? value.length > 0 : String(value ?? '').trim() !== ''
+      })
+      return [
+        `${existing.data === null ? '存好了' : '这一篇更新好了'}：${path.join(dir, saved.path)}`,
+        `写了 ${wrote.length} 节：${wrote.join('、')}`,
+        existing.data === null ? '' : '这一篇原来写的内容，这次没提到的都留着。',
+        '用户自己用访达就能打开改；下次再点「写日记」会接着这一篇。',
+      ].filter((x) => x !== '').join('\n')
+    },
+  )
+
   return true
+}
+
+/** 把模型写的小节名对上那五个固定的说法（多写几个字、少写几个字都认）。 */
+function matchSection(title) {
+  const want = String(title ?? '').trim()
+  if (want === '') return ''
+  if (DIARY_SECTIONS.includes(want)) return want
+  const rules = [
+    ['今天最值得讲的一件事', /最值得讲|那件事|今天的事/],
+    ['当时在想什么', /在想什么|当时想|心里想/],
+    ['情绪往下三层', /三层|情绪/],
+    ['我做了什么决定', /决定|怎么办/],
+    ['下一步', /下一步|接下来|要做的事/],
+  ]
+  for (const [canon, pattern] of rules) if (pattern.test(want)) return canon
+  return ''
 }
 
 /** 比对原句时先把空白和换行抹平：材料里的一句常被折行，逐字比会假失败。 */

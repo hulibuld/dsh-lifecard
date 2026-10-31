@@ -1,9 +1,9 @@
-// lifecard-tools：把卡和世界书交给模型的 10 个工具（7 个只读 + 3 个「批准后才写」）。
+// lifecard-tools：把卡和世界书交给模型的 11 个工具（7 个只读 + 3 个「批准后才写」+ 1 个「写日记」）。
 //
 // 为什么值得单独测：这些工具将来是「LC 酒馆 / LC 小说 / LC 现实」三个预设
 // 唯一能读到用户档案的通道。它们坏掉不会让插件起不来——宿主会静默少几个
 // 工具——所以只能靠测试盯着。
-import { mkdtemp, rm, mkdir, writeFile, readFile, rename } from 'node:fs/promises'
+import { mkdtemp, rm, mkdir, writeFile, readFile, rename, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -57,8 +57,8 @@ await seed()
 const registered = new Map()
 registerTools({ tools: { register: (def) => { registered.set(def.name, def) } } }, { workspace: root })
 
-console.log('\n=== 1. 十个工具都注册上了 ===')
-for (const name of ['lifecard_cards', 'lifecard_card', 'lifecard_default', 'lifecard_roleplay', 'lifecard_world', 'lifecard_materials', 'lifecard_material', 'lifecard_import_character', 'lifecard_import_world', 'lifecard_refine_card']) {
+console.log('\n=== 1. 十一个工具都注册上了 ===')
+for (const name of ['lifecard_cards', 'lifecard_card', 'lifecard_default', 'lifecard_roleplay', 'lifecard_world', 'lifecard_materials', 'lifecard_material', 'lifecard_import_character', 'lifecard_import_world', 'lifecard_refine_card', 'lifecard_diary_save']) {
   t(`注册了 ${name}`, registered.has(name))
 }
 t('都带 parameters（模型要知道怎么传参）', [...registered.values()].every((d) => d.parameters?.type === 'object'))
@@ -598,6 +598,104 @@ console.log('\n=== 10. 写日记顺手养卡：改「我」那张，和陪你写
     sections: [{ title: '外貌', body: '说起话来先顿一下。', quote: '总要先顿一下' }],
   })
   t('依据也能来自导入的材料', fromMaterial.includes('补好了') && fromMaterial.includes('随笔'), fromMaterial)
+
+  await rm(ws, { recursive: true, force: true })
+  await rm(diaryDir, { recursive: true, force: true })
+}
+
+console.log('\n=== 11. 聊完那一篇得真的落在磁盘上 ===')
+{
+  // 这一组盯的是最要命的一件事：日记门里聊完，磁盘上到底有没有那个文件。
+  // 没有这个工具时所有的对话都只活在会议记录里，"每天一篇存自己文件夹"是空话。
+  const ws = await mkdtemp(path.join(tmpdir(), 'lc-diarysave-'))
+  const diaryDir = await mkdtemp(path.join(tmpdir(), 'lc-diarysave-dir-'))
+  const reg = new Map()
+  registerTools({ tools: { register: (x) => reg.set(x.name, x) } }, { workspace: ws })
+  const call = async (name, args) => (await reg.get(name).execute(args ?? {}))?.text ?? ''
+
+  const five = [
+    { title: '今天最值得讲的一件事', body: '下班前被叫去开会，方案被整个推翻，回来路上买了两个包子。' },
+    { title: '当时在想什么', body: '脸上烧得厉害。想的不是方案哪里错，是别人怎么看我。' },
+    { title: '情绪往下三层', body: '羞；再往下是怕被当成没用的人；为此回家把旧项目翻出来看了一遍。' },
+    { title: '我做了什么决定', body: '下次先私下把数字对齐，再上会。' },
+    { title: '下一步', body: '把三张表的口径核一遍\n周五前发给他' },
+  ]
+
+  console.log('\n--- 11.1 没挑文件夹就说清下一步 ---')
+  t('没挑文件夹时不硬写，说清让用户点一次「写日记」', (await call('lifecard_diary_save', { sections: five })).includes('写日记'))
+
+  await store.writeConfig(ws, { diary_dir: diaryDir })
+
+  console.log('\n--- 11.2 五节 + 打分，一天一篇落成文件 ---')
+  const saved = await call('lifecard_diary_save', {
+    date: '2026-10-31', sections: five,
+    scores: { 健康: 6, 工作: 3, 关系: 7, 玩: 2 },
+  })
+  const today = store.localDate()
+  const onDisk = await diary.readDiary(diaryDir, '2026-10-31')
+  t('存好了，并且说出了那个文件', saved.includes('2026-10-31.md') && onDisk.ok === true, saved)
+  t('文件真的在用户那个文件夹里', (await readdir(diaryDir)).includes('2026-10-31.md'), (await readdir(diaryDir)).join(','))
+  t('五节都在', ['今天最值得讲的一件事', '当时在想什么', '情绪往下三层', '我做了什么决定', '下一步']
+    .every((k) => String(onDisk.data?.[k] ?? '').length > 0), JSON.stringify(onDisk.data))
+  t('「下一步」按行拆成两条', Array.isArray(onDisk.data?.['下一步']) && onDisk.data['下一步'].length === 2, JSON.stringify(onDisk.data?.['下一步']))
+  t('四个分数记下来了', onDisk.data?.scores?.健康 === 6 && onDisk.data?.scores?.玩 === 2, JSON.stringify(onDisk.data?.scores))
+  t('日期没传时用今天', (await call('lifecard_diary_save', { sections: [{ title: '今天最值得讲的一件事', body: '把碗洗了。' }] })).includes(today))
+
+  console.log('\n--- 11.3 小节名写得不一样也认 ---')
+  const loose = await call('lifecard_diary_save', {
+    date: '2026-11-01',
+    sections: [
+      { title: '今天那件事', body: '去看了牙。' },
+      { title: '当时心里想', body: '有点怕。' },
+      { title: '下一步', body: ['下周复诊'] },
+    ],
+  })
+  const looseFile = await diary.readDiary(diaryDir, '2026-11-01')
+  t('「今天那件事」并进了第一节', String(looseFile.data?.['今天最值得讲的一件事'] ?? '').includes('看了牙'), loose)
+  t('数组写法也收', Array.isArray(looseFile.data?.['下一步']) && looseFile.data['下一步'].includes('下周复诊'))
+  t('没认出来的节名要指出来、并且一个字节都不写', (await call('lifecard_diary_save', {
+    date: '2026-11-02', sections: [{ title: '天气', body: '多云。' }],
+  })).includes('没认出来') && !(await readdir(diaryDir)).includes('2026-11-02.md'))
+
+  console.log('\n--- 11.4 接着写：没提到的节不许被弄空 ---')
+  const more = await call('lifecard_diary_save', {
+    date: '2026-10-31',
+    sections: [{ title: '下一步', body: '把三张表的口径核一遍\n周五前发给他\n顺手问问预算' }],
+  })
+  const after = await diary.readDiary(diaryDir, '2026-10-31')
+  t('补一句不用先问一次', more.includes('更新好了'), more)
+  t('原来那四节一个字没动', String(after.data?.['当时在想什么'] ?? '').includes('脸上烧得厉害'))
+  t('「下一步」真的多了一条', Array.isArray(after.data?.['下一步']) && after.data['下一步'].length === 3, JSON.stringify(after.data?.['下一步']))
+  t('分数也留着', after.data?.scores?.工作 === 3)
+
+  console.log('\n--- 11.5 要弄空原来写的东西，先问一次 ---')
+  const wipe = await call('lifecard_diary_save', {
+    date: '2026-10-31',
+    sections: [{ title: '当时在想什么', body: '' }],
+  })
+  t('会把哪几节弄空，说清楚', wipe.includes('会弄空') && wipe.includes('当时在想什么'), wipe)
+  t('没确认就真的没写', String((await diary.readDiary(diaryDir, '2026-10-31')).data?.['当时在想什么'] ?? '').includes('脸上烧得厉害'))
+  t('确认之后才写', (await call('lifecard_diary_save', {
+    date: '2026-10-31', confirm_overwrite: true,
+    sections: [{ title: '当时在想什么', body: '' }],
+  })).includes('更新好了'))
+
+  console.log('\n--- 11.6 用户手改过的那一篇：不悄悄丢掉他加的东西 ---')
+  await writeFile(path.join(diaryDir, '2026-10-30.md'), [
+    '---', 'lifecard: 1', 'kind: lifecard-diary', 'date: 2026-10-30', '---', '',
+    '## 今天最值得讲的一件事', '', '妈妈打电话来问吃了什么。', '',
+    '## 我自己加的一段', '', '这句是我手写的，插件不该弄丢它。', '',
+  ].join('\n'), 'utf8')
+  const extra = await call('lifecard_diary_save', {
+    date: '2026-10-30',
+    sections: [{ title: '当时在想什么', body: '有点烦，但还是说吃得挺好。' }],
+  })
+  t('认不出来的小节会拦一下', extra.includes('我自己加的一段'), extra)
+  t('被拦的时候原文没动', (await readFile(path.join(diaryDir, '2026-10-30.md'), 'utf8')).includes('插件不该弄丢它'))
+  t('用户确认之后照写', (await call('lifecard_diary_save', {
+    date: '2026-10-30', confirm_overwrite: true,
+    sections: [{ title: '当时在想什么', body: '有点烦，但还是说吃得挺好。' }],
+  })).includes('更新好了'))
 
   await rm(ws, { recursive: true, force: true })
   await rm(diaryDir, { recursive: true, force: true })
