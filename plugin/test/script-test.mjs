@@ -978,6 +978,19 @@ await fs.rm(ws, { recursive: true, force: true })
     await fs.rm(ws6, { recursive: true, force: true })
   }
 
+  // ⑰ 「秒」这一档：戏里的秒不许报，镜头话的秒必须报。
+  //    判据是「谁在停」——主语是镜头/画面/黑场/定格这一类的才是在写时长。
+  {
+    const withLine = (line) => novel.scanScript(`第1场\n客厅 日 内\n【出场人物】甲\n${line}`)
+    const reports = (line) => withLine(line).issues.some((x) => x.kind === 'camera')
+    for (const line of ['△镜头停了两秒。', '△画面停住两秒。', '△黑场三秒。', '△定格2秒。', '△时长：15 秒。', '△第3秒，门开了。']) {
+      t(`写镜头时长要报：${line}`, reports(line), JSON.stringify(withLine(line).issues))
+    }
+    for (const line of ['△他愣了两秒。', '△等我一秒。', '△三秒钟后他走了。', '△她一秒都没停。']) {
+      t(`戏里的秒不报：${line}`, !reports(line), JSON.stringify(withLine(line).issues))
+    }
+  }
+
   // ⑯ △ 的同义字形：模型偶尔把希腊字母 Δ 或者 ▵ 当三角号打出来。
   //    认不出来的话整场变成「空场 + 没归位」两条提示，而人明明写了动作。
   {
