@@ -659,7 +659,7 @@ export async function listScripts(root, id) {
 function parseSceneHeadLine(line) {
   const raw = String(line ?? '').trim()
   if (raw === '') return null
-  if (raw.startsWith('△') || raw.startsWith('【')) return null
+  if (/^[△▲→]/.test(raw) || raw.startsWith('【')) return null
   // 有冒号或引号的都是台词，不是地点。直角引号（「」『』）也算引号——
   // 台词写成 `林小雨：「走吧。」` 时，这一行照样不是场头。
   if (/[：:]/.test(raw) || /["“”「」『』]/.test(raw)) return null
@@ -716,7 +716,7 @@ const NARRATOR_NAMES = ['旁白', '画外音', '画外', '字幕', '字幕卡', 
 
 export function parseDialogueLine(line) {
   let raw = String(line ?? '').trim()
-  if (raw === '' || raw.startsWith('△') || raw.startsWith('【')) return null
+  if (raw === '' || /^[△▲→]/.test(raw) || raw.startsWith('【')) return null
   // `甲：（低声）"走吧。"` —— 括号写在冒号后面。标准写法是 `甲（低声）："…"`，
   // 但这么写的剧本不少，整行作废太浪费：把括号挪到冒号前面再走同一条路。
   const afterColon = /^(.{1,20}?)\s*[：:]\s*(（[^）]{0,60}）)\s*(["“「『].*)$/.exec(raw)
@@ -842,7 +842,7 @@ export function parseScriptScenes(text) {
     // 场号的写法就是这些：第3场 / 第 3 场 / 【第3场】/ 场景3 / 场3 / SCENE 3 / 三、
     // 还有 markdown 和加粗壳子（`## 第3场`、`**第3场**`）——模型爱把标题加粗。
     // 一起认了，不然从别处粘回来的剧本整份读成 0 场。
-    const sceneHit = /^(?:[#>*_\s]*)(?:(?:第\s*[0-9０-９一二三四五六七八九十百零〇两]+\s*[章集卷]|Chapter\s*\d+)[\s·、:：.-]*)?(?:[【\[]?第\s*([0-9０-９一二三四五六七八九十百零〇两]+)\s*场[】\]]?|场景\s*([0-9０-９一二三四五六七八九十百零〇两]+)|场\s*([0-9０-９一二三四五六七八九十百零〇两]+)|(?:SCENE|Scene|scene)\s*([0-9０-９]+)|([0-9０-９]{1,3})\s*[.．、](?![0-9０-９])|([一二三四五六七八九十百零〇两]{1,4})\s*[、])\s*[*_\s]*[：:]?\s*(.*)$/.exec(raw)
+    const sceneHit = /^(?:[-–—•·*>#_\s→]*)(?:(?:第\s*[0-9０-９一二三四五六七八九十百零〇两]+\s*[章集卷]|Chapter\s*\d+)[\s·、:：.-]*)?(?:[【\[]?第\s*([0-9０-９一二三四五六七八九十百零〇两]+)\s*场[】\]]?|场景\s*([0-9０-９一二三四五六七八九十百零〇两]+)|场\s*([0-9０-９一二三四五六七八九十百零〇两]+)|(?:SCENE|Scene|scene)\s*([0-9０-９]+)|([0-9０-９]{1,3})\s*[.．、)）](?![0-9０-９])|([一二三四五六七八九十百零〇两]{1,4})\s*[、])\s*[*_\s]*[：:]?\s*(.*)$/.exec(raw)
     // 「1.」「2、」这种只在**整份还没有一场**的时候当场号。
     // 场内容里模型的编号行（`1. 他推开门。`、`1. 甲说："走。"`、人物清单）到处都是，
     // 一律当场号会把一份好剧本切成十几个假场，再连报三条误报。
@@ -903,7 +903,8 @@ export function parseScriptScenes(text) {
     // 动作行里夹着一句心里话（`△ 他站着。（心里想：他不回来了。）`）：
     // 把动作那段留下，心里那段拆出去单独算一条。这一条要在「△ 开头」那条之前，
     // 否则整行都进 actions，心里话就没人数了。
-    const inlineThought = /^△\s*([\s\S]*?)\s*[（(]\s*(?:[^（(]{0,6}?\s*)?(?:心里想|心想|内心|心里|暗自)[：:]([\s\S]*)[）)]\s*$/.exec(raw)
+    // 行首记号三种都认：△（标准）、▲（模型偶尔写）、→（中文输入法里打得出）。
+    const inlineThought = /^[△▲→]\s*([\s\S]*?)\s*[（(]\s*(?:[^（(]{0,6}?\s*)?(?:心里想|心想|内心|心里|暗自)[：:]([\s\S]*)[）)]\s*$/.exec(raw)
     if (inlineThought !== null) {
       const actionText = String(inlineThought[1] ?? '').trim()
       if (actionText !== '') current.actions.push(actionText)
@@ -911,7 +912,7 @@ export function parseScriptScenes(text) {
       mode = ''
       continue
     }
-    if (raw.startsWith('△')) {
+    if (/^[△▲→]/.test(raw)) {
       current.actions.push(raw.slice(1).trim())
       mode = ''
       continue

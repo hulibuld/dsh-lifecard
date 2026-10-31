@@ -535,6 +535,28 @@ console.log('\n=== 10.10 镜头话的两难：什么算分镜，什么是戏里�
   }
 }
 
+console.log('\n=== 10.11 markdown 列表符与箭头 ===')
+{
+  const shape = (raw) => { const s = novel.scanScript(raw); return { scenes: s.counts.scenes, actions: s.counts.actions, thoughts: s.counts.thoughts, issues: s.issues.map((i) => i.kind) } }
+
+  // 模型爱把场次写成 markdown 列表。以前整份读成 0 场。
+  const bullet = shape('- 第1场\n- 客厅 日 内\n【出场人物】甲\n△ 站着。')
+  t('减号列表的场头认得出', bullet.scenes === 1, JSON.stringify(bullet))
+  t('减号列表不报「没有一场」', !bullet.issues.includes('no-scene'), JSON.stringify(bullet.issues))
+
+  const ordered = shape('1) 客厅 日 内\n【出场人物】甲\n△ 站着。')
+  t('有序列表的场头认得出', ordered.scenes === 1, JSON.stringify(ordered))
+
+  // 箭头当动作行：中文输入法里 → 比 △ 好打，模型也常写。
+  const arrow = shape('第1场\n客厅 日 内\n【出场人物】甲\n→ 他推开门。')
+  t('箭头算动作行', arrow.actions === 1, JSON.stringify(arrow))
+  t('箭头不算没归位', !arrow.issues.includes('stray'), JSON.stringify(arrow.issues))
+
+  // 箭头 + 心里话：拆成两样。
+  const both = shape('第1场\n客厅 日 内\n【出场人物】甲\n→ 他站着。（心里想：他走了。）')
+  t('箭头行里的心里话拆得出来', both.thoughts === 1 && both.actions === 1, JSON.stringify(both))
+}
+
 console.log('\n=== 11. 提示词自己的样例，必须能被解析器原样吃下去 ===')
 {
   // 以前样例里写的是占位符「场景名 日/夜 内/外」，模型照抄就写成
