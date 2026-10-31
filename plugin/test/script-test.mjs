@@ -483,6 +483,43 @@ console.log('\n=== 10.8 模型真会写出来的那几种样子 ===')
   t('开场那句话不影响场数', chatty.scenes === 1, JSON.stringify(chatty))
 }
 
+console.log('\n=== 10.9 中文输入法下那些写法 ===')
+{
+  const head = (raw) => {
+    const p = novel.parseScriptScenes('第1场\n' + raw + '\n【出场人物】甲\n△ 站着。')
+    const s = p.scenes[0] ?? {}
+    return { scenes: p.counts.scenes, place: s.place, dayNight: s.dayNight, inOut: s.inOut }
+  }
+
+  // 全角斜杠：中文输入法下「客厅／日／内」是最常见的写法之一，
+  // 以前这一行读出来地点为空、日夜内外全空，整场等于没有场头。
+  const full = head('客厅／日／内')
+  t('全角斜杠的场头读得出来', full.place === '客厅' && full.dayNight === '日' && full.inOut === '内', JSON.stringify(full))
+  const fullBar = head('客厅｜夜｜外')
+  t('全角竖线的场头读得出来', fullBar.place === '客厅' && fullBar.dayNight === '夜' && fullBar.inOut === '外', JSON.stringify(fullBar))
+
+  // 时间写在括号里
+  const paren = head('客厅（日）内')
+  t('括号里写时间的场头读得出来', paren.place === '客厅' && paren.dayNight === '日' && paren.inOut === '内', JSON.stringify(paren))
+
+  // 地名自己带括号的，认不出来就不要硬猜：它会被报成「这行没归位」，
+  // 让人自己看一眼，比瞎拆成「客厅（二楼）」好。
+  const tricky = head('客厅（二楼）日 内')
+  t('带括注的地名不瞎拆', tricky.place !== '客厅（二楼）日 内', JSON.stringify(tricky))
+
+  // 全角空格：`客厅　日　内`（U+3000）也得认
+  const ideo = head('客厅\u3000日\u3000内')
+  t('全角空格的场头读得出来', ideo.place === '客厅' && ideo.dayNight === '日', JSON.stringify(ideo))
+
+  // `甲：（低声）"走吧。"` —— 括号写在冒号后面
+  const late = novel.parseDialogueLine('甲：（低声）"走吧。"')
+  t('括号写在冒号后面也认', late !== null && late.who === '甲' && late.paren === '低声' && late.text === '走吧。', JSON.stringify(late))
+
+  // 外国名字里的点不是分隔符
+  const foreign = novel.parseDialogueLine('迈克尔·柯里昂说："记住我这句话。"')
+  t('外国名字整个算一个人', foreign !== null && foreign.who === '迈克尔·柯里昂', JSON.stringify(foreign))
+}
+
 console.log('\n=== 11. 提示词自己的样例，必须能被解析器原样吃下去 ===')
 {
   // 以前样例里写的是占位符「场景名 日/夜 内/外」，模型照抄就写成

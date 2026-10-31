@@ -663,8 +663,13 @@ function parseSceneHeadLine(line) {
   // 有冒号或引号的都是台词，不是地点。直角引号（「」『』）也算引号——
   // 台词写成 `林小雨：「走吧。」` 时，这一行照样不是场头。
   if (/[：:]/.test(raw) || /["“”「」『』]/.test(raw)) return null
+  // 「客厅（日）内」「会议室（白天）内」：括号里只写时间/内外的，把它拽出来
+  // 当分隔符用。其它括号（`客厅（二楼）`）留给下面的判据——那是地名的一部分，
+  // 现在一律当「不是场头」，宁可漏也不瞎猜。
+  const unwrapped = raw.replace(/[（(]\s*(日|夜|晨|清晨|黎明|早晨|上午|中午|下午|午后|黄昏|傍晚|晚上|深夜|半夜|凌晨|白天|内|外|内景|外景|室内|室外)\s*[）)]/g, ' $1 ')
   // 不拆 `·`：`旧书店·门厅`「省城·外滩」是地名的一部分，拆开会把地名改掉。
-  const parts = raw.split(/[\s/|、]+/).filter((x) => x !== '')
+  // 全角斜杠和全角竖线要当分隔符：中文输入法下「客厅／日／内」是最常见的写法之一。
+  const parts = unwrapped.split(/[\s/|、／｜]+/).filter((x) => x !== '')
   let dayNight = ''
   let inOut = ''
   const rest = []
@@ -710,8 +715,12 @@ function parseSceneHeadLine(line) {
 const NARRATOR_NAMES = ['旁白', '画外音', '画外', '字幕', '字幕卡', '说明字幕', '解说']
 
 export function parseDialogueLine(line) {
-  const raw = String(line ?? '').trim()
+  let raw = String(line ?? '').trim()
   if (raw === '' || raw.startsWith('△') || raw.startsWith('【')) return null
+  // `甲：（低声）"走吧。"` —— 括号写在冒号后面。标准写法是 `甲（低声）："…"`，
+  // 但这么写的剧本不少，整行作废太浪费：把括号挪到冒号前面再走同一条路。
+  const afterColon = /^(.{1,20}?)\s*[：:]\s*(（[^）]{0,60}）)\s*(["“「『].*)$/.exec(raw)
+  if (afterColon !== null) raw = `${afterColon[1]}${afterColon[2]}：${afterColon[3]}`
   // 冒号左边是「名字」或「名字（括号里一句）」，名字后面可以带一个说法词。
   // 名字放宽到 20 字：`角落里那个一直没说话的男人说` 这种写法在戏里很常见，
   // 卡在 12 字会整行作废，最后落进「没归位」。
