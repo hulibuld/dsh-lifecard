@@ -436,6 +436,27 @@ console.log('\n=== 10.6 场号的各种写法（从别处粘回来也要认） =
   t('纯编号场头也认', numbered.counts.scenes === 2 && numbered.scenes[1].no === 2, JSON.stringify(numbered.counts))
 }
 
+console.log('\n=== 10.7 冒号左边塞了半句叙述、一行里两个人说话 ===')
+{
+  // 「这时候门开了，林小雨说：」——以前整串是说话人，演员表里就多出一个人。
+  const muddy = novel.parseDialogueLine('这时候门开了，林小雨说："你来了。"')
+  t('冒号左边的叙述不算名字', muddy !== null && muddy.who === '林小雨', JSON.stringify(muddy))
+  t('台词本身没被截坏', muddy !== null && muddy.text === '你来了。', JSON.stringify(muddy))
+
+  // 台词里套引号不能被当成「第二个人在说话」。
+  const nested = novel.parseDialogueLine('甲说："他说"好"就挂断了。"')
+  t('台词里的引号不算换人', nested !== null && nested.text === '他说"好"就挂断了。' && nested.rest === '', JSON.stringify(nested))
+
+  // 一行两个人：只认第一句，第二句留成「没归位」，不许悄悄消失。
+  const two = novel.parseScriptScenes(['第1场', '客厅 日 内', '【出场人物】甲', '△ 他站着。', '甲说："走。"乙说："等等。"', '△ 走了。'].join('\n'))
+  t('一行两个人只算一句台词', two.counts.dialogues === 1, JSON.stringify(two.counts))
+  t('第二句进了没归位', two.scenes[0].other.some((x) => String(x).includes('乙说')), JSON.stringify(two.scenes[0].other))
+
+  // 一句话说完就没了的那种，不能被切。
+  const plain = novel.parseDialogueLine('林小雨说："走吧。"')
+  t('普通一句台词不被切', plain !== null && plain.text === '走吧。' && plain.rest === '', JSON.stringify(plain))
+}
+
 console.log('\n=== 11. 提示词自己的样例，必须能被解析器原样吃下去 ===')
 {
   // 以前样例里写的是占位符「场景名 日/夜 内/外」，模型照抄就写成

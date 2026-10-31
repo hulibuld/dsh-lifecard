@@ -718,16 +718,32 @@ export function parseDialogueLine(line) {
   // 括号里那句可以很长（「把伞往回一推，声音低下去」）。
   // 引号三种都收：中文弯引号（“…”）、直角引号（「…」）、普通引号（"…"）。
   // 引号里的台词允许再套引号（`甲说："他说"好"就挂断了。"`），所以取到最后一个引号为止。
-  const hit = /^([^：:（]{1,20}?)\s*(?:（([^）]{0,60})）)?\s*(?:说|道|问|答|喊|叫|念|嚷|吼|应|叹|回|接|嘟囔|嘀咕|笑道|低声道|轻声道|冷笑道)?\s*[：:]\s*["“「『](.*)["”」』]\s*$/.exec(raw)
+  const hit = /^([^：:（]{1,20}?)\s*(?:（([^）]{0,60})）)?\s*(?:说|道|问|答|喊|叫|念|嚷|吼|应|叹|回|接|嘟囔|嘀咕|笑道|低声道|轻声道|冷笑道)?\s*[：:]\s*["“「『](.*?)["”」』]\s*$/.exec(raw)
   if (hit === null) return null
-  const who = stripSaying(String(hit[1] ?? '').trim())
+  const body = String(hit[3] ?? '').trim()
+  let who = stripSaying(String(hit[1] ?? '').trim())
+  // 「这时候门开了，林小雨说：」——冒号左边塞了半句叙述，
+  // 以前整串被当成说话人，演员表里就多出一个叫「这时候门开了，林小雨」的人。
+  // 逗号后面才是名字。
+  const afterComma = /[，,。；;！？]\s*([^，,。；;！？]{1,20})$/.exec(who)
+  if (afterComma !== null) who = stripSaying(afterComma[1])
   if (who === '') return null
+  // 名字里不许有标点：有就说明冒号左边不是名字，是叙述。
+  if (/[，,。；;！？：:、\s]{2,}/.test(who) || /[，,。；;！？]/.test(who)) return null
   // 旁白不是人，不进台词、更不进演员表。
   if (NARRATOR_NAMES.includes(who)) return null
+  // 「甲说："走。"乙说："等等。"」写在一行里：只认第一句，
+  // 后面那半句跟着走，让上层报「这行没归位」，别把两个人的话拼成一句。
+  // 判据要看「引号后面紧跟一个『某人说：』」——台词里套引号
+  // （`甲说："他说"好"就挂断了。"`）没有那个冒号，不能误切。
+  const second = /["”」』]\s*([^"“”「」『』\n]{1,20}?(?:说|道|问|喊|答|叫|嘟囔|嘀咕)[：:])\s*["“「『]/.exec(body)
+  const text = second === null ? body : body.slice(0, second.index).trim()
+  const rest = second === null ? '' : `${second[1]} ${body.slice(second.index + second[0].length).trim()}`.trim()
   return {
     who,
     paren: String(hit[2] ?? '').trim(),
-    text: String(hit[3] ?? '').trim(),
+    text: text.trim(),
+    rest,
     line: raw,
   }
 }
@@ -901,6 +917,9 @@ export function parseScriptScenes(text) {
       current.dialogues.push(said)
       // 说这句话的人也算出场的人：写没写【出场人物】是另一件事，扫的时候分开算。
       if (said.who !== '' && !current.cast.includes(said.who)) current.cast.push(said.who)
+      // 一行里塞了两个人的话（`甲说："走。"乙说："等等。"`）：
+      // 第二句原样留下，让扫描器报「这行没归位」，别让它悄悄消失。
+      if (String(said.rest ?? '') !== '') current.other.push(said.rest)
       mode = ''
       continue
     }
