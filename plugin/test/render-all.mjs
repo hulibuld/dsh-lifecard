@@ -808,7 +808,7 @@ renderRoot('检查一下', base('doctor', { 8: DOCTOR }))
     ['新建一张卡', base('newCard')],
     // 「下一步」这一页以前没进这个清单：招聘说明没填、点评没跑、投递表空的时候，
     // 里面有几处按钮是画出来但点不动的。
-    ['下一步', base('jobs')],
+    ['求职', base('jobs')],
     ['下一步（看过一份工作）', base('jobs', { 4: {
       ok: true, company: '某公司', role: '后端', score: 72, blocked: [], gaps: [],
       rows: [{ index: 0, requirement: '会 Go', importance: 'high', verdict: 'match', proof: '写了三年 Go' }],
@@ -1145,22 +1145,24 @@ if (seen.has('CardRow')) {
   }, { 0: '手写' })
 }
 
-// ── 下一步（求职 / 面试 / 简历） ─────────────────────────────────
+// ── 求职（贴招聘说明 / 面试 / 投递表） ─────────────────────────────
 // 求职页最容易犯的错是「报喜不报忧」：把匹配的列一堆，把挡住的藏在最后。
 // 这里的断言按屏幕上出现的先后顺序核对。
 {
   const before = visibleText.length
-  renderRoot('下一步（空表单）', base('jobs'))
+  renderRoot('求职（空表单）', base('jobs'))
   const joined = visibleText.slice(before).join('|')
   t('求职页有招聘说明输入框', joined.includes('招聘说明'), joined.slice(0, 200))
   t('求职页说清了要贴整段', joined.includes('整段'))
   t('求职页的按钮说的是看工作', joined.includes('看看这份工作'))
-  // 这个入口叫「下一步」，不叫「看工作」——它管的不只是找工作
+  // 用户两次否掉了入口的名字：先是「看工作」（太窄），后是「下一步」
+  // （原话：「看不出是什么东西，点进去才知道」）。名字得自己说明它管什么。
   const homeBefore = visibleText.length
-  renderRoot('首页（有下一步入口）', base('home'))
+  renderRoot('首页（有求职入口）', base('home'))
   const homeJoined = visibleText.slice(homeBefore).join('|')
-  t('首页那个入口叫「下一步」', homeJoined.includes('下一步'), homeJoined.slice(0, 200))
+  t('首页那个入口叫「求职」', homeJoined.includes('求职'), homeJoined.slice(0, 200))
   t('首页不再叫「看工作」', !homeJoined.includes('看工作'))
+  t('首页不再叫「下一步」', !homeJoined.includes('下一步'), homeJoined.slice(0, 200))
   t('求职设置默认收起', joined.includes('你想找什么样的工作'))
   t('求职页不出现投递按钮', !joined.includes('一键投递') && !joined.includes('自动投递'))
 }
@@ -1180,7 +1182,7 @@ if (seen.has('CardRow')) {
   }
   // 报告组件只有「读过一份 JD」之后才出现在树上，所以要先把 JobsView
   // 推到有报告的那一格，让它把 JobReport 交给 seen。
-  renderOne('下一步（已经读过一份）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, { 4: REPORT })
+  renderOne('求职（已经读过一份）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, { 4: REPORT })
   const before = visibleText.length
   const tree = renderOne('求职报告（有挡住的也有对得上的）', seen.get('JobReport'), { report: REPORT })
   const joined = visibleText.slice(before).join('|')
@@ -1652,7 +1654,7 @@ for (const [label, tree] of [
   // 真实人物那扇门：找工作的入口在
   const real = expand(renderRoot('真实人物门首页', base('home')))
   const realText = textOf(real)
-  t('真实人物门里有「下一步」', realText.includes('下一步'))
+  t('真实人物门里有「求职」', realText.includes('求职'))
   t('真实人物门里有「从记忆里认人」', realText.includes('从记忆里认人'))
   t('真实人物门里列出认识的人', realText.includes('认识的人'))
   t('每扇门都能换', flatButtons(real).some((b) => textOf(b).includes('换门')))
@@ -1660,7 +1662,7 @@ for (const [label, tree] of [
   // 写小说那扇门：找工作的入口不许出现，材料栏也不许
   const novel = expand(renderRoot('写小说门首页', base('novel')))
   const novelText = textOf(novel)
-  t('写小说门里没有「下一步」（找工作只属于真实人物那扇门）', !novelText.includes('下一步'), novelText.slice(0, 160))
+  t('写小说门里没有「求职」（找工作只属于真实人物那扇门）', !novelText.includes('求职'), novelText.slice(0, 160))
   t('写小说门里没有「从记忆里认人」', !novelText.includes('从记忆里认人'))
   t('写小说门里没有材料栏', !novelText.includes('材料 ·'))
   t('写小说门里把真人的卡说清在哪儿', !novelText.includes('认识的人') || novelText.includes('真实人物记录'))
@@ -1669,7 +1671,7 @@ for (const [label, tree] of [
   // 酒馆那扇门：同样没有找工作
   const tavern = expand(renderRoot('酒馆门首页', base('tavern')))
   const tavernText = textOf(tavern)
-  t('酒馆门里没有「下一步」', !tavernText.includes('下一步'), tavernText.slice(0, 160))
+  t('酒馆门里没有「求职」', !tavernText.includes('求职'), tavernText.slice(0, 160))
   t('酒馆门里能换门', flatButtons(tavern).some((b) => textOf(b).includes('换门')))
   t('进门那一屏没有换门按钮（已经在门口了）', !flatButtons(doors).some((b) => textOf(b).includes('换门')))
 

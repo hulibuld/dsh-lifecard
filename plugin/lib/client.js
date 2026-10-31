@@ -1691,7 +1691,7 @@ function LifeCardTab(props) {
       [VIEWS.setup]: '选个文件夹',
       [VIEWS.newCard]: '新建一张卡',
       [VIEWS.world]: activeWorld?.data?.name ?? '这本世界书',
-      [VIEWS.jobs]: '下一步',
+      [VIEWS.jobs]: '求职',
       [VIEWS.diary]: '写日记',
     }
     // 「选个文件夹」页一般不该有返回按钮（还没地方可回），
@@ -2463,15 +2463,18 @@ function HomeView({ state, listing, mode, onStartInterview, onDiary, onOpen, onO
       isReal
         ? h(Btn, { tone: 'analyze', size: 'sm', icon: 'person', onClick: () => onNavigate(VIEWS.memory), title: '从你写过的记忆里认出身边的人' }, '从记忆里认人')
         : null,
+      // 以前这个按钮叫「下一步」。用户的原话是「看不出是什么东西，点进去才知道」——
+      // 一个名字要能自己说明它管什么。这一页干的就是求职那件事：贴一份招聘
+      // 说明看差在哪、练一轮面试、记下投了哪些。叫「求职」两个字就够。
       isReal
-        ? h(Btn, { tone: 'primary', size: 'sm', icon: 'briefcase', onClick: () => onNavigate(VIEWS.jobs), title: '贴一份招聘说明，看看该不该投；或者练一轮面试' }, '下一步')
+        ? h(Btn, { tone: 'primary', size: 'sm', icon: 'briefcase', onClick: () => onNavigate(VIEWS.jobs), title: '贴一份招聘说明，看看该不该投；或者练一轮面试' }, '求职')
         : null,
       isReal
         ? h(Btn, { size: 'sm', icon: 'book', onClick: () => onNavigate(VIEWS.career), title: '把自己的情况写清楚，让 AI 帮你看简历、算差距、规划怎么走' }, '简历与规划')
         : null,
       // 写日记：点一下就开新对话，进去直接开始写。
       // 不摆在这一排的最后面，是因为它是每天都会用一次的东西，
-      // 而「下一步」「简历与规划」是一阵子用一次。
+      // 而「求职」「简历与规划」是一阵子用一次。
       isReal
         ? h(Btn, { tone: 'doctor', size: 'sm', icon: 'pencil', onClick: () => onDiary?.(), title: '今天哪件事最值得讲——开一个新对话，它带你写' }, '写日记')
         : null,
@@ -7196,7 +7199,7 @@ function scoreSection(report, onOpenCard) {
   )
 }
 
-// ── 下一步（求职 / 面试 / 简历） ────────────────────────────────────────────────────────
+// ── 求职（贴招聘说明 / 面试 / 投递表） ────────────────────────────────────────────────
 
 /** 投递状态的中文说法。和宿主侧 jobs-store.js 那份是同一套，改的时候两边一起改。 */
 const TRACK_LABEL = {
@@ -7211,11 +7214,15 @@ const TRACK_LABEL = {
 }
 
 /**
- * 「下一步」这一页。
+ * 「求职」这一页。
  *
- * 为什么叫这个名字：它管的不只是「找工作」——改简历、练面试、
- * 想清楚接下来半年怎么走，都是同一件事的不同阶段。叫「看工作」
- * 会让人以为只有投简历那天才用得上。
+ * 名字换过两次。最早叫「看工作」，用户觉得太窄；改成「下一步」，
+ * 用户的反馈是「看不出是什么东西，点进去才知道」。可见名字要自己
+ * 说明它管什么，而不是靠点进去才发现。
+ *
+ * 这一页真正干的事：贴一份招聘说明进来，换回一张「哪里会卡住你」的
+ * 清单；练一轮面试；记下投了哪些。改简历和长期规划在另一页
+ * （「简历与规划」），因为那是坐着写半个钟头的事，不是每天会点的。
  *
  * 只有一件事：把一份招聘说明贴进来，换回一张「哪里会卡住你」的清单。
  * 刻意没有的东西：批量投递、自动发信、岗位推荐流。这三样都会让人
