@@ -80,7 +80,7 @@
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: |-
-                写的时候可以调这几个 skill：human-writing（活人感、材料够不够）、lifecard-novel-writing（这一章的写法与盲评四问）、blind-review-loop（要改到能投出去时开无上下文评审）、visual-novel（要把这本做成能点着玩的视觉小说时）。
+                写的时候可以调这几个 skill：human-writing（活人感、材料够不够）、lifecard-novel-writing（这一章的写法与盲评四问）、blind-review-loop（要改到能投出去时开无上下文评审）、visual-novel（要把这本做成能点着玩的视觉小说时）、novel-to-script（把写好的某一章改成能配音能拍的剧本时）。
                 导入的小说、日记想变成卡或世界书时：先用 lifecard_materials 看有哪些材料、lifecard_material 读正文，
                 把候选列给用户看（人物写哪几段、每段依据哪句原句；世界书写哪几条、触发词是什么），
                 **等用户明确说要**，再带 approved: true 调 lifecard_import_character / lifecard_import_world。

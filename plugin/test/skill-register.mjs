@@ -64,12 +64,16 @@ console.log('\n=== 2. apply 时注册进 skills 服务 ===')
     llm: undefined,
   }
   api.apply(ctx, {})
-  t('五条 skill 都注册上了（访谈、写作、写作手艺、盲评、视觉小说）',
-    registered.length === 5, registered.map((s) => s.name))
+  t('六条 skill 都注册上了（访谈、写作、改剧本、写作手艺、盲评、视觉小说）',
+    registered.length === 6, registered.map((s) => s.name))
   const interview = registered.find((s) => s.name === 'lifecard-interview')
   const writing = registered.find((s) => s.name === 'lifecard-novel-writing')
   t('访谈 skill 在', interview !== undefined)
   t('写作 skill 在', writing !== undefined)
+  const scripting = registered.find((s) => s.name === 'novel-to-script')
+  t('改剧本 skill 在', scripting !== undefined)
+  t('改剧本：有描述', scripting !== undefined && typeof scripting.description === 'string' && scripting.description.length > 10)
+  t('改剧本：讲清了分场与 △ 动作', scripting !== undefined && scripting.content.includes('分场') && scripting.content.includes('△'))
 
   t('访谈：有描述', typeof interview.description === 'string' && interview.description.length > 10)
   t('访谈：内容不含 frontmatter', !interview.content.startsWith('---'))

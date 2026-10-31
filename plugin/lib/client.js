@@ -3415,6 +3415,13 @@ function BookView({ bookId, onBack, flash }) {
   const [outlineText, setOutlineText] = useState('')
   // 这一章的正文有没有还没存下的改动。切章之前必须先处理，否则写的东西会没。
   const [bodyDirty, setBodyDirty] = useState(false)
+  // 「改成剧本」。排在所有 hook 最后：上面那些槽位有测试按序号摆状态，
+  // 插在中间会让它们集体错位。
+  const [scriptText, setScriptText] = useState('')
+  const [scriptReport, setScriptReport] = useState('')
+  // 剧本有没有改了没存的。和正文的 bodyDirty 一个道理：切章之前得拦一下，
+  // 否则人手改的那几场会静静消失，而且没有任何提示。
+  const [scriptDirty, setScriptDirty] = useState(false)
 
   const load = async (want) => {
     setErr(null)
@@ -3426,17 +3433,38 @@ function BookView({ bookId, onBack, flash }) {
       if (o?.ok === true) { setOutline(o); setOutlineText(String(o.text ?? '')) }
       // 默认打开：有章节就打开最后一章，没有就从第一章开始
       const target = Number(want) > 0 ? Number(want) : (r.chapters.length === 0 ? 1 : r.chapters[r.chapters.length - 1].index)
+      // 先翻章再改章号：翻章被拦下（剧本没存）时，章号不能已经跑到新的一章去。
+      if ((await openChapter(target)) === false) return
       setChapterIndex(target)
-      await openChapter(target)
     } catch (e) { setErr(humanizeError(e)) }
   }
 
+  // 剧本改了没存，要走了先问一句。空剧本不用问（改都没改过）。
+  // 返回 true 表示可以走：人点了「好」，或者压根没有没存的东西。
+  const leaveScript = (why) => {
+    if (scriptDirty !== true || scriptText.trim() === '') return true
+    const go = typeof window !== 'undefined' && typeof window.confirm === 'function'
+      ? window.confirm(`第 ${chapterIndex} 章改出来的剧本还没存，${why}就没了。\n\n现在走吗？`)
+      : true
+    return go === true
+  }
+
   const openChapter = async (index) => {
+    // 改过剧本还没存就切章，得先说一声。
+    if (leaveScript('换过去') !== true) return false
     setErr(null); setReview(null); setDraft(null)
+    setScriptText(''); setScriptReport(''); setScriptDirty(false)
     try {
       const r = await call('novel.chapter.get', { id: bookId, index })
       setBody(r?.ok === true ? String(r.body ?? '') : '')
-    } catch (e) { setErr(humanizeError(e)) }
+      // 这一章以前改过剧本没有——改过就直接摆出来，不用再问一次。
+      const s = await call('novel.script.get', { id: bookId, index })
+      if (s?.ok === true && String(s.text ?? '').trim() !== '') {
+        setScriptText(String(s.text))
+        setScriptReport(String(s.report ?? ''))
+      }
+      return true
+    } catch (e) { setErr(humanizeError(e)); return true }
   }
 
   // 切章之前先把没存的正文收好。存不上就留在这一章，别让人以为写进去了。
@@ -3453,8 +3481,9 @@ function BookView({ bookId, onBack, flash }) {
 
   const goChapter = async (index) => {
     if ((await keepBody()) !== true) return
+    // 剧本那边没存就被拦下时，章号也不能跟着变——否则标题写着新章、框里还是旧章。
+    if ((await openChapter(index)) === false) return
     setChapterIndex(index)
-    await openChapter(index)
   }
 
   /**
@@ -3471,6 +3500,8 @@ function BookView({ bookId, onBack, flash }) {
     if (ok !== true) return
     setErr(null)
     setBodyDirty(false)
+    // 这一章要被删了，它上面那份没存的剧本一起作废，不要再拦一次。
+    setScriptText(''); setScriptReport(''); setScriptDirty(false)
     try {
       const r = await call('novel.chapter.delete', { id: bookId, index: n })
       if (r?.ok !== true) { setErr(r?.error ?? '这一章没删掉'); return }
@@ -3557,6 +3588,58 @@ function BookView({ bookId, onBack, flash }) {
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
   }
 
+  /**
+   * 把这一章改成剧本。
+   *
+   * 改的是**存下来的那一版**：正文有没存的改动先存一次，不然后台改的是旧稿，
+   * 用户盯着屏幕会以为它漏掉了刚写的那几句。
+   */
+  const doScript = async () => {
+    if (body.trim() === '') { setErr('这一章还空着，没什么可改的。'); return }
+    if ((await keepBody()) !== true) return
+    setBusy('script'); setErr(null)
+    try {
+      const r = await call('novel.script.draft', { id: bookId, index: chapterIndex })
+      if (r?.ok !== true) { setErr(r?.error ?? '这次没改成'); return }
+      setScriptText(String(r.text ?? ''))
+      setScriptReport(String(r.report ?? ''))
+      // 改出来但还没落盘，所以算「没存」：这时候切章要拦。
+      setScriptDirty(true)
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  const saveScript = async () => {
+    if (scriptText.trim() === '') { setErr('剧本还是空的，没什么可存的。'); return }
+    setBusy('scriptSave'); setErr(null)
+    try {
+      const r = await call('novel.script.save', { id: bookId, index: chapterIndex, text: scriptText })
+      if (r?.ok !== true) { setErr(r?.error ?? '没存上'); return }
+      setScriptReport(String(r.report ?? ''))
+      setScriptDirty(false)
+      flash?.(`第 ${chapterIndex} 章的剧本存好了`)
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  /**
+   * 删掉这一章的剧本。
+   *
+   * 只删改编出来的那份，章节正文一点不动——所以这里说的「删」和删章不是一回事，
+   * 提示语里要把这件事说清，否则有人会以为连这一章一起删了。
+   */
+  const removeScript = async () => {
+    const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
+      ? window.confirm(`把第 ${chapterIndex} 章改出来的剧本删掉？\n\n只删这份剧本，小说正文不动。想再要一份，可以重新改一次。`)
+      : true
+    if (ok !== true) return
+    setBusy('scriptDelete'); setErr(null)
+    try {
+      const r = await call('novel.script.delete', { id: bookId, index: chapterIndex })
+      if (r?.ok !== true) { setErr(r?.error ?? '这份剧本没删掉'); return }
+      setScriptText(''); setScriptReport(''); setScriptDirty(false)
+      flash?.(`删掉了第 ${chapterIndex} 章的剧本`)
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
   if (book === null) {
     return h('div', { className: 'lc-pad lc-stack' },
       h(Btn, { size: 'sm', icon: 'back', onClick: onBack }, '回书架'),
@@ -3571,7 +3654,7 @@ function BookView({ bookId, onBack, flash }) {
 
   return h('div', { className: 'lc-pad lc-stack', style: { gap: 12 } },
     h('div', { className: 'lc-row' },
-      h(Btn, { size: 'sm', icon: 'back', onClick: async () => { if ((await keepBody()) === true) onBack() } }, '回书架'),
+      h(Btn, { size: 'sm', icon: 'back', onClick: async () => { if ((await keepBody()) === true && leaveScript('回去') === true) onBack() } }, '回书架'),
       h('div', { className: 'lc-grow lc-ellipsis', style: { fontWeight: 700, fontSize: 16.5 } }, `《${title}》`),
       h('span', { className: 'lc-meta' }, `${chapters.length} 章`),
     ),
@@ -3706,6 +3789,51 @@ function BookView({ bookId, onBack, flash }) {
         : h('div', { className: 'lc-stack', style: { marginTop: 8 } },
             h(Note, { tone: 'warn', icon: 'warning' }, '它挑出来的问题（不是夸奖，也不用全听）'),
             h('div', { style: { whiteSpace: 'pre-wrap', lineHeight: 1.8, fontSize: 14 } }, review),
+          ),
+    ),
+
+    // ── 改成剧本 ──
+    // 用户丢来一份《小说改剧本》，要的就是这一件事：章写完了，能不能变成能拍的东西。
+    // 放在正文下面而不是单独一屏：改剧本看的永远是「这一章」，跟正文分开会让人
+    // 在两屏之间来回确认自己改的是哪一章。
+    h('div', { className: 'lc-sec' },
+      h('div', { className: 'lc-row' },
+        h('div', { className: 'lc-grow' }, h('span', { style: { fontWeight: 650 } }, '改成剧本')),
+        h(Btn, { size: 'sm', tone: 'analyze', icon: 'spark', disabled: busy !== '', onClick: doScript },
+          busy === 'script' ? '正在改…' : (scriptText.trim() === '' ? '把这一章改成剧本' : '重改一份')),
+      ),
+      h('div', { className: 'lc-meta', style: { marginTop: 4, lineHeight: 1.7 } },
+        '改出来的是能配音、能拍的剧本：切成一场一场，叙述变成 △ 动作，人物的话变成台词。',
+        h('br'),
+        '小说里那些拍不出来的东西（他心里一沉、命运的齿轮），改的时候会被丢下。'),
+      scriptReport === ''
+        ? null
+        : h('div', {
+            className: 'lc-meta',
+            style: {
+              marginTop: 6, whiteSpace: 'pre-wrap', lineHeight: 1.8,
+              padding: '8px 10px', borderRadius: 8, background: 'var(--lc-analyze-soft)',
+            },
+          }, scriptReport),
+      scriptText.trim() === ''
+        ? null
+        : h('div', { className: 'lc-stack', style: { marginTop: 6 } },
+            h('textarea', {
+              className: 'lc-textarea',
+              value: scriptText,
+              spellCheck: false,
+              style: { minHeight: 300, lineHeight: 1.8 },
+              onChange: (e) => { setScriptText(e.target.value); setScriptDirty(true) },
+            }),
+            h('div', { className: 'lc-row' },
+              h(Btn, { size: 'sm', tone: 'primary', icon: 'check', disabled: busy !== '', onClick: saveScript },
+                busy === 'scriptSave' ? '正在存…' : '存好这份剧本'),
+              // 「删掉这份」写全：不写清是剧本，人会以为删的是小说正文。
+              h(Btn, { size: 'sm', ghost: true, icon: 'trash', disabled: busy !== '', onClick: removeScript }, '删掉这份剧本'),
+              h('div', { className: 'lc-grow' }),
+              h('span', { className: 'lc-meta' },
+                scriptDirty ? `${scriptText.length} 字 · 还没存` : `${scriptText.length} 字`),
+            ),
           ),
     ),
 
