@@ -701,5 +701,161 @@ if (typeof BookView === 'function') {
   globalThis.fetch = realFetch
 }
 
+// ── 拿到草稿就立刻翻章：这份草稿只能落在它那一章 ──────────────────────────
+// 审查员报的：第 2 章点「改成剧本」，稿子还在路上就翻去第 3 章，
+// 回来以后稿子落进第 3 章的框，人一存就写成 books/x/scripts/003.md。
+if (typeof BookView === 'function') {
+  stores.clear()
+  calls.length = 0
+  const realFetch = globalThis.fetch
+  let releaseDraft = null
+  globalThis.fetch = async (url, opts = {}) => {
+    const method = String(url).split('/').pop()
+    const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : {}
+    const reply = (payload) => ({ ok: true, status: 200, json: async () => payload })
+    if (method === 'novel.get') return reply({ ok: true, data: { title: '雨里的门' }, idea: '', chapters: [{ index: 1 }, { index: 2 }, { index: 3 }] })
+    if (method === 'novel.outline.get') return reply({ ok: true, text: '', chapters: [] })
+    if (method === 'novel.chapter.get') return reply({ ok: true, body: `第 ${body.index} 章的正文。` })
+    if (method === 'novel.script.get') return reply({ ok: true, text: '', report: '' })
+    if (method === 'novel.script.draft') {
+      // 故意挂住：模拟「第 2 章的稿子还在路上」。
+      await new Promise((r) => { releaseDraft = r })
+      return reply({ ok: true, text: '第 2 章刚改出来的剧本', report: '共 1 场。' })
+    }
+    calls.push({ method, body })
+    return reply({ ok: true })
+  }
+
+  const propsD = { bookId: 'a', onBack: () => {}, flash: () => {} }
+  let treeD = renderComponent(BookView, propsD)
+  await settle()
+  treeD = renderComponent(BookView, propsD)
+  await settle()
+
+  // 先翻到第 2 章。
+  const go2 = collect(treeD, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+    && String(textOf(x)).includes('第 2 章'))[0]
+  go2?.props?.onClick()
+  await settle()
+  treeD = renderComponent(BookView, propsD)
+  await settle()
+
+  const draftBtn = collect(treeD, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+    && String(textOf(x)).includes('把这一章改成剧本'))[0]
+  if (draftBtn !== undefined) {
+    draftBtn.props.onClick()
+    await settle()
+    // 稿子还在路上，人翻去第 3 章。
+    treeD = renderComponent(BookView, propsD)
+    const go3 = collect(treeD, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+      && String(textOf(x)).includes('第 3 章'))[0]
+    go3?.props?.onClick()
+    await settle()
+    if (typeof releaseDraft === 'function') releaseDraft()
+    await settle()
+    await new Promise((r) => setTimeout(r, 20))
+    await settle()
+    treeD = renderComponent(BookView, propsD)
+    await settle()
+
+    const boxes = collect(treeD, (x) => x.type === 'textarea').map((x) => String(x.props?.value ?? ''))
+    t('晚到的草稿不许落进第 3 章的框', boxes.every((v) => v.includes('第 2 章刚改出来的剧本') === false), JSON.stringify(boxes).slice(0, 200))
+    const saves = calls.filter((c) => c.method === 'novel.script.save')
+    t('更没有把它当第 3 章存下去', saves.every((c) => c.body.index !== 3), JSON.stringify(saves).slice(0, 200))
+  }
+
+  globalThis.fetch = realFetch
+}
+
+// ── 正文没读出来：章号也得跟标题对上，不能停在 0 ─────────────────────────
+// 审查员报的：读第 2 章时后台报错，章号停在旧值（初值 0），屏幕上写「写第 0 章」，
+// 一点存，后台把 index 0 当成「接在最后一章后面」，凭空多出一章。
+if (typeof BookView === 'function') {
+  stores.clear()
+  calls.length = 0
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, opts = {}) => {
+    const method = String(url).split('/').pop()
+    const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : {}
+    const reply = (payload) => ({ ok: true, status: 200, json: async () => payload })
+    if (method === 'novel.get') return reply({ ok: true, data: { title: '雨里的门' }, idea: '', chapters: [{ index: 1 }, { index: 2 }] })
+    if (method === 'novel.outline.get') return reply({ ok: true, text: '', chapters: [] })
+    if (method === 'novel.chapter.get') {
+      calls.push({ method, body })
+      if (Number(body.index) === 2) return reply({ ok: false, error: '这一章的正文读不出来。' })
+      return reply({ ok: true, body: '第一章的正文。' })
+    }
+    if (method === 'novel.script.get') return reply({ ok: true, text: '', report: '' })
+    calls.push({ method, body })
+    return reply({ ok: true })
+  }
+
+  const propsE = { bookId: 'a', onBack: () => {}, flash: () => {} }
+  let treeE = renderComponent(BookView, propsE)
+  await settle()
+  treeE = renderComponent(BookView, propsE)
+  await settle()
+  const go2e = collect(treeE, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+    && String(textOf(x)).includes('第 2 章'))[0]
+  go2e?.props?.onClick()
+  await settle()
+  treeE = renderComponent(BookView, propsE)
+  await settle()
+
+  const wordsE = JSON.stringify(collect(treeE, (n) => true).map((n) => textOf(n)))
+  t('读不出来时标题不写「写第 0 章」', wordsE.includes('写第 0 章') === false, wordsE.slice(0, 200))
+  t('读不出来时标题跟着点的那一章', wordsE.includes('第 2 章'), wordsE.slice(0, 240))
+  // 正文没读出来，存的动作必须禁用：不然一存就把空壳写到第 2 章去。
+  const saveE = collect(treeE, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+    && String(textOf(x)).includes('存好这一章'))[0]
+  t('读不出来时「存好这一章」是灰的', saveE === undefined || saveE.props?.disabled === true, String(saveE?.props?.disabled))
+
+  globalThis.fetch = realFetch
+}
+
+// ── 顶栏 / 换门直接切屏前，先把这一屏没存的收好 ────────────────────────
+// 以前顶栏那个「←」直接换屏，BookView 卸载时谁也来不及问一句，写了半天的正文就没了。
+if (typeof BookView === 'function') {
+  stores.clear()
+  calls.length = 0
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, opts = {}) => {
+    const method = String(url).split('/').pop()
+    const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : {}
+    const reply = (payload) => ({ ok: true, status: 200, json: async () => payload })
+    if (method === 'novel.get') return reply({ ok: true, data: { title: '雨里的门' }, idea: '', chapters: [{ index: 1 }] })
+    if (method === 'novel.outline.get') return reply({ ok: true, text: '', chapters: [] })
+    if (method === 'novel.chapter.get') return reply({ ok: true, body: '第一章的正文。' })
+    if (method === 'novel.script.get') return reply({ ok: true, text: '', report: '' })
+    calls.push({ method, body })
+    return reply({ ok: true })
+  }
+
+  const flush = { current: null }
+  const propsF = { bookId: 'a', onBack: () => {}, flash: () => {}, flushRef: flush }
+  let treeF = renderComponent(BookView, propsF)
+  await settle()
+  treeF = renderComponent(BookView, propsF)
+  await settle()
+
+  t('干净的时候 flush 直接放行（不用等一帧）', flush.current !== null && flush.current() === true, String(flush.current))
+
+  // 写一段正文，不存。
+  const bodyBox = collect(treeF, (x) => x.type === 'textarea').find((x) => String(x.props?.value ?? '').includes('第一章的正文'))
+  if (bodyBox !== undefined) {
+    bodyBox.props.onChange({ target: { value: '第一章的正文。\n我又写了一句。' } })
+    treeF = renderComponent(BookView, propsF)
+    await settle()
+    const out = flush.current()
+    t('有没存的正文时 flush 要给一个约定（等它）', out !== true, String(out))
+    await Promise.resolve(out).catch(() => false)
+    await settle()
+    const saved = calls.filter((c) => c.method === 'novel.chapter.save')
+    t('离开之前把这段正文存下来了', saved.length >= 1 && String(saved[saved.length - 1].body.body ?? '').includes('我又写了一句'), JSON.stringify(saved).slice(0, 200))
+  }
+
+  globalThis.fetch = realFetch
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
