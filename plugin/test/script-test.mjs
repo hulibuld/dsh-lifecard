@@ -457,6 +457,32 @@ console.log('\n=== 10.7 冒号左边塞了半句叙述、一行里两个人说�
   t('普通一句台词不被切', plain !== null && plain.text === '走吧。' && plain.rest === '', JSON.stringify(plain))
 }
 
+console.log('\n=== 10.8 模型真会写出来的那几种样子 ===')
+{
+  const shape = (raw) => {
+    const s = novel.scanScript(novel.stripFence(raw))
+    return { scenes: s.counts.scenes, actions: s.counts.actions, dialogues: s.counts.dialogues, issues: s.issues.map((i) => i.kind) }
+  }
+  const body = ['【出场人物】甲', '△ 他站着。', '甲说："走。"'].join('\n')
+
+  const fenced = shape('```markdown\n第1场\n客厅 日 内\n' + body + '\n```')
+  t('包在代码块里也能读', fenced.scenes === 1 && fenced.dialogues === 1, JSON.stringify(fenced))
+  t('代码块不算问题', !fenced.issues.includes('stray'), JSON.stringify(fenced.issues))
+
+  const bold = shape('**第1场 客厅 日 内**\n' + body)
+  t('加粗的场头认得出', bold.scenes === 1, JSON.stringify(bold))
+  t('加粗场头的日夜内外没被 `**` 粘坏', !bold.issues.includes('no-head'), JSON.stringify(bold.issues))
+
+  const hash = shape('## 第3场 门外 夜 外\n' + body)
+  t('markdown 标题的场头认得出', hash.scenes === 1 && !hash.issues.includes('no-head'), JSON.stringify(hash))
+
+  // 模型爱在前面先说一句「好的，我按你的要求改成了剧本」。这行不算进戏，
+  // 但要说出来，别让人以为它凭空不见了。
+  const chatty = shape('好的，我按你的要求改成了剧本。\n\n第1场\n客厅 日 内\n' + body)
+  t('开场那句话会被点出来', chatty.issues.includes('preamble'), JSON.stringify(chatty.issues))
+  t('开场那句话不影响场数', chatty.scenes === 1, JSON.stringify(chatty))
+}
+
 console.log('\n=== 11. 提示词自己的样例，必须能被解析器原样吃下去 ===')
 {
   // 以前样例里写的是占位符「场景名 日/夜 内/外」，模型照抄就写成

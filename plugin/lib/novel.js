@@ -855,7 +855,9 @@ export function parseScriptScenes(text) {
       }
       scenes.push(current)
       mode = ''
-      const inline = String(sceneHit[7] ?? '').trim()
+      // 加粗/标题壳子里的场头（`**第1场 客厅 日 内**`、`## 第3场 门外 夜 外`）：
+      // 行尾的 `**` 会把「内」粘成「内**」，日夜内外就认不出来了。
+      const inline = String(sceneHit[7] ?? '').trim().replace(/^[#>*_\s]+/, '').replace(/[#>*_\s]+$/, '').trim()
       const head = inline === '' ? null : parseSceneHeadLine(inline)
       if (head !== null && (head.dayNight !== '' || head.inOut !== '' || head.place !== '')) {
         current.place = head.place
