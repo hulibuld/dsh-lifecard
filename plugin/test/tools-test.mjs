@@ -642,15 +642,18 @@ console.log('\n=== 11. 聊完那一篇得真的落在磁盘上 ===')
   t('日期没传时用今天', (await call('lifecard_diary_save', { sections: [{ title: '今天最值得讲的一件事', body: '把碗洗了。' }] })).includes(today))
 
   console.log('\n--- 11.3 小节名写得不一样也认 ---')
+  // 上一步刚往「今天」写过一篇，这里得挑一个不是今天的日子，
+  // 否则会撞上「这一天已经有内容了」的拦截——那正是它该做的事。
+  const spare = today === '2026-09-15' ? '2026-09-16' : '2026-09-15'
   const loose = await call('lifecard_diary_save', {
-    date: '2026-11-01',
+    date: spare,
     sections: [
       { title: '今天那件事', body: '去看了牙。' },
       { title: '当时心里想', body: '有点怕。' },
       { title: '下一步', body: ['下周复诊'] },
     ],
   })
-  const looseFile = await diary.readDiary(diaryDir, '2026-11-01')
+  const looseFile = await diary.readDiary(diaryDir, spare)
   t('「今天那件事」并进了第一节', String(looseFile.data?.['今天最值得讲的一件事'] ?? '').includes('看了牙'), loose)
   t('数组写法也收', Array.isArray(looseFile.data?.['下一步']) && looseFile.data['下一步'].includes('下周复诊'))
   t('没认出来的节名要指出来、并且一个字节都不写', (await call('lifecard_diary_save', {
