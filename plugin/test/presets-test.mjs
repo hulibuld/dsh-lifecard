@@ -163,5 +163,15 @@ console.log('\n=== 3. 按 id 找 ===')
   t('小说预设说了：人和世界也在系统提示里', patch.includes('已经原样在系统提示里'), '')
 }
 
+// 日记这一门最容易做半截：聊得很顺，但那一篇从来没落地。
+// 预设里必须明说「收尾就调 lifecard_diary_save 存下来」，否则等于没这个功能。
+{
+  const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  t('日记预设存在', patch.includes('id: lc-diary'), '')
+  t('日记预设说了：收尾要真的存下来', patch.includes('lifecard_diary_save') && patch.includes('不存等于没写'), '')
+  t('日记预设说了：被拦时要问用户', patch.includes('confirm_overwrite'), '')
+  t('日记预设排在几扇门最后', patch.indexOf('id: lc-diary') > patch.indexOf('id: lc-real'), '')
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exitCode = 1

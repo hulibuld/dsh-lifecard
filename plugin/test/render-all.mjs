@@ -808,7 +808,7 @@ renderRoot('检查一下', base('doctor', { 8: DOCTOR }))
     ['新建一张卡', base('newCard')],
     // 「下一步」这一页以前没进这个清单：招聘说明没填、点评没跑、投递表空的时候，
     // 里面有几处按钮是画出来但点不动的。
-    ['下一步', base('jobs')],
+    ['求职', base('jobs')],
     ['下一步（看过一份工作）', base('jobs', { 4: {
       ok: true, company: '某公司', role: '后端', score: 72, blocked: [], gaps: [],
       rows: [{ index: 0, requirement: '会 Go', importance: 'high', verdict: 'match', proof: '写了三年 Go' }],
@@ -1145,22 +1145,24 @@ if (seen.has('CardRow')) {
   }, { 0: '手写' })
 }
 
-// ── 下一步（求职 / 面试 / 简历） ─────────────────────────────────
+// ── 求职（贴招聘说明 / 面试 / 投递表） ─────────────────────────────
 // 求职页最容易犯的错是「报喜不报忧」：把匹配的列一堆，把挡住的藏在最后。
 // 这里的断言按屏幕上出现的先后顺序核对。
 {
   const before = visibleText.length
-  renderRoot('下一步（空表单）', base('jobs'))
+  renderRoot('求职（空表单）', base('jobs'))
   const joined = visibleText.slice(before).join('|')
   t('求职页有招聘说明输入框', joined.includes('招聘说明'), joined.slice(0, 200))
   t('求职页说清了要贴整段', joined.includes('整段'))
   t('求职页的按钮说的是看工作', joined.includes('看看这份工作'))
-  // 这个入口叫「下一步」，不叫「看工作」——它管的不只是找工作
+  // 用户两次否掉了入口的名字：先是「看工作」（太窄），后是「下一步」
+  // （原话：「看不出是什么东西，点进去才知道」）。名字得自己说明它管什么。
   const homeBefore = visibleText.length
-  renderRoot('首页（有下一步入口）', base('home'))
+  renderRoot('首页（有求职入口）', base('home'))
   const homeJoined = visibleText.slice(homeBefore).join('|')
-  t('首页那个入口叫「下一步」', homeJoined.includes('下一步'), homeJoined.slice(0, 200))
+  t('首页那个入口叫「求职」', homeJoined.includes('求职'), homeJoined.slice(0, 200))
   t('首页不再叫「看工作」', !homeJoined.includes('看工作'))
+  t('首页不再叫「下一步」', !homeJoined.includes('下一步'), homeJoined.slice(0, 200))
   t('求职设置默认收起', joined.includes('你想找什么样的工作'))
   t('求职页不出现投递按钮', !joined.includes('一键投递') && !joined.includes('自动投递'))
 }
@@ -1180,7 +1182,7 @@ if (seen.has('CardRow')) {
   }
   // 报告组件只有「读过一份 JD」之后才出现在树上，所以要先把 JobsView
   // 推到有报告的那一格，让它把 JobReport 交给 seen。
-  renderOne('下一步（已经读过一份）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, { 4: REPORT })
+  renderOne('求职（已经读过一份）', seen.get('JobsView'), { onBack: () => {}, flash: () => {} }, { 4: REPORT })
   const before = visibleText.length
   const tree = renderOne('求职报告（有挡住的也有对得上的）', seen.get('JobReport'), { report: REPORT })
   const joined = visibleText.slice(before).join('|')
@@ -1652,7 +1654,7 @@ for (const [label, tree] of [
   // 真实人物那扇门：找工作的入口在
   const real = expand(renderRoot('真实人物门首页', base('home')))
   const realText = textOf(real)
-  t('真实人物门里有「下一步」', realText.includes('下一步'))
+  t('真实人物门里有「求职」', realText.includes('求职'))
   t('真实人物门里有「从记忆里认人」', realText.includes('从记忆里认人'))
   t('真实人物门里列出认识的人', realText.includes('认识的人'))
   t('每扇门都能换', flatButtons(real).some((b) => textOf(b).includes('换门')))
@@ -1660,7 +1662,7 @@ for (const [label, tree] of [
   // 写小说那扇门：找工作的入口不许出现，材料栏也不许
   const novel = expand(renderRoot('写小说门首页', base('novel')))
   const novelText = textOf(novel)
-  t('写小说门里没有「下一步」（找工作只属于真实人物那扇门）', !novelText.includes('下一步'), novelText.slice(0, 160))
+  t('写小说门里没有「求职」（找工作只属于真实人物那扇门）', !novelText.includes('求职'), novelText.slice(0, 160))
   t('写小说门里没有「从记忆里认人」', !novelText.includes('从记忆里认人'))
   t('写小说门里没有材料栏', !novelText.includes('材料 ·'))
   t('写小说门里把真人的卡说清在哪儿', !novelText.includes('认识的人') || novelText.includes('真实人物记录'))
@@ -1669,7 +1671,7 @@ for (const [label, tree] of [
   // 酒馆那扇门：同样没有找工作
   const tavern = expand(renderRoot('酒馆门首页', base('tavern')))
   const tavernText = textOf(tavern)
-  t('酒馆门里没有「下一步」', !tavernText.includes('下一步'), tavernText.slice(0, 160))
+  t('酒馆门里没有「求职」', !tavernText.includes('求职'), tavernText.slice(0, 160))
   t('酒馆门里能换门', flatButtons(tavern).some((b) => textOf(b).includes('换门')))
   t('进门那一屏没有换门按钮（已经在门口了）', !flatButtons(doors).some((b) => textOf(b).includes('换门')))
 
@@ -2096,6 +2098,8 @@ for (const [label, tree] of [
 // 先把这几个组件注册进 seen（它们只在对应那一屏才被渲染到）。
 renderRoot('书（逐章写，先注册组件）', base('book', { 25: { id: 'demo', title: '示范' } }))
 renderRoot('简历与规划（先注册组件）', base('career'))
+renderRoot('写日记（先注册组件）', base('diary'))
+renderRoot('人物关系网（先注册组件）', base('net'))
 renderRoot('玩一段（先注册组件）', base('game', { 25: { id: 'demo', title: '示范' } }))
 renderRoot('导入（先注册组件）', base('import'))
 renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
@@ -2146,6 +2150,39 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   const tree = renderOne('简历读不出来（有话说）', seen.get('CareerView'), { flash: () => {}, onBack: () => {} }, { 0: null, 6: '你的简历这一份读不出来' })
   const words = textOf(expand(tree))
   t('简历读不出来时说清楚', words.includes('读不出来'), words.slice(0, 300))
+  // 从卡里读那一段：没有卡时不能只给一个空下拉（点了没反应等于坏）。
+  const noCards = renderOne('简历与规划（一张卡都还没有）', seen.get('CareerView'), { flash: () => {}, cards: [], onOpenCard: () => {}, onBack: () => {} },
+    { 0: { 基本情况: '', 学过什么: '', 做过什么: '', 会用哪些工具: '', 想去哪: '', 还差什么: '' }, 7: false })
+  const noCardWords = textOf(expand(noCards))
+  t('一张卡都没有时说得下去', noCardWords.includes('现在还没有卡'), noCardWords.slice(0, 400))
+  t('一张卡都没有时不摆空下拉', !noCardWords.includes('挑一张卡'), noCardWords.slice(0, 400))
+
+  const withCards = renderOne('简历与规划（有卡可挑）', seen.get('CareerView'), { flash: () => {}, cards: [{ id: 'lin', name: '林知远', relation: '同学', path: 'people/lin.card.md' }], onOpenCard: () => {}, onBack: () => {} },
+    { 0: { 基本情况: '', 学过什么: '', 做过什么: '', 会用哪些工具: '', 想去哪: '', 还差什么: '' }, 7: false })
+  const cardWords = textOf(expand(withCards))
+  t('有卡时可以挑', cardWords.includes('挑一张卡') && cardWords.includes('读读看'), cardWords.slice(0, 400))
+  t('说清摘的是原话', cardWords.includes('原话'), cardWords.slice(0, 600))
+
+  // 摘完那一段：勾掉的要看得出来，并进去的按钮在下面。
+  const MINE = {
+    ok: true,
+    card: { id: 'lin', name: '林知远', path: 'people/lin.card.md' },
+    items: [
+      { slot: 'work', text: '在校刊做编辑，做了两年', quote: '在校刊做编辑' },
+      { slot: 'education', text: '大四', quote: '大四' },
+    ],
+    groups: { education: ['大四'], work: ['在校刊做编辑，做了两年'], skills: [], want: [] },
+    dropped: [{ text: '出版过一本诗集', why: '引文在材料里找不到逐字对应（可能是模型补的）' }],
+    labels: { education: '学校与课程', work: '做过的事', skills: '会用的工具', want: '想去哪' },
+  }
+  const minedTree = renderOne('简历与规划（摘出来了）', seen.get('CareerView'), { flash: () => {}, cards: [{ id: 'lin', name: '林知远', path: 'people/lin.card.md' }], onOpenCard: () => {}, onBack: () => {} },
+    { 0: { 基本情况: '', 学过什么: '', 做过什么: '', 会用哪些工具: '', 想去哪: '', 还差什么: '' }, 7: false, 8: 'people/lin.card.md', 9: MINE, 10: { [['work', '在校刊做编辑，做了两年'].join('\u0000')]: true, [['education', '大四'].join('\u0000')]: true } })
+  const minedWords = textOf(expand(minedTree))
+  t('摘出来的摆出来了', minedWords.includes('在校刊做编辑，做了两年'), minedWords.slice(0, 600))
+  t('每条带着原文', minedWords.includes('原文：在校刊做编辑'), minedWords.slice(0, 800))
+  t('格子名说人话', minedWords.includes('做过的事'), minedWords.slice(0, 800))
+  t('被拦下的也说一句', minedWords.includes('没敢用'), minedWords.slice(0, 900))
+  t('有并进去的按钮', minedWords.includes('把勾着的并进简历'), minedWords.slice(0, 900))
   t('给一个「再试一次」', words.includes('再试一次'), words.slice(0, 300))
 }
 
@@ -2343,6 +2380,131 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   const tree = renderRoot('写小说门（书架上有书）', base('novel', { 2: SHELF, 26: [{ id: 'b1', title: '长夜' }] }))
   const words = textIn(expand(tree))
   t('书架上每本书都有「不要这本了」', words.includes('不要这本了'), words.slice(0, 400))
+}
+
+{
+  // 写日记那一屏：这一屏以前一条测试都没有（grep diary 在 render-all 里零命中），
+  // 于是「第一次进来按钮是灰的走不下去」「文件夹被挪走了还装作没事」这两个
+  // 真问题全是靠人工点才发现的。
+  const Diary = seen.get('DiaryView')
+  t('写日记那一屏注册上了', Diary !== undefined)
+
+  const READY = { ok: true, dir: '/Users/x/Documents/我的日记', ready: true, today: '2026-10-31', todayDone: false, count: 3, recent: [{ date: '2026-10-30', chars: 300 }] }
+  const FIRST = { ok: true, dir: '', ready: false, today: '2026-10-31', todayDone: false, count: 0, recent: [], suggest: '/Users/x/Documents/我的日记' }
+
+  // hook 槽：0 info / 1 dir / 2 editing / 3 saving / 4 err / 5 opened
+  const first = renderOne('写日记（第一次进来）', Diary, { onBack: () => {}, flash: () => {}, onStart: () => {}, busy: '' }, { 0: FIRST, 1: '/Users/x/Documents/我的日记', 2: true })
+  const firstText = textOf(expand(first))
+  t('第一次进来直接落在「日记放在哪个文件夹」', firstText.includes('日记放在哪个文件夹'), firstText.slice(0, 300))
+  t('标题说清已经替你填好了', firstText.includes('已经替你填好一个位置'), firstText.slice(0, 300))
+  t('「就用这个文件夹」是能点的', collectIn(expand(first), (n) => n.type === 'button' && textOf(n).includes('就用这个文件夹')).some((b) => b.props?.disabled !== true), firstText.slice(0, 300))
+
+  const noSuggest = renderOne('写日记（连建议位置都没有）', Diary, { onBack: () => {}, flash: () => {}, onStart: () => {}, busy: '' }, { 0: { ...FIRST, suggest: '' }, 1: '', 2: true })
+  t('位置是空的时候按钮是灰的', collectIn(expand(noSuggest), (n) => n.type === 'button' && textOf(n).includes('就用这个文件夹')).every((b) => b.props?.disabled === true))
+
+  const ready = renderOne('写日记（今天还没写）', Diary, { onBack: () => {}, flash: () => {}, onStart: () => {}, busy: '' }, { 0: READY, 1: READY.dir, 2: false })
+  const readyText = textOf(expand(ready))
+  t('说清存在哪个文件夹（只给最后一段）', readyText.includes('我的日记') && !readyText.includes('/Users/x'), readyText.slice(0, 300))
+  t('今天没写就说「今天还没写」', readyText.includes('今天还没写'), readyText.slice(0, 300))
+  t('主按钮是「今天就写这一篇」', readyText.includes('今天就写这一篇'), readyText.slice(0, 300))
+  t('写过的日子点得动', collectIn(expand(ready), (n) => typeof n.props?.onClick === 'function' && textOf(n).includes('2026-10-30')).length > 0, readyText.slice(0, 300))
+
+  const done = renderOne('写日记（今天写过了）', Diary, { onBack: () => {}, flash: () => {}, onStart: () => {}, busy: '' }, { 0: { ...READY, todayDone: true }, 1: READY.dir, 2: false })
+  const doneText = textOf(expand(done))
+  t('写过了就说「接着写」', doneText.includes('接着写今天这一篇'), doneText.slice(0, 300))
+  // 以前这里写「前面写的不会丢」，而实际写盘时整节会被换掉——不许再这么保证。
+  t('不再空口保证「前面写的不会丢」', !doneText.includes('前面写的不会丢'), doneText.slice(0, 300))
+
+  const opening = renderOne('写日记（正在开）', Diary, { onBack: () => {}, flash: () => {}, onStart: () => {}, busy: 'diary' }, { 0: READY, 1: READY.dir, 2: false })
+  const openText = textOf(expand(opening))
+  t('开着的时候按钮写「正在开…」', openText.includes('正在开…'), openText.slice(0, 300))
+  t('开着的时候按钮点不动', collectIn(expand(opening), (n) => n.type === 'button' && textOf(n).includes('正在开')).every((b) => b.props?.disabled === true))
+
+  const broken = renderOne('写日记（文件夹被挪走了）', Diary, { onBack: () => {}, flash: () => {}, onStart: () => {}, busy: '' }, { 0: { ...READY, broken: true, error: '那个日记文件夹读不出来。检查一下权限。', count: 0, recent: [] }, 1: READY.dir, 2: false })
+  const brokenText = textOf(expand(broken))
+  t('文件夹读不出来时照实说', brokenText.includes('读不出来'), brokenText.slice(0, 400))
+  t('并说日记本身还在', brokenText.includes('还在'), brokenText.slice(0, 400))
+
+  const opened = renderOne('写日记（翻看某一天）', Diary, { onBack: () => {}, flash: () => {}, onStart: () => {}, busy: '' }, {
+    0: READY, 1: READY.dir, 2: false, 5: { date: '2026-10-30', data: { date: '2026-10-30', 今天最值得讲的一件事: '去看了牙。', 下一步: ['下周复诊'], scores: { 健康: 6 } } },
+  })
+  const openedText = textOf(expand(opened))
+  t('翻开某一天能看到那一节正文', openedText.includes('去看了牙'), openedText.slice(0, 400))
+  t('那天打的分也看得见', openedText.includes('健康 6'), openedText.slice(0, 400))
+  t('翻看页有「回去」', openedText.includes('回去'), openedText.slice(0, 400))
+
+  const emptyDay = renderOne('写日记（那天没写正文）', Diary, { onBack: () => {}, flash: () => {}, onStart: () => {}, busy: '' }, { 0: READY, 1: READY.dir, 2: false, 5: { date: '2026-10-29', data: { date: '2026-10-29' } } })
+  t('那天没写正文就直说', textOf(expand(emptyDay)).includes('没有写正文'), textOf(expand(emptyDay)).slice(0, 300))
+}
+
+
+{
+  // 人物关系网：一屏里只回答一件事——我认识的人是怎么散开的。
+  // 以前卡只能按名字和更新时间排，「谁离我近、谁只是通过别人认识的」
+  // 在列表里完全看不出来。
+  const Net = seen.get('NetView')
+  t('人物关系网那一屏注册上了', Net !== undefined)
+
+  const SELF = { id: 'wo', name: '钱禹舟', kind: 'self', relation: '我', relationLabel: '我自己', extras: [], tags: [], intro: '', coverage: 72, path: 'people/钱禹舟.card.md' }
+  const DAD = { id: 'dad', name: '钱俊锋', kind: 'real', relation: 'father', relationLabel: '父亲', extras: ['也是家人'], tags: [], intro: '', coverage: 55, path: 'people/钱俊锋.card.md' }
+  const FRIEND = { id: 'li', name: '李雷', kind: 'real', relation: 'friend', relationLabel: '朋友', extras: [], tags: [], intro: '', coverage: 40, path: 'people/李雷.card.md' }
+  const AUNT = { id: 'yi', name: '我姨', kind: 'real', relation: 'relative', relationLabel: '亲戚', extras: [], tags: [], intro: '', coverage: 20, path: 'people/我姨.card.md' }
+  const STRANGER = { id: 'mo', name: '陈默', kind: 'real', relation: '', relationLabel: '', extras: [], tags: [], intro: '', coverage: 10, path: 'people/陈默.card.md' }
+  const NET = {
+    ok: true, self: SELF,
+    rings: { self: [SELF], inner: [DAD, FRIEND], outer: [AUNT] },
+    edges: [], counts: { self: 1, inner: 2, outer: 1, outside: 1 }, outside: [STRANGER],
+  }
+
+  // hook 槽：0 net / 1 err / 2 showOutside
+  const props = { onBack: () => {}, onOpen: () => {}, onTalk: () => {} }
+  const tree = renderOne('人物关系网（有中心）', Net, props, { 0: NET, 1: null, 2: false })
+  const words = textOf(expand(tree))
+  t('说清谁在中心、各圈几个人', words.includes('钱禹舟') && words.includes('2 个人是你直接认识的'), words.slice(0, 400))
+  t('有「我直接认识的」这一栏', words.includes('我直接认识的（2）'), words.slice(0, 400))
+  t('有「通过别人认识的」这一栏', words.includes('通过别人认识的（1）'), words.slice(0, 400))
+  t('父亲那张写着关系词', words.includes('父亲'), words.slice(0, 600))
+  t('补充关系也读得出来', words.includes('也是家人'), words.slice(0, 600))
+  // 没写出关系的人不能凭空消失：收在底下那一行，点得开。
+  t('没写关系的人收在底下那一行', words.includes('还有 1 个人'), words.slice(0, 700))
+  t('并且说清卡片还在', words.includes('卡片在'), words.slice(0, 700))
+  t('每个名字都点得动', collectIn(expand(tree), (n) => n.type === 'button' && textOf(n).includes('钱俊锋')).length > 0)
+
+  // 网上面的每一个点、每一条线都得画出来，否则只剩一列名单。
+  const svg = collectIn(expand(tree), (n) => n.type === 'svg')[0]
+  t('画了一张图', svg !== undefined)
+  const circles = svg === undefined ? [] : collectIn(svg, (n) => n.type === 'circle')
+  t('图上每个点都画了', circles.length >= 4, `circles=${circles.length}`)
+  const lines = svg === undefined ? [] : collectIn(svg, (n) => n.type === 'line')
+  t('图上连线也画了', lines.length >= 3, `lines=${lines.length}`)
+
+  // 没有「我」那张卡的时候：不能凭空画一个圈把人围起来，要先请用户把自己写成一张卡。
+  const noSelf = renderOne('人物关系网（还没有我）', Net, props, {
+    0: { ok: true, self: null, rings: { self: [], inner: [DAD], outer: [] }, edges: [], counts: { self: 0, inner: 1, outer: 0, outside: 0 }, outside: [] }, 1: null, 2: false,
+  })
+  const noSelfWords = textOf(expand(noSelf))
+  t('没有「我」的卡时照实说', noSelfWords.includes('还没有一张写着「我」的卡'), noSelfWords.slice(0, 400))
+  t('并给出「先把我也写一张」这条路', noSelfWords.includes('先把「我」写成一张卡'), noSelfWords.slice(0, 500))
+  t('这时不画那张图', collectIn(expand(noSelf), (n) => n.type === 'svg' && n.props?.['aria-label'] === '以我为中心的人物关系图').length === 0)
+  t('这张图能报出自己是什么', collectIn(expand(tree), (n) => n.type === 'svg' && n.props?.['aria-label'] === '以我为中心的人物关系图').length === 1)
+
+  // 一个人都没有：不能给一张空白图，要说清怎么让第一个人进来。
+  const empty = renderOne('人物关系网（一个人都没有）', Net, props, { 0: { ...NET, self: SELF, rings: { self: [SELF], inner: [], outer: [] }, counts: { self: 1, inner: 0, outer: 0, outside: 0 }, outside: [] }, 1: null, 2: false })
+  const emptyWords = textOf(expand(empty))
+  t('一个人都没有时说清下一步', emptyWords.includes('还没有人和你有直接关系'), emptyWords.slice(0, 400))
+  t('并且告诉用户去写「他是我的什么人」', emptyWords.includes('他是我的什么人') || emptyWords.includes('父亲'), emptyWords.slice(0, 600))
+
+  // 后台读不出来：不能画半张网，要照实说。
+  const broke = renderOne('人物关系网（读不出来）', Net, props, { 0: null, 1: '这个文件夹里的卡读不出来。', 2: false })
+  t('读不出来时照实说', textOf(expand(broke)).includes('读不出来'), textOf(expand(broke)).slice(0, 300))
+
+  // 首页那个入口：只在真实人物这扇门里有。
+  const realHome = textOf(expand(renderRoot('首页（真实门有入口）', base('home'))))
+  t('真实门首页有「人物关系网」', realHome.includes('人物关系网'), realHome.slice(0, 500))
+  const novelHome = textOf(expand(renderRoot('首页（小说门没有入口）', base('novel'))))
+  t('写小说门不摆「人物关系网」', !novelHome.includes('人物关系网'), novelHome.slice(0, 500))
+  const tavernHome = textOf(expand(renderRoot('首页（酒馆门没有入口）', base('tavern'))))
+  t('酒馆门不摆「人物关系网」', !tavernHome.includes('人物关系网'), tavernHome.slice(0, 500))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

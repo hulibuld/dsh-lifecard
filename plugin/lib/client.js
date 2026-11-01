@@ -841,7 +841,7 @@ const SECTIONS_REL = [
 
 // ── 主界面 ────────────────────────────────────────────────────────
 
-const VIEWS = { doors: 'doors', novel: 'novel', book: 'book', game: 'game', career: 'career', tavern: 'tavern', tavernChat: 'tavernChat', home: 'home', card: 'card', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs' }
+const VIEWS = { doors: 'doors', novel: 'novel', book: 'book', game: 'game', career: 'career', tavern: 'tavern', tavernChat: 'tavernChat', home: 'home', card: 'card', diary: 'diary', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs', net: 'net' }
 
 // ── 开一个新会话去问 ──────────────────────────────────────────────
 //
@@ -896,6 +896,18 @@ function openInterviewSession({ about, mode, ask } = {}) {
   const preset = DOOR_PRESET[mode === 'tavern' ? 'tavern' : mode === 'novel' ? 'novel' : 'real']
   // 这条路要等网络，是异步的；下面几条退路有同步的，调用方两种都接。
   return openInterviewSessionByServer(prompt, preset)
+}
+
+/**
+ * 开今天这一篇日记。
+ *
+ * 第一句由后台拼（要带上前几天写的、带上「我」那张卡里已有的东西），
+ * 这边只管把这句话和预设一起塞进新会话。
+ */
+function openDiarySession(started) {
+  const prompt = String(started?.text ?? '').trim()
+  if (prompt === '') return { ok: false, prompt: '', reason: '今天这一篇的那句话没拼出来' }
+  return openInterviewSessionByServer(prompt, String(started?.preset ?? 'lc-diary'))
 }
 
 /**
@@ -1442,6 +1454,49 @@ function LifeCardTab(props) {
     settle(started)
   }, [flash])
 
+  /**
+   * 点「写日记」：先进那一屏。
+   *
+   * 以前是「定过文件夹就直接开新对话」，结果是那一屏变成死代码——想换文件夹、
+   * 想看看写过几天、想打开昨天那篇，全都没有入口（第一次选完位置，那个屏幕
+   * 就再也回不去了）。现在这一颗按钮只负责把人送到那一屏，开新对话由那屏的
+   * 主按钮发起。
+   */
+  const startDiary = useCallback(async () => {
+    setError(null)
+    setView(VIEWS.diary)
+  }, [])
+
+  /** 日记那一屏的主按钮：真的把今天这一篇开起来。 */
+  const runDiaryStart = useCallback(async () => {
+    if (busy !== '') return
+    setBusy('diary'); setError(null)
+    try {
+      const info = await call('diary.info', {})
+      if (info?.ok !== true) { setError(info?.error ?? '日记那边没能打开'); return }
+      if (info.ready !== true) { setError('还没有挑日记放在哪个文件夹'); return }
+      const started = await call('diary.start', {})
+      if (started?.ok !== true) { setError(started?.error ?? '今天这一篇没能开起来'); return }
+      const done = await openDiarySession(started)
+      if (done?.ok === true) {
+        setHandoff(null)
+        flash(done.note !== undefined ? String(done.note) : '已经在新对话里了，跟着它写就行', done.note === undefined ? 'ok' : 'warn')
+        return
+      }
+      // 开不了新会话时那句话也可能没拼出来：空文本框没有任何用处，
+      // 直接把原因说出来，别让用户对着一个空框发愣。
+      if (String(done?.prompt ?? '').trim() === '') {
+        setError(String(done?.reason ?? '今天这一篇开不起来，再点一次试试'))
+        return
+      }
+      setHandoff(done)
+    } catch (e) {
+      setError(humanizeError(e))
+    } finally {
+      setBusy('')
+    }
+  }, [busy, flash])
+
   /** 打开一本书，进到那一屏。 */
   const openBook = (book) => {
     setActiveBook({ id: book?.id ?? '', title: book?.title ?? '' })
@@ -1651,7 +1706,9 @@ function LifeCardTab(props) {
       [VIEWS.setup]: '选个文件夹',
       [VIEWS.newCard]: '新建一张卡',
       [VIEWS.world]: activeWorld?.data?.name ?? '这本世界书',
-      [VIEWS.jobs]: '下一步',
+      [VIEWS.jobs]: '求职',
+      [VIEWS.diary]: '写日记',
+      [VIEWS.net]: '人物关系网',
     }
     // 「选个文件夹」页一般不该有返回按钮（还没地方可回），
     // 但已经选过文件夹、是从首页主动进来换的时候要能退回去。
@@ -1804,7 +1861,7 @@ function LifeCardTab(props) {
         // 直接退回首页，用户点了没反应，还以为坏了。现在把清单单独摊开。
         return activeCard === null
           ? proposal === null
-            ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
+            ? h(HomeView, { state, listing, mode, onDiary: startDiary, onStartInterview: startInterview, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
             : h('div', { className: 'lc-pad lc-stack' },
                 proposal.about === undefined || String(proposal.about).trim() === ''
                   ? null
@@ -1866,7 +1923,7 @@ function LifeCardTab(props) {
         })
       case VIEWS.world:
         return activeWorld === null
-          ? h(HomeView, { state, listing, mode, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
+          ? h(HomeView, { state, listing, mode, onDiary: startDiary, onStartInterview: startInterview, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
           : h(WorldView, {
               world: activeWorld,
               listing,
@@ -1887,12 +1944,31 @@ function LifeCardTab(props) {
         })
       case VIEWS.doctor:
         return h(DoctorView, { report: doctor, onOpenCard: openCard, onRun: () => runDoctor(true) })
+      case VIEWS.diary:
+        return h(DiaryView, {
+          flash,
+          onBack: () => setView(VIEWS.home),
+          onStart: runDiaryStart,
+          busy,
+        })
+      case VIEWS.net:
+        return h(NetView, {
+          onBack: () => setView(VIEWS.home),
+          // 走 openCard 而不是把列表里那一行直接摆上去：列表项只有摘要，
+          // 卡那一页要的是正文字节，少了它摊开是空的。
+          onOpen: (id) => {
+            const hit = (listing?.cards ?? []).find((c) => String(c.id ?? '') === String(id ?? ''))
+            if (hit === undefined) return
+            openCard(hit)
+          },
+          onTalk: (name) => startInterview({ about: name, mode }),
+        })
       case VIEWS.career:
-        return h(CareerView, { flash, onBack: () => setView(VIEWS.home) })
+        return h(CareerView, { flash, cards: listing?.cards ?? [], onOpenCard: openCard, onBack: () => setView(VIEWS.home) })
       case VIEWS.jobs:
         return h(JobsView, { onBack: () => setView(VIEWS.home), flash })
       default:
-        return h(HomeView, { state, listing, mode, onStartInterview: startInterview, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
+        return h(HomeView, { state, listing, mode, onDiary: startDiary, onStartInterview: startInterview, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
     }
   }
 
@@ -1911,7 +1987,11 @@ function LifeCardTab(props) {
       // 不静默失败——点了没反应，比说清「这一步要你手动搬一下」更让人困惑。
       handoff === null || handoff.ok === true ? null : h('div', { style: { padding: '10px 12px 0' }, 'data-interview-handoff': '1' },
         h(Note, { tone: 'warn', icon: 'warning' },
-          h('div', null, '这个版本不支持直接开会话，把下面这句复制到新对话里：'),
+          // 有真原因就说真原因：以前这里写死一句「这个版本不支持」，
+          // 而真正卡住的地方（预设没认出来、第一句没发出去）一句都没露出来。
+          h('div', null, String(handoff.reason ?? '').trim() === ''
+            ? '这一下没能直接开新对话，把下面这句复制到新对话里也一样能用：'
+            : `${String(handoff.reason).trim()}　把下面这句复制到新对话里也一样能用：`),
           h('textarea', {
             readOnly: true,
             rows: 3,
@@ -2015,7 +2095,7 @@ const DOORS = [
     title: '真实人物记录',
     desc: '身边的人：他做过什么、怎么说话、你们之间发生过什么。',
     bullets: ['聊一聊，它会问你几个具体的问题', '贴材料，让 AI 读出能核实的内容', '找工作：贴招聘说明、练面试'],
-    modules: ['人物卡', '访谈记录', '材料与建议', '简历与规划'],
+    modules: ['人物卡', '人物关系网', '访谈记录', '材料与建议', '简历与规划'],
   },
   {
     id: 'novel', icon: 'book', tone: 'import',
@@ -2215,7 +2295,7 @@ function DoorsView({ onPick, state, features, hidden, onHide, onShow }) {
   )
 }
 
-function HomeView({ state, listing, mode, onStartInterview, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial, chats, onOpenChat, onForkCard, onDeleteCard, onRestoreCard, onPurgeCard, onEditCard, books, onOpenBook, onCreateBook, onDeleteBook, chatsNote, pinId, onPickPin }) {
+function HomeView({ state, listing, mode, onStartInterview, onDiary, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial, chats, onOpenChat, onForkCard, onDeleteCard, onRestoreCard, onPurgeCard, onEditCard, books, onOpenBook, onCreateBook, onDeleteBook, chatsNote, pinId, onPickPin }) {
   // 这扇门是不是「真实人物记录」。写小说、酒馆那两扇门里不该出现
   // 「贴一份招聘说明」「从记忆里认人」这类动作——那是记录真人才用得上的。
   const isReal = mode !== 'novel' && mode !== 'tavern'
@@ -2370,6 +2450,15 @@ function HomeView({ state, listing, mode, onStartInterview, onOpen, onOpenWorld,
         desc: '一张空表，一个字段一个字段地写。',
         onClick: () => onNavigate(VIEWS.newCard),
       }),
+      // 还没建卡的人也能写日记：日记不落在档案里，它自己有一个文件夹。
+      isReal
+        ? h(Action, {
+            tone: 'doctor', icon: 'pencil',
+            title: '今天写一篇日记',
+            desc: '不用先建卡。它会问你今天哪件事最值得讲。',
+            onClick: () => onDiary?.(),
+          })
+        : null,
       // 写小说最常用的其实不是填表：手里已经有一篇小说、一段人物小传，
       // 想让它读成人设。这条路以前只在「真实人物」那扇门里有。
       h(Action, {
@@ -2402,16 +2491,30 @@ function HomeView({ state, listing, mode, onStartInterview, onOpen, onOpenWorld,
     ),
 
     h('div', { className: 'lc-row', style: { marginTop: 2 } },
-      h(Btn, { tone: isReal ? 'interview' : fictionActionTone, size: 'sm', icon: 'chat', onClick: () => onStartInterview({ about: '', mode }) }, '聊一聊（新开一个对话）'),
+      h(Btn, { tone: isReal ? 'interview' : fictionActionTone, size: 'sm', icon: 'chat', onClick: () => onStartInterview?.({ about: '', mode }) }, '聊一聊（新开一个对话）'),
       h(Btn, { tone: 'import', size: 'sm', icon: 'import', onClick: () => onNavigate(VIEWS.import) }, '导入'),
       isReal
         ? h(Btn, { tone: 'analyze', size: 'sm', icon: 'person', onClick: () => onNavigate(VIEWS.memory), title: '从你写过的记忆里认出身边的人' }, '从记忆里认人')
         : null,
+      // 以前这个按钮叫「下一步」。用户的原话是「看不出是什么东西，点进去才知道」——
+      // 一个名字要能自己说明它管什么。这一页干的就是求职那件事：贴一份招聘
+      // 说明看差在哪、练一轮面试、记下投了哪些。叫「求职」两个字就够。
       isReal
-        ? h(Btn, { tone: 'primary', size: 'sm', icon: 'briefcase', onClick: () => onNavigate(VIEWS.jobs), title: '贴一份招聘说明，看看该不该投；或者练一轮面试' }, '下一步')
+        ? h(Btn, { tone: 'primary', size: 'sm', icon: 'briefcase', onClick: () => onNavigate(VIEWS.jobs), title: '贴一份招聘说明，看看该不该投；或者练一轮面试' }, '求职')
         : null,
       isReal
         ? h(Btn, { size: 'sm', icon: 'book', onClick: () => onNavigate(VIEWS.career), title: '把自己的情况写清楚，让 AI 帮你看简历、算差距、规划怎么走' }, '简历与规划')
+        : null,
+      // 人物关系网：认识的人散在文件夹里看不出远近，这一屏以「我」为中心摆开。
+      // 只在真实人物这扇门里给——写小说和酒馆要的是角色设定，不是社交圈。
+      isReal
+        ? h(Btn, { size: 'sm', icon: 'relation', onClick: () => onNavigate(VIEWS.net), title: '我认识的人，谁离我近、谁只是通过别人认识的' }, '人物关系网')
+        : null,
+      // 写日记：点一下就开新对话，进去直接开始写。
+      // 不摆在这一排的最后面，是因为它是每天都会用一次的东西，
+      // 而「求职」「简历与规划」是一阵子用一次。
+      isReal
+        ? h(Btn, { tone: 'doctor', size: 'sm', icon: 'pencil', onClick: () => onDiary?.(), title: '今天哪件事最值得讲——开一个新对话，它带你写' }, '写日记')
         : null,
       h('div', { className: 'lc-grow' }),
       // 「贴一段文章让 AI 读」不是只有记录真人才用得上：写小说、酒馆里
@@ -3257,13 +3360,426 @@ function GameView({ bookId, onBack, flash }) {
 }
 
 /**
+ * 写日记。
+ *
+ * 这一屏只干一件事：把「今天这一篇」开起来。
+ *
+ * 为什么日记不放在档案文件夹里：日记是每天写的东西，量比卡大得多，混在
+ * people/ 里会把真正要看的那几张卡挤没。所以第一次进来问一次放哪儿，
+ * 之后每天那一篇就落在那里——用户自己挑的位置，随时能在访达里翻。
+ *
+ * 一天一篇、摊平不分目录：好找，也方便丢进同步盘。
+ */
+function DiaryView({ onBack, flash, onStart, busy }) {
+  const [info, setInfo] = useState(null)
+  const [dir, setDir] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState(null)
+  const [opened, setOpened] = useState(null)
+
+  /** 读一次「现在什么状况」。读失败也把 info 填上，别让屏幕卡在半空。 */
+  const load = async () => {
+    setErr(null)
+    try {
+      const r = await call('diary.info', {})
+      if (r?.ok !== true) { setErr(r?.error ?? '日记读不出来'); return false }
+      setInfo(r)
+      if (String(r.dir ?? '').trim() !== '') setDir(String(r.dir ?? ''))
+      else if (String(r.suggest ?? '').trim() !== '') setDir(String(r.suggest))
+      if (r.ready !== true) setEditing(true)
+      if (r.broken === true) setEditing(true)
+      return true
+    } catch (e) { setErr(humanizeError(e)); return false }
+  }
+
+  useEffect(() => {
+    let gone = false
+    call('diary.info', {})
+      .then((r) => {
+        if (gone) return
+        if (r?.ok !== true) { setErr(r?.error ?? '日记读不出来'); return }
+        setInfo(r)
+        if (String(r.dir ?? '').trim() !== '') setDir(String(r.dir ?? ''))
+      else if (String(r.suggest ?? '').trim() !== '') setDir(String(r.suggest))
+        if (r.ready !== true || r.broken === true) setEditing(true)
+      })
+      .catch((e) => { if (!gone) setErr(humanizeError(e)) })
+    return () => { gone = true }
+  }, [])
+
+  const keep = async () => {
+    setSaving(true); setErr(null)
+    try {
+      const r = await call('diary.dir.set', { dir })
+      if (r?.ok !== true) { setErr(r?.error ?? '这个位置没能用起来'); return }
+      // 位置真的记住了才说「好了」；接下来那次读失败就留在这一屏，
+      // 不能一边弹绿色成功、一边把屏幕切成半空的样子。
+      const ok = await load()
+      if (ok !== true) return
+      flash?.('好了，以后每天那一篇就存在这儿')
+      setEditing(false)
+    } catch (e) { setErr(humanizeError(e)) } finally { setSaving(false) }
+  }
+
+  const openPast = async (date) => {
+    try {
+      const r = await call('diary.get', { date })
+      if (r?.ok !== true) { setErr(r?.error ?? '那一天读不出来'); return }
+      setOpened({ date, data: r.data })
+    } catch (e) { setErr(humanizeError(e)) }
+  }
+
+  if (info === null) {
+    return h('div', { className: 'lc-pad lc-stack' },
+      h(Btn, { size: 'sm', icon: 'back', onClick: onBack }, '回首页'),
+      err === null
+        ? h(Spinner)
+        : h('div', { className: 'lc-stack' },
+            h(Note, { tone: 'err', icon: 'warning' }, err),
+            h(Btn, { block: true, onClick: () => { load() } }, '再试一次'),
+            h(Btn, { block: true, icon: 'folder', onClick: () => { setErr(null); setEditing(true) } }, '换个文件夹'),
+          ),
+    )
+  }
+
+  if (opened !== null) {
+    return h(DiaryEntryView, { entry: opened, onBack: () => setOpened(null) })
+  }
+
+  if (editing === true) {
+    return h('div', { className: 'lc-pad lc-stack' },
+      h(Btn, { size: 'sm', icon: 'back', onClick: () => { if (info?.broken === true || info?.missing === true) onBack(); else { setEditing(false); setErr(null) } } },
+        info?.broken === true || info?.missing === true ? '回首页' : '不换了'),
+      h('div', { className: 'lc-empty', style: { paddingBottom: 12 } },
+        h('div', { className: 'lc-empty-icon' }, h(Icon, { name: 'folder', size: 22 })),
+        h('h3', null, '日记放在哪个文件夹'),
+        h('div', { className: 'lc-meta' }, '日记不跟人物卡混在一起。', h('br'), '一天一篇纯文本，你随时能在访达（Finder）里找到。'),
+      ),
+      info?.broken === true || info?.missing === true
+        ? h(Note, { tone: 'warn', icon: 'warning' }, info?.error ?? '原来那个文件夹不见了，日记还在里面，只是现在读不到。换一个位置，或者把它挪回来。')
+        : null,
+      h(Field, { label: '放在哪里', hint: '已经替你填好一个位置，看不顺眼可以改。' },
+        h('input', {
+          className: 'lc-input', value: dir, spellCheck: false,
+          placeholder: '/Users/你/Documents/我的日记',
+          onChange: (e) => setDir(e.target.value),
+        }),
+      ),
+      err === null ? null : h(Err, { text: err }),
+      keepButton(saving, dir, keep),
+    )
+  }
+
+  const recent = Array.isArray(info.recent) ? info.recent : []
+  const started = busy === 'diary'
+  return h('div', { className: 'lc-pad lc-stack' },
+    h(Btn, { size: 'sm', icon: 'back', onClick: onBack }, '回首页'),
+    h('div', { className: 'lc-meta' }, `日记存在「${folderName(info.dir)}」这个文件夹里`),
+    info?.missing === true || info?.broken === true
+      ? h(Note, { tone: 'warn', icon: 'warning' },
+          `${String(info?.error ?? '那个文件夹里现在一篇也读不到，可能被挪走了。').trim()}日记文件本身还在原来的地方，把它挪回原处、或者在这儿换一个位置都行。`)
+      : null,
+    h('div', { className: 'lc-empty', style: { padding: '14px 8px 10px' } },
+      h('div', { className: 'lc-empty-icon' }, h(Icon, { name: 'pencil', size: 22 })),
+      h('h3', null, info.todayDone === true ? '今天已经写过一篇' : '今天还没写'),
+      h('div', { className: 'lc-meta' },
+        info.todayDone === true
+          ? '再点一次是接着那一篇往下写：已经写进去的它会先读一遍，不会重问，也不会把上午写的换掉。'
+          : '不用先建卡。点一下就开始问今天哪件事最值得讲。'),
+    ),
+    h(Btn, {
+      tone: 'primary', big: true, block: true, icon: 'pencil',
+      disabled: started,
+      onClick: () => { if (started) return; onStart?.() },
+    }, started ? '正在开…' : (info.todayDone === true ? '接着写今天这一篇' : '今天就写这一篇')),
+    h('div', { className: 'lc-meta' }, '会在新对话里问。不想讲就换一件，跳过也行。'),
+    err === null ? null : h(Err, { text: err }),
+    recent.length === 0
+      ? null
+      : h('div', { className: 'lc-sec' },
+          h(GroupTitle, { icon: 'history' }, `写过 ${String(info.count ?? recent.length)} 天`),
+          h('div', { className: 'lc-stack', style: { gap: 4 } },
+            recent.map((one) => h('div', {
+              key: one.date, className: 'lc-row', style: { cursor: 'pointer' },
+              onClick: () => { if (String(one.date ?? '') !== '') openPast(String(one.date)) },
+            },
+              h('div', { className: 'lc-grow lc-ellipsis' }, String(one.date ?? '')),
+              h('div', { className: 'lc-meta' }, one.chars === 0 || one.chars === undefined ? '还没写' : `${Math.round(Number(one.chars ?? 0) / 3)} 字`),
+            )),
+          ),
+        ),
+    h('div', { className: 'lc-row', style: { marginTop: 4 } },
+      h(Btn, {
+        size: 'sm', icon: 'folder',
+        onClick: () => {
+          const yes = typeof window === 'undefined' || typeof window.confirm !== 'function'
+            ? true
+            : window.confirm('换过去以后，现在这个文件夹里的日记不会跟过来（它们还在原处，只是这一屏看不到）。确定换吗？')
+          if (yes === true) setEditing(true)
+        },
+      }, '换个文件夹'),
+    ),
+  )
+}
+
+/** 日记文件夹那一屏跟用户说的名字：只给最后一段，别甩一整条绝对路径。 */
+function folderName(dir) {
+  const raw = String(dir ?? '').trim().replace(/[\\/]+$/, '')
+  if (raw === '') return '我的日记'
+  const parts = raw.split(/[\\/]/)
+  return parts[parts.length - 1] || raw
+}
+
+
+/** 某一天那一篇：只读，看完回去。 */
+function DiaryEntryView({ entry, onBack }) {
+  const data = entry?.data ?? null
+  const blocks = []
+  for (const title of ['今天最值得讲的一件事', '当时在想什么', '情绪往下三层', '我做了什么决定', '下一步']) {
+    const value = data?.[title]
+    const text = Array.isArray(value) ? value.filter((x) => String(x ?? '').trim() !== '').join('\n') : String(value ?? '')
+    if (text.trim() === '') continue
+    blocks.push(h('div', { key: title, className: 'lc-sec' },
+      h(GroupTitle, { icon: 'pencil' }, title),
+      h('div', { style: { whiteSpace: 'pre-wrap' } }, text),
+    ))
+  }
+  const scores = data?.scores !== null && typeof data?.scores === 'object' ? data.scores : {}
+  const names = Object.keys(scores)
+  return h('div', { className: 'lc-pad lc-stack' },
+    h(Btn, { size: 'sm', icon: 'back', onClick: onBack }, '回去'),
+    h('h3', { style: { margin: '4px 0 0' } }, String(entry?.date ?? '')),
+    blocks.length === 0 ? h('div', { className: 'lc-meta' }, '这一天没有写正文。') : blocks,
+    names.length === 0
+      ? null
+      : h('div', { className: 'lc-sec' },
+          h(GroupTitle, { icon: 'check' }, '今天这四样'),
+          h('div', { className: 'lc-meta' }, names.map((name) => `${name} ${scores[name]}`).join(' · ')),
+        ),
+  )
+}
+
+/** 日记那一屏底部那个「就用这个文件夹」按钮。写成一个函数是为了不让条件挤在一行里。 */
+function keepButton(busy, dir, keep) {
+  return h('div', { style: { marginTop: 4 } },
+    h(Btn, {
+      tone: 'primary', big: true, block: true, icon: 'check',
+      disabled: busy === true || String(dir ?? '').trim() === '',
+      onClick: keep,
+    }, busy === true ? '正在准备…' : '就用这个文件夹'),
+  )
+}
+
+/**
+ * 人物关系网。
+ *
+ * 为什么单独做一屏：卡的列表按名字和更新时间排，谁离你近、谁只是通过
+ * 别人认识的，在那里完全看不出来。这一屏只回答一件事——我在中间，
+ * 认识的人是怎么散开的。
+ *
+ * 圈的口径后台算好（`relations.net`）：0 圈是我自己，1 圈是直接写着和
+ * 我有关系的人，2 圈是只和 1 圈里的人有关系的人。没有任何关系线索的
+ * 人不进网，收在底下那一行——不收进来的话，他们会像凭空消失了一样。
+ */
+function NetView({ onBack, onOpen, onTalk }) {
+  const [net, setNet] = useState(null)
+  const [err, setErr] = useState(null)
+  const [showOutside, setShowOutside] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    call('relations.net', {}).then((r) => {
+      if (alive !== true) return
+      if (r?.ok !== true) { setErr(r?.error ?? '这张网没读出来'); return }
+      setNet(r)
+    }).catch((e) => { if (alive === true) setErr(humanizeError(e)) })
+    return () => { alive = false }
+  }, [])
+
+  if (net === null) {
+    return h('div', { className: 'lc-pad lc-stack' },
+      err === null
+        ? h('div', { className: 'lc-empty' }, h(Spinner), h('div', { className: 'lc-meta', style: { marginTop: 8 } }, '正在把认识的人摆开…'))
+        : h(Err, { text: err }),
+      h(Btn, { onClick: onBack }, '回去'),
+    )
+  }
+
+  const self = net.self ?? null
+  const inner = net.rings?.inner ?? []
+  const outer = net.rings?.outer ?? []
+  const outside = net.outside ?? []
+
+  // 画在圈上的位置：按人数均分一圈，从正上方开始。人太多就只画前 12 个，
+  // 剩下的在下面的名单里——挤成一团比不画更难看懂。
+  const onRing = (list, radius, ring) => {
+    const shown = list.slice(0, 12)
+    return shown.map((one, i) => {
+      const angle = (Math.PI * 2 * i) / Math.max(1, shown.length) - Math.PI / 2
+      return { one, ring, x: 170 + Math.cos(angle) * radius, y: 170 + Math.sin(angle) * radius }
+    })
+  }
+  const innerSpots = onRing(inner, 86, 1)
+  const outerSpots = onRing(outer, 138, 2)
+
+  // 二圈的人连到最近的那个一圈的人：谁把他带进来的，一眼看得出。
+  const nearest = (spot) => {
+    let best = null
+    let gap = Infinity
+    for (const one of innerSpots) {
+      const d = (one.x - spot.x) ** 2 + (one.y - spot.y) ** 2
+      if (d < gap) { gap = d; best = one }
+    }
+    return best
+  }
+
+  const pic = h('svg', {
+    viewBox: '0 0 340 340',
+    width: '100%',
+    height: 'auto',
+    role: 'img',
+    'aria-label': '以我为中心的人物关系图',
+    style: { display: 'block', maxHeight: 340 },
+  },
+    // 先画线，再画点。线在下面，名字才不会被穿过。
+    innerSpots.map((spot) => h('line', {
+      key: `l-${spot.one.id}`,
+      x1: 170, y1: 170, x2: spot.x, y2: spot.y,
+      stroke: 'currentColor', strokeOpacity: 0.22, strokeWidth: 1.2,
+    })),
+    outerSpots.map((spot) => {
+      const from = nearest(spot)
+      return h('line', {
+        key: `lo-${spot.one.id}`,
+        x1: from === null ? 170 : from.x, y1: from === null ? 170 : from.y,
+        x2: spot.x, y2: spot.y,
+        stroke: 'currentColor', strokeOpacity: 0.13, strokeWidth: 1,
+        strokeDasharray: '3 3',
+      })
+    }),
+    // 我自己
+    h('g', {
+      key: 'self',
+      onClick: self === null ? undefined : () => onOpen?.(self.id),
+      style: { cursor: self === null ? 'default' : 'pointer' },
+    },
+      h('circle', { cx: 170, cy: 170, r: 30, fill: 'var(--lc-accent)', fillOpacity: 0.16, stroke: 'var(--lc-accent)', strokeWidth: 1.4 }),
+      h('text', {
+        x: 170, y: 175, textAnchor: 'middle', fontSize: 13, fontWeight: 700, fill: 'currentColor',
+      }, self === null ? '我' : cutName(self.name, 5)),
+    ),
+    [...innerSpots, ...outerSpots].map((spot) => h('g', {
+      key: spot.one.id,
+      onClick: () => onOpen?.(spot.one.id),
+      style: { cursor: 'pointer' },
+    },
+      h('circle', {
+        cx: spot.x, cy: spot.y, r: spot.ring === 1 ? 13 : 11,
+        fill: 'var(--lc-panel, transparent)', stroke: 'currentColor',
+        strokeOpacity: spot.ring === 1 ? 0.5 : 0.3, strokeWidth: 1.2,
+      }),
+      h('text', {
+        x: spot.x, y: spot.y + (spot.ring === 1 ? 22 : 20),
+        textAnchor: 'middle', fontSize: 9.5, fill: 'currentColor', fillOpacity: 0.8,
+      }, cutName(spot.one.name, 5)),
+    )),
+  )
+
+  const rowOf = (one, tone) => h('button', {
+    key: one.id,
+    type: 'button',
+    className: 'lc-listrow',
+    style: { display: 'flex', alignItems: 'center', gap: 9, width: '100%', textAlign: 'left' },
+    onClick: () => onOpen?.(one.id),
+  },
+    h(Avatar, { name: one.name, kind: one.kind }),
+    h('span', { className: 'lc-grow' },
+      h('div', null, one.name),
+      h('div', { className: 'lc-meta' },
+        one.relationLabel === '' ? KIND_LABEL[one.kind] ?? '' : one.relationLabel,
+        ...(one.extras ?? []).map((x) => ` · ${x}`)),
+    ),
+    tone === undefined ? null : h(Tag, { tone }, tone === 'ok' ? '直接认识' : '通过别人'),
+  )
+
+  return h('div', { className: 'lc-pad lc-stack' },
+    h('div', { className: 'lc-meta' },
+      self === null
+        ? '还没有一张写着「我」的卡。把你自己也写成一张，这张网才有中心。'
+        : `以「${self.name}」为中心，${inner.length} 个人是你直接认识的，${outer.length} 个是通过别人认识的。`),
+
+    self === null
+      ? h(Action, {
+          tone: 'interview', icon: 'person', title: '先把「我」写成一张卡',
+          desc: '答完 AI 会写进 people/ 里，之后这张网就以你为中心了。',
+          onClick: () => onTalk?.(''),
+        })
+      : pic,
+
+    inner.length === 0
+      ? h(Note, { tone: undefined, icon: 'relation' }, '还没有人和你有直接关系。点一个人名进去，把他的关系写上是「父亲」「朋友」这样，他就会出现在这里。')
+      : h('div', { className: 'lc-sec' },
+          h(GroupTitle, { icon: 'people' }, `我直接认识的（${inner.length}）`),
+          h('div', { className: 'lc-stack' }, inner.map((one) => rowOf(one, 'ok'))),
+        ),
+
+    outer.length === 0
+      ? null
+      : h('div', { className: 'lc-sec' },
+          h(GroupTitle, { icon: 'relation' }, `通过别人认识的（${outer.length}）`),
+          h('div', { className: 'lc-stack' }, outer.map((one) => rowOf(one, undefined))),
+        ),
+
+    outside.length === 0
+      ? null
+      : h('div', { className: 'lc-more' },
+          h('button', {
+            type: 'button', className: 'lc-more-open',
+            onClick: () => setShowOutside(showOutside !== true),
+          }, showOutside === true ? '收起来' : `还有 ${outside.length} 个人，卡片在，还没写出和你是什么关系`),
+          showOutside !== true
+            ? null
+            : h('div', { className: 'lc-stack', style: { marginTop: 8 } },
+                h('div', { className: 'lc-meta' }, '点进去把「他是我的什么人」写上，他们就会进到圈里。'),
+                outside.map((one) => rowOf({ ...one, kind: one.kind ?? 'real', relationLabel: '', extras: [] }, undefined)),
+              ),
+        ),
+
+    err === null ? null : h(Err, { text: err }),
+
+    h('div', { className: 'lc-row' },
+      self === null
+        ? null
+        : h(Btn, { tone: 'interview', icon: 'chat', onClick: () => onTalk?.(self.name) }, '和「我」聊聊'),
+      h('div', { className: 'lc-grow' }),
+      h(Btn, { onClick: onBack }, '回去'),
+    ),
+    h('div', { className: 'lc-meta' },
+      '这张网只按卡片上写的关系连。想连得更细（谁和谁也有关系），现在还没有地方能写——那要一段一段自己填。'),
+  )
+}
+
+/** 圈里只放得下几个字。名字太长就在这一屏截一下，点进去能看到全名。 */
+function cutName(name, n) {
+  const text = String(name ?? '').trim()
+  if (text === '') return ''
+  return text.length <= n ? text : `${text.slice(0, n)}…`
+}
+
+/**
  * 简历与规划。放在「真实人物记录」那扇门里（写小说和酒馆用不上）。
  *
  * 为什么分成「先把自己写清楚」和「再让 AI 帮忙」两步：
  * 简历这东西最怕 AI 编。先把真实情况填进去，AI 只做整理和措辞，
  * 不编经历——不然投出去被问一句就露了。
  */
-function CareerView({ onBack, flash }) {
+/** 一条摘抄的身份：格子加文字。勾选表拿它当键。 */
+function oneKey(one) {
+  return `${String(one?.slot ?? '')}\u0000${String(one?.text ?? '')}`
+}
+
+function CareerView({ onBack, flash, cards, onOpenCard }) {
   const [profile, setProfile] = useState(null)
   const [target, setTarget] = useState('')
   const [goal, setGoal] = useState('')
@@ -3272,6 +3788,11 @@ function CareerView({ onBack, flash }) {
   const [busy, setBusy] = useState('')
   const [err, setErr] = useState(null)
   const [dirty, setDirty] = useState(false)
+  // 从卡里读这一段：pick 是挑中的那张卡的 id；mine 是摘出来的结果；
+  // picked 是用户勾掉了哪几条（默认全勾）。
+  const [pick, setPick] = useState('')
+  const [mine, setMine] = useState(null)
+  const [picked, setPicked] = useState({})
 
   /** 把读回来的东西摆到界面上。读不出来就照实说，别让它只停在转圈上。 */
   const applyRead = (r) => {
@@ -3327,6 +3848,43 @@ function CareerView({ onBack, flash }) {
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
   }
 
+  /**
+   * 从一张卡里往出摘。
+   *
+   * 只摘、不写。摘完先摆出来，用户自己划掉不要的，再点一次才并进简历——
+   * 卡是「这个人是谁」，简历是「他做过什么」，这两件事不能一步跨过去。
+   */
+  const mineFrom = async () => {
+    const want = String(pick ?? '').trim()
+    if (want === '') { setErr('先挑一张卡。'); return }
+    setBusy('mine'); setErr(null); setMine(null)
+    try {
+      const r = await call('career.mine', { card: want })
+      if (r?.ok !== true) { setErr(r?.error ?? '没摘出来'); return }
+      // 默认全勾：摘出来的是从他自己的卡里抄的，错也错不到哪去；
+      // 真不想要的那条，点一下就去掉了。
+      const all = {}
+      for (const one of r.items ?? []) all[oneKey(one)] = true
+      setPicked(all)
+      setMine(r)
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  /** 把勾着的几条并进简历，然后重读一遍——界面上的数和磁盘上的要是同一份。 */
+  const mergePicked = async () => {
+    const rows = (mine?.items ?? []).filter((one) => picked[oneKey(one)] === true)
+    if (rows.length === 0) { setErr('一条都没勾，那就没东西可并。'); return }
+    setBusy('merge'); setErr(null)
+    try {
+      const r = await call('career.merge', { items: rows.map((one) => ({ slot: one.slot, text: one.text })) })
+      if (r?.ok !== true) { setErr(r?.error ?? '没并进去'); return }
+      setProfile(buildCareerForm(r.profile ?? {}))
+      setDirty(false)
+      setMine(null)
+      flash?.(r.added === 0 ? (r.note ?? '这几条本来就有') : `并进去 ${r.added} 条`)
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
   // 先看有没有出错：出错的渲染在下面（要 profile 读出来才轮得到），
   // 所以这里必须自己先把错说出来，否则用户看到的是一辈子转圈。
   if (profile === null) {
@@ -3365,6 +3923,58 @@ function CareerView({ onBack, flash }) {
       field('会用哪些工具', '会用哪些工具（一行一个）', 2, 'Word\n剪映'),
       field('想去哪', '想去哪', 3, '公司加岗位，或者学校加专业。写具体一点。'),
       field('还差什么', '你自己觉得还差什么（一行一条）', 3, '六级还没过\n没写过正式的报告'),
+    ),
+
+    // 「从卡里读」放在六格表单下面、「让 AI 帮忙」上面：
+    // 它是「往这六格里添东西」，不是让 AI 代写。顺序反了人会以为
+    // 必须先有卡才能写简历——其实照样能手填。
+    h('div', { className: 'lc-sec lc-stack' },
+      h('div', { className: 'lc-fhint' }, '从一张卡里读'),
+      h('div', { className: 'lc-meta' }, '读过的人、写过的日记要是已经攒成一张卡，可以让它把里面写过的事摘出来。摘的就是原话，你自己划。'),
+      (cards ?? []).length === 0
+        ? h('div', { className: 'lc-meta' }, '现在还没有卡。可以先去建一张，也可以就在上面自己填。')
+        : h('div', { className: 'lc-row' },
+            h('select', {
+              className: 'lc-select', value: pick, style: { flex: 1, minWidth: 0 },
+              onChange: (e) => { setPick(e.target.value); setMine(null); setErr(null) },
+            },
+              h('option', { value: '' }, '挑一张卡'),
+              (cards ?? []).map((c) => h('option', { key: String(c.path ?? c.id ?? c.name), value: String(c.path ?? c.id ?? '') },
+                `${String(c.name ?? '（还没起名字）')}${c.relation ? ` · ${c.relation}` : ''}`)),
+            ),
+            h(Btn, { size: 'sm', icon: 'spark', disabled: busy !== '' || pick === '', onClick: mineFrom },
+              busy === 'mine' ? '读着…' : '读读看'),
+          ),
+      mine === null ? null : h('div', { className: 'lc-stack' },
+        h('div', { className: 'lc-fhint' }, `从「${mine.card?.name || '这张卡'}」里摘出来这些。不想要的点一下去掉。`),
+        (mine.items ?? []).length === 0
+          ? h(Note, { tone: 'warn', icon: 'warning' }, '这张卡里没有能直接写进简历的事。也许它记的是这个人是什么样，不是他做过什么——那就自己填。')
+          : h('div', { className: 'lc-stack', style: { gap: 6 } },
+              (mine.items ?? []).map((one) => {
+                const key = oneKey(one)
+                const on = picked[key] === true
+                return h('div', {
+                  key, className: 'lc-opt', role: 'button',
+                  'data-picked': on ? 'yes' : 'no',
+                  style: on ? undefined : { opacity: 0.45 },
+                  onClick: () => setPicked({ ...picked, [key]: !on }),
+                },
+                  h('div', { className: 'lc-row', style: { alignItems: 'baseline', gap: 8 } },
+                    h('div', { className: 'lc-tag' }, (mine.labels ?? {})[one.slot] ?? one.slot),
+                    h('div', { className: 'lc-grow' }, one.text),
+                  ),
+                  h('div', { className: 'lc-quote' }, `原文：${one.quote}`),
+                )
+              }),
+            ),
+        (mine.dropped ?? []).length === 0 ? null : h('div', { className: 'lc-meta' },
+          `还有 ${mine.dropped.length} 条没敢用，因为原文里找不到那一句，或者没说清该放哪儿。`),
+        (mine.items ?? []).length === 0 ? null : h('div', { className: 'lc-row' },
+          h(Btn, { tone: 'primary', disabled: busy !== '', onClick: mergePicked },
+            busy === 'merge' ? '并着…' : '把勾着的并进简历'),
+          h(Btn, { size: 'sm', disabled: busy !== '', onClick: () => { setMine(null); setErr(null) } }, '不要了'),
+        ),
+      ),
     ),
 
     h('div', { className: 'lc-sec lc-stack' },
@@ -6495,7 +7105,7 @@ function MemoryView({ onDone, onBack, mode, onStartInterview }) {
       ? h('div', { className: 'lc-stack' },
           h(Note, { tone: undefined, icon: 'person' }, '记忆里没有提到具体的人。可以先「聊一聊」，聊过的内容会变成材料。'),
           h('div', null,
-            h(Btn, { tone: 'interview', icon: 'chat', onClick: () => onStartInterview({ about: '', mode }) }, '聊一聊（新开一个对话）'),
+            h(Btn, { tone: 'interview', icon: 'chat', onClick: () => onStartInterview?.({ about: '', mode }) }, '聊一聊（新开一个对话）'),
             h('div', { className: 'lc-meta' }, '会在新对话里问，答完 AI 自己写进卡里'),
           ))
       : h('div', { className: 'lc-stack' },
@@ -7000,7 +7610,7 @@ function scoreSection(report, onOpenCard) {
   )
 }
 
-// ── 下一步（求职 / 面试 / 简历） ────────────────────────────────────────────────────────
+// ── 求职（贴招聘说明 / 面试 / 投递表） ────────────────────────────────────────────────
 
 /** 投递状态的中文说法。和宿主侧 jobs-store.js 那份是同一套，改的时候两边一起改。 */
 const TRACK_LABEL = {
@@ -7015,11 +7625,15 @@ const TRACK_LABEL = {
 }
 
 /**
- * 「下一步」这一页。
+ * 「求职」这一页。
  *
- * 为什么叫这个名字：它管的不只是「找工作」——改简历、练面试、
- * 想清楚接下来半年怎么走，都是同一件事的不同阶段。叫「看工作」
- * 会让人以为只有投简历那天才用得上。
+ * 名字换过两次。最早叫「看工作」，用户觉得太窄；改成「下一步」，
+ * 用户的反馈是「看不出是什么东西，点进去才知道」。可见名字要自己
+ * 说明它管什么，而不是靠点进去才发现。
+ *
+ * 这一页真正干的事：贴一份招聘说明进来，换回一张「哪里会卡住你」的
+ * 清单；练一轮面试；记下投了哪些。改简历和长期规划在另一页
+ * （「简历与规划」），因为那是坐着写半个钟头的事，不是每天会点的。
  *
  * 只有一件事：把一份招聘说明贴进来，换回一张「哪里会卡住你」的清单。
  * 刻意没有的东西：批量投递、自动发信、岗位推荐流。这三样都会让人
@@ -7846,6 +8460,7 @@ const inject = ['slots']
 		// 测试专用口子：写小说那一页只有从根部点进去才会出现，而它的换书逻辑
 		// （bookId 变了但组件不卸载）在假根部里绕太远，直接渲染这个组件最省事。
 		exports.__BookView = BookView;
+		exports.__DiaryView = DiaryView;
 		exports.__setHostServices = (remote, ui) => {
 			REMOTE_SESSION = remote === undefined ? null : remote;
 			UI_WORKSPACE = ui === undefined ? null : ui;

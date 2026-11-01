@@ -75,7 +75,10 @@ export function defaultConfig() {
     locale: 'zh',
     // 三扇门各自「当前用哪张卡」。写小说、酒馆那两扇门里演谁 / 写谁，
     // 不用每次都现挑；「真实人物记录」那扇门用它来决定首页先给谁。
-    default_cards: { real: '', tavern: '', novel: '' },
+    default_cards: { real: '', tavern: '', novel: '', diary: '' },
+    // 日记放在哪儿。**不在这个工作区里**：用户第一次点「写日记」时自己挑一个文件夹，
+    // 之后每天那篇就落在那里。空串＝还没挑，界面会先问一句。
+    diary_dir: '',
     // 界面上被收起来的门（用户自己删的）。随时能装回来，数据一点没动。
     hidden_doors: [],
     created_at: new Date().toISOString(),
@@ -125,6 +128,27 @@ export async function readConfig(root) {
   return (await readConfigState(root)).config
 }
 
+// ── 写入排队 ──────────────────────────────────────────────────────
+//
+// 所有「读一遍、改一点、整份写回去」的动作都是读-改-写。两个窗口同时点，
+// 后写的那个是照着旧内容改的，前一次改的那一项就被整份盖掉——日记那边
+// 早就按路径排队了，卡和配置一直裸着。这里补上同一把锁。
+//
+// 键是「这次要改的是哪个文件」（绝对路径），排队粒度够细：改 A 卡不会挡住改 B 卡。
+const writeLocks = new Map()
+
+function withWriteLock(key, run) {
+  const prev = writeLocks.get(key) ?? Promise.resolve()
+  const next = prev.then(run, run)
+  const tail = next.then(() => {}, () => {})
+  writeLocks.set(key, tail)
+  tail.then(() => {
+    // 队列排空就把这一格删掉，不然改过多少张卡就攒多少个 Promise。
+    if (writeLocks.get(key) === tail) writeLocks.delete(key)
+  })
+  return next
+}
+
 /**
  * 读配置，并且**告诉调用方「是没有，还是读不出来」**。
  *
@@ -154,13 +178,24 @@ export async function readConfigState(root) {
  *
  * 先建目录：还没选文件夹（或选的那个被删了）时直接写文件会抛 ENOENT，
  * 界面拿到的是一句英文报错，人看不出「你还没选文件夹」。
+ *
+ * 返回值一定带 `ok`。以前成功和失败回的是同一个对象形状，调用方判
+ * `saved?.ok === false` 永远不成立，「位置没记住」也就永远报不出来——
+ * 用户以为存上了，重启一次才发现又要重挑一遍文件夹。
  */
 export async function writeConfig(root, patch) {
+  const abs = path.join(root, CONFIG_NAME)
+  // 排到同一份配置的队尾：两个人同时改设置，后写的那个不该把前一个刚改的盖回去。
+  return withWriteLock(abs, () => writeConfigNow(root, patch, abs))
+}
+
+async function writeConfigNow(root, patch, abs) {
   const state = await readConfigState(root)
   // 「读不出来」不等于「还没有」：这时候照写会把整份设置按默认值重刷一遍。
-  if (state.ok !== true) return state.config
+  if (state.ok !== true) {
+    return { ok: false, config: state.config, error: state.error ?? '这个文件夹里的设置读不出来，为了不按默认值重刷一遍，这次没写。' }
+  }
   const next = { ...state.config, ...patch }
-  const abs = path.join(root, CONFIG_NAME)
   const tmp = `${abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
   try {
     await fs.mkdir(root, { recursive: true })
@@ -168,8 +203,9 @@ export async function writeConfig(root, patch) {
     await fs.rename(tmp, abs)
   } catch {
     await fs.rm(tmp, { force: true }).catch(() => {})
+    return { ok: false, config: state.config, error: '设置没能写进磁盘。检查一下那个文件夹是不是满了、有没有写的权限。' }
   }
-  return next
+  return { ok: true, config: next }
 }
 
 /**
@@ -263,11 +299,28 @@ export async function writeConcept(root, concept) {
   const want = clean(concept?.want)
   const avoid = clean(concept?.avoid)
   if (idea === '' && want.length === 0 && avoid.length === 0) {
-    const current = await readConfig(root)
-    const next = { ...current }
-    delete next.concept
-    await fs.writeFile(path.join(root, CONFIG_NAME), JSON.stringify(next, null, 2) + '\n', 'utf8')
-    return { ok: true, concept: null }
+    // 「清空」这条路以前是裸的 fs.writeFile：配置读不出来（坏了、没权限、同步盘
+    // 没挂上）时它照样把一份按默认值拼出来的设置写回去，用户挑的文件夹、
+    // 认过的人都归零。现在和 writeConfig 走同一道门。
+    const abs = path.join(root, CONFIG_NAME)
+    return withWriteLock(abs, async () => {
+      const state = await readConfigState(root)
+      if (state.ok !== true) {
+        return { ok: false, concept: null, error: state.error ?? '这个文件夹里的设置读不出来，为了不按默认值重刷一遍，这次没写。' }
+      }
+      const next = { ...state.config }
+      delete next.concept
+      const tmp = `${abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+      try {
+        await fs.mkdir(root, { recursive: true })
+        await fs.writeFile(tmp, JSON.stringify(next, null, 2) + '\n', 'utf8')
+        await fs.rename(tmp, abs)
+      } catch {
+        await fs.rm(tmp, { force: true }).catch(() => {})
+        return { ok: false, concept: null, error: '设置没能写进磁盘。检查一下那个文件夹是不是满了、有没有写的权限。' }
+      }
+      return { ok: true, concept: null }
+    })
   }
   const value = { idea, want, avoid, updated_at: new Date().toISOString() }
   await writeConfig(root, { concept: value })
@@ -743,13 +796,43 @@ async function freeStamp(dir, when) {
 
 /** 写一张卡，并在写前留一份全文快照。 */
 export async function writeCard(root, relPath, data, sections, options = {}) {
+  const at = await resolveIn(root, relPath)
+  if (!at.ok) return { ok: false, path: relPath, error: at.error }
+  // 同一张卡排成一队：两个窗口同时补同一张卡时，「读旧内容→拼新的→写回」
+  // 会互相踩着，后写的那次是照着**它读到的旧内容**改的，前一次补的就没了，
+  // 而且备份里也没有——这是唯一一种丢了就找不回来的情况。
+  return withWriteLock(at.abs, () => writeCardNow(root, relPath, at.abs, data, sections, options))
+}
+
+/**
+ * 读一张卡 → 改 → 写回，整段排在同一队列里。
+ *
+ * 只给 `writeCard` 加锁是不够的：一次「补信息」在别处是「读出旧内容、拼上新的、
+ * 再写回」，中间跨了好几个 await。两个窗口同时补同一张卡时，两边读到的是同一份
+ * 旧内容，后写的那一份照着旧底稿改，前一次补的就没了——而且快照里也没有，
+ * 因为两次写前的旧内容是一样的。所以读也得在队列里。
+ *
+ * `mutate(read)` 拿到 `{data, sections, text}`（readCard 的返回），要么回
+ * `{ ok: true, data, sections }`，要么回 `{ ok: false, error }` 表示这次不写。
+ */
+export async function updateCard(root, relPath, mutate, options = {}) {
+  const at = await resolveIn(root, relPath)
+  if (!at.ok) return { ok: false, path: relPath, error: at.error }
+  return withWriteLock(at.abs, async () => {
+    const read = await readCard(root, relPath)
+    if (read.ok !== true) return read
+    const next = typeof mutate === 'function' ? await mutate(read) : null
+    if (next === null || next === undefined) return { ok: false, path: relPath, error: '这一版没能算出来，这次没写。' }
+    if (next.ok === false) return { ...next, path: next.path ?? relPath }
+    return writeCardNow(root, relPath, at.abs, next.data, next.sections, options)
+  })
+}
+
+async function writeCardNow(root, relPath, abs, data, sections, options = {}) {
   const validation = core.validateCard(data)
   if (!validation.ok && options.force !== true) {
     return { ok: false, error: '校验未通过', validation }
   }
-  const at = await resolveIn(root, relPath)
-  if (!at.ok) return { ok: false, path: relPath, error: at.error }
-  const abs = at.abs
   await fs.mkdir(path.dirname(abs), { recursive: true })
   // 快照：旧内容存全文（快照是审计依据，不能只存 diff）
   let old = null
@@ -926,6 +1009,8 @@ export async function listAll(root) {
           kind: String(r.data?.kind ?? 'real'),
           world: String(r.data?.world ?? 'reality'),
           relation: r.data?.relation,
+          // 补充关系（「也是伴侣」这类）。关系网要用它排先后，卡背面也读它。
+          relation_extra: Array.isArray(r.data?.relation_extra) ? r.data.relation_extra.filter((x) => typeof x === 'string') : [],
           status: r.data?.status,
           tags: Array.isArray(r.data?.tags) ? r.data.tags : [],
           // 卡背面要显示一段「简介」：取自述的头一段，够长又不至于把整卡铺出来。
@@ -2245,6 +2330,7 @@ export default {
   cardRelPath,
   readCard,
   writeCard,
+  updateCard,
   listAll,
   isBackupName,
   listWithdrawn,

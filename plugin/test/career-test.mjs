@@ -269,15 +269,75 @@ try {
     t('没传内容也不炸', career.parseSteps(undefined).length === 0, '')
   }
 
-  console.log('\n=== 15. 默认导出带齐了要给的函数 ===')
+  console.log('\n=== 15. 从一张卡里读：摘出来、归好格子、并进简历 ===')
+  {
+    // 摘的那一步只许抄。这里把模型可能回的东西都走一遍：
+    // 认得出来的、格子写错的、原文里根本没有的（要被逐字比对拦下）。
+    const CARD_TEXT = [
+      '---',
+      'lifecard: 1',
+      'kind: real',
+      'id: lin',
+      'name: 林知远',
+      '---',
+      '',
+      '## 自述',
+      '',
+      '大四，在师大的校刊做编辑，做了两年。',
+      '',
+      '## 做过的事',
+      '',
+      '给教研室的古籍编目，整理出四百二十条。',
+    ].join('\n')
+
+    const built = career.buildMinePrompt({ cardText: CARD_TEXT, name: '林知远' })
+    t('摘的话里带着卡的正文', built.user.includes('四百二十条'), built.user.slice(0, 200))
+    t('摘的话里带着名字', built.user.includes('林知远'), built.user.slice(0, 200))
+    t('明说了不许改写', built.system.includes('一字不改') || built.system.includes('不要改写'), built.system.slice(0, 400))
+    t('明说了四个格子', ['education', 'work', 'skills', 'want'].every((k) => built.system.includes(k)), '')
+    t('要的是 JSON', built.system.includes('{"items"'), built.system.slice(-200))
+    t('卡空着也说得下去', career.buildMinePrompt({ cardText: '', name: '' }).user.includes('还是空的'), '')
+
+    const grouped = career.groupMined([
+      { slot: 'work', text: '校刊编辑，做了两年' },
+      { slot: 'work', text: '校刊编辑，做了两年' },
+      { slot: 'education', text: '汉语言文学大四' },
+      { slot: '乱写的格子', text: '这条要丢掉' },
+      { slot: 'skills', text: '   ' },
+      { slot: 'want', text: '想留杭州' },
+    ])
+    t('同一格里的重复只留一条', grouped.work.length === 1, grouped.work)
+    t('认不出的格子丢掉', grouped.skills.length === 0, grouped.skills)
+    t('空白的那条丢掉', grouped.skills.length === 0, grouped.skills)
+    t('四格都在', Object.keys(grouped).length === 4, Object.keys(grouped))
+    t('没传也给出四个空格子', Object.keys(career.groupMined(undefined)).length === 4, '')
+
+    const before = { 学过什么: '现代汉语\n写作课', 做过什么: '', 会用哪些工具: [], 想去哪: '想留杭州' }
+    const merged = career.mergeProfile(before, {
+      education: ['写作课', '音韵学'],
+      work: ['校刊编辑，做了两年'],
+      skills: [],
+      want: ['想留杭州'],
+    })
+    t('已经有的不重复加', merged.added.filter((x) => x.text === '写作课').length === 0, merged.added)
+    t('新的加在后面', merged.profile.学过什么.split('\n').slice(-1)[0] === '音韵学', merged.profile.学过什么)
+    t('原来是空的那格能填进去', merged.profile.做过什么 === '校刊编辑，做了两年', merged.profile.做过什么)
+    t('原来写着的还在', merged.profile.学过什么.startsWith('现代汉语'), merged.profile.学过什么)
+    t('一格都不加时说清楚', career.mergeProfile({ 想去哪: '想留杭州' }, { want: ['想留杭州'] }).added.length === 0, '')
+    t('行首的 `- ` 不会被带进 textarea', !career.mergeProfile({ 学过什么: '- 现代汉语' }, { education: ['写作课'] }).profile.学过什么.includes('- '), '')
+    t('没传也不炸', career.mergeProfile(undefined, undefined).added.length === 0, '')
+  }
+
+  console.log('\n=== 16. 默认导出带齐了要给的函数 ===')
   {
     const want = [
       'CAREER_DIR', 'PROFILE_REL', 'PURPOSE_REL',
       'renderProfileMarkdown', 'parseProfileText', 'renderPlanMarkdown', 'parsePlanText',
       'readProfile', 'writeProfile', 'readPlan', 'writePlan',
       'buildResumePrompt', 'buildPathPrompt', 'buildGapPrompt', 'parseSteps',
+      'buildMinePrompt', 'MINE_SLOTS', 'MINE_SLOT_LABELS', 'groupMined', 'mergeProfile',
     ]
-    t('15 个名字都在默认导出里', want.every((k) => career.default[k] !== undefined), want.filter((k) => career.default[k] === undefined))
+    t('20 个名字都在默认导出里', want.every((k) => career.default[k] !== undefined), want.filter((k) => career.default[k] === undefined))
     t('默认导出里没有多余的东西', Object.keys(career.default).length === want.length, Object.keys(career.default))
   }
 } finally {

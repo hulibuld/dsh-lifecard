@@ -20,6 +20,7 @@ import * as codec from './codec.js'
 import * as store from './store.js'
 import * as prose from './prose.js'
 import * as prompts from './prompts.js'
+import * as diary from './diary.js'
 
 import * as score from './score.js'
 import * as memory from './memory.js'
@@ -1037,6 +1038,7 @@ function buildApi(ctx, workspace, config, options) {
           real: String(pins.real ?? ''),
           tavern: String(pins.tavern ?? ''),
           novel: String(pins.novel ?? ''),
+          diary: String(pins.diary ?? ''),
         },
       }
     },
@@ -1069,16 +1071,115 @@ function buildApi(ctx, workspace, config, options) {
     'card.defaults.set': async (body) => {
       const ws = await root(body)
       const mode = String(body?.mode ?? '')
-      if (mode !== 'real' && mode !== 'tavern' && mode !== 'novel') {
+      if (mode !== 'real' && mode !== 'tavern' && mode !== 'novel' && mode !== 'diary') {
         return { ok: false, error: '不知道你说的是哪扇门。' }
       }
       const id = String(body?.id ?? '').trim()
       const cfg = await store.readConfigState(ws)
       if (cfg.ok !== true) return { ok: false, error: cfg.error ?? '这个文件夹里的设置读不出来。' }
-      const pins = { real: '', tavern: '', novel: '', ...(cfg.config?.default_cards ?? {}) }
+      const pins = { real: '', tavern: '', novel: '', diary: '', ...(cfg.config?.default_cards ?? {}) }
       pins[mode] = id
-      await store.writeConfig(ws, { default_cards: pins })
+      const saved = await store.writeConfig(ws, { default_cards: pins })
+      if (saved?.ok !== true) return { ok: false, error: saved?.error ?? '这一张没能记住，下次还得再挑一次。', cards: pins }
       return { ok: true, cards: pins }
+    },
+
+    /**
+     * 人物关系网：以「我」为中心，把认识的人一圈一圈摆开。
+     *
+     * 这一版不做图，只把「谁是谁、离我多远、多亲」算清楚交给界面。
+     * 距离的口径：
+     *   ring 0 = 我自己（kind self，或者老档案里 relation 写「我」的那张）
+     *   ring 1 = 直接写着和我有关系的人（他的 relation 是「父亲」「朋友」这种）
+     *   ring 2 = 只和某个 ring 1 的人有关系的人（比如「我姨」只和妈妈连着）
+     * 没有任何关系线索的人不进网——放进去也只是一堆没有边的点。
+     */
+    'relations.net': async (body) => {
+      const ws = await root(body)
+      const all = await store.listAll(ws)
+      const cards = Array.isArray(all.cards) ? all.cards : []
+      const edges = Array.isArray(all.relations) ? all.relations : []
+      const labelOf = new Map(prompts.RELATION_TYPES.map((one) => [String(one.id), String(one.label)]))
+      const selfCard = cards.find((c) => String(c.kind ?? '') === 'self')
+        ?? cards.find((c) => String(c.kind ?? '') === 'real' && String(c.relation ?? '').trim() === '我')
+        ?? null
+      const selfId = selfCard === null ? '' : String(selfCard.id ?? '')
+      const nodeOf = (c) => ({
+        id: String(c.id ?? ''),
+        name: String(c.name ?? '').trim() === '' ? '（还没起名字）' : String(c.name),
+        kind: String(c.kind ?? 'real'),
+        relation: String(c.relation ?? '').trim(),
+        relationLabel: String(c.relation ?? '').trim() === ''
+          ? ''
+          : (labelOf.get(String(c.relation).trim()) ?? String(c.relation).trim()),
+        extras: Array.isArray(c.relation_extra) ? c.relation_extra.filter((x) => typeof x === 'string') : [],
+        tags: Array.isArray(c.tags) ? c.tags : [],
+        intro: String(c.intro ?? ''),
+        coverage: Number(c.coverage ?? 0),
+        path: String(c.path ?? ''),
+      })
+
+      const rings = { 0: [], 1: [], 2: [] }
+      const placed = new Map()
+      if (selfCard !== null) {
+        rings[0].push(nodeOf(selfCard))
+        placed.set(selfId, 0)
+      }
+      // 第一轮：卡上自己写着关系的人，都算直接认识（ring 1）。
+      // 这一轮得排在关系边前面——边只回答「再往外还有谁」，它得有落脚点；
+      // 反过来先处理边，一圈还没人的时候边就没有起点可用，第 2 圈永远是空的。
+      for (const card of cards) {
+        const id = String(card.id ?? '')
+        if (id === '' || placed.has(id)) continue
+        const tag = String(card.relation ?? '').trim()
+        if (tag === '' && String(card.kind ?? '') !== 'self') continue
+        placed.set(id, 1)
+      }
+      // 第二轮：关系边再往外扩一层。两端都是 id，最准。
+      // 只扩一层——再往外的人已经不是「我认识的人」，是「我认识的人认识的人」。
+      for (const edge of edges) {
+        const from = String(edge?.from ?? '')
+        const to = String(edge?.to ?? '')
+        if (from === '' || to === '') continue
+        const depth = placed.get(from)
+        if (depth !== undefined && depth < 2 && !placed.has(to)) placed.set(to, depth + 1)
+      }
+      const byId = new Map(cards.map((c) => [String(c.id ?? ''), c]))
+      for (const [id, depth] of placed) {
+        if (depth === 0) continue
+        const card = byId.get(id)
+        if (card === undefined) continue
+        const node = nodeOf(card)
+        // 越亲的越靠里：ring 2 里如果还带着「也是家人」这种补充关系，也算一回事。
+        rings[depth].push(node)
+      }
+      rings[1].sort((a, b) => (b.coverage - a.coverage) || (a.name < b.name ? -1 : 1))
+      rings[2].sort((a, b) => (b.coverage - a.coverage) || (a.name < b.name ? -1 : 1))
+
+      const inNet = new Set([...rings[0], ...rings[1], ...rings[2]].map((n) => n.id))
+      // 网外的人不是「没有关系的人」，是「卡片在、还没写关系的人」。
+      // 世界书、设定、偏好这几种根本不是人；虚构角色是「扮演用的角色」，
+      // 不是认识的人——这一屏只在真实人物这扇门里给，混进来读着像出了错。
+      // 真写了关系的（relation 非空）仍然进圈，因为那说明用户自己把她当成了一个人。
+      const notPeople = new Set(['world', 'system', 'lens', 'relation', 'fictional'])
+      const outside = cards
+        .filter((c) => !inNet.has(String(c.id ?? '')))
+        .filter((c) => !notPeople.has(String(c.kind ?? 'real')))
+        .map((c) => ({
+          id: String(c.id ?? ''),
+          name: String(c.name ?? ''),
+          kind: String(c.kind ?? 'real'),
+          path: String(c.path ?? ''),
+        }))
+
+      return {
+        ok: true,
+        self: selfCard === null ? null : nodeOf(selfCard),
+        rings: { self: rings[0], inner: rings[1], outer: rings[2] },
+        edges: edges.map((e) => ({ from: String(e.from ?? ''), to: String(e.to ?? ''), type: String(e.type ?? '') })),
+        counts: { self: rings[0].length, inner: rings[1].length, outer: rings[2].length, outside: outside.length },
+        outside,
+      }
     },
       /**
      * 把一扇门从界面上收起来 / 装回来。
@@ -3189,6 +3290,82 @@ function buildApi(ctx, workspace, config, options) {
       return { ok: true, target, text: String(called.text ?? '').trim() }
     },
 
+    /**
+     * 从一张人物卡里把「能写进简历的东西」摘出来。
+     *
+     * 只摘不写：这一趟不碰简历文件。用户先看见摘了什么、来自哪一句，
+     * 自己划掉不要的，再点一次才并进去。模型这一步只许抄原文，
+     * 每条都要过逐字比对（捡不了就整条丢掉，不悄悄放宽）。
+     */
+    'career.mine': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
+      const wanted = String(body?.card ?? '').trim()
+      if (wanted === '') return { ok: false, error: '先挑一张卡。挑好我才能从里面往出摘。' }
+      const rel = await store.findCardByRelOrId(ws, wanted)
+      if (rel === null || rel === undefined) return { ok: false, error: `没找到「${wanted}」这张卡。` }
+      const card = await store.readCard(ws, rel)
+      if (card.ok !== true) return { ok: false, error: card.error ?? '这张卡读不出来。' }
+      // 卡的正文才是材料。只拿 name 去问，模型只能靠猜。
+      const text = String(card.text ?? '').trim()
+      if (text === '') return { ok: false, error: '这张卡还是空的，里面没有能摘的东西。' }
+      const name = String(card.data?.name ?? '').trim()
+      const built = career.buildMinePrompt({ cardText: text, name })
+      const called = await callModel(ctx, { system: built.system, user: built.user, model: body?.model })
+      if (called.ok !== true) return { ok: false, error: `这次没摘出来：${called.error ?? '过一会儿再试一次'}` }
+      const parsed = extractJson(called.text)
+      if (parsed === null) return { ok: false, error: '这次回来的东西看不明白，再点一次试试。' }
+      const raw = Array.isArray(parsed?.items) ? parsed.items : []
+      // 材料表：材料名要和模型写的 evidence.material 对得上，这里只有一份，
+      // 所以名字就叫这个（模型写全路径也认，verifyQuote 两头都能对上）。
+      const materials = { [rel]: text }
+      const kept = []
+      const dropped = []
+      for (const one of raw) {
+        if (one === null || typeof one !== 'object') continue
+        const slot = String(one.slot ?? '').trim()
+        const line = String(one.text ?? '').trim()
+        const quote = String(one.quote ?? '').trim()
+        if (!career.MINE_SLOTS.includes(slot) || line === '') { dropped.push({ text: line, why: '这一条没说清放到哪儿' }); continue }
+        const check = core.verifyQuote({ evidence: { material: rel, quote } }, materials)
+        if (check.ok !== true) { dropped.push({ text: line, why: check.reason ?? '原文里找不到这一句' }); continue }
+        kept.push({ slot, text: line, quote, line: check.line })
+      }
+      return {
+        ok: true,
+        card: { id: String(card.data?.id ?? ''), name, path: rel },
+        groups: career.groupMined(kept),
+        items: kept,
+        dropped,
+        labels: career.MINE_SLOT_LABELS,
+      }
+    },
+
+    /**
+     * 把挑中的几条并进简历。只往后加，不改用户自己写的那几行。
+     *
+     * 为什么不在这里再调一次模型：摘出来的那一句就是要写进去的那一句。
+     * 再让它「润色一下」，就会多出没发生过的细节。
+     */
+    'career.merge': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
+      const rows = Array.isArray(body?.items) ? body.items : []
+      const items = rows
+        .map((one) => ({
+          slot: String(one?.slot ?? '').trim(),
+          text: String(one?.text ?? '').trim(),
+        }))
+        .filter((one) => career.MINE_SLOTS.includes(one.slot) && one.text !== '')
+      if (items.length === 0) return { ok: false, error: '一条都没挑，那就没东西可并。' }
+      const profile = await career.readProfile(ws)
+      if (profile.ok !== true) return profile
+      const mined = career.groupMined(items)
+      const merged = career.mergeProfile(profile.sections ?? {}, mined)
+      if (merged.added.length === 0) return { ok: true, added: 0, profile: merged.profile, note: '这几条简历里本来就有，没重复加。' }
+      const saved = await career.writeProfile(ws, { ...(profile.data ?? {}), ...merged.profile })
+      if (saved.ok !== true) return saved
+      return { ok: true, added: merged.added.length, profile: merged.profile, path: saved.path }
+    },
+
     /** 看差距：目标要求的 vs 你现在有的。 */
     'career.gap': async (body) => {
       const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
@@ -3217,6 +3394,207 @@ function buildApi(ctx, workspace, config, options) {
       if (called.ok !== true) return { ok: false, error: `这次没规划出来：${called.error ?? '过一会儿再试一次'}` }
       const text = String(called.text ?? '').trim()
       return { ok: true, goal, horizon, text, steps: career.parseSteps(text) }
+    },
+
+    // ── 写日记：一天一篇，AI 带着写 ──────────────────────────────
+    //
+    // 日记不放在这个工作区里：第一次点「写日记」时问一句放哪儿，
+    // 之后每天那篇就落在那里（见 diary_dir 配置）。这一层只做三件事：
+    // 读写那一天的文件、拼出「今天该问什么」、把写下的东西整理成几条事实。
+
+    /** 日记文件夹在哪儿、今天写了没有。 */
+    'diary.info': async (body) => {
+      const ws = await root(body)
+      const where = await diaryDirOf(ws)
+      if (where.ok !== true) return where
+      const today = store.localDate()
+      // 第一次用的时候得给个能直接点的位置。客户端不知道用户家目录在哪儿
+      // （宿主交给插件的作用域里没有这一层），所以在这儿算一句带回去。
+      const suggested = path.join(homedir(), 'Documents', '我的日记')
+      if (where.dir === '') return { ok: true, dir: '', ready: false, today, todayDone: false, count: 0, suggest: suggested, recent: [] }
+      // 列最近 40 篇够看「今天写了没有」，但「写过多少天」得用总数报：
+      // 拿列表长度当总数，写到第 401 天起数字就不动了。
+      const listed = await diary.listDiaries(where.dir, { limit: 40 })
+      // 文件夹被删掉 / 挪走 / 没权限时不能装作一切正常：用户会看到
+      // 「今天还没写」，写的时候才发现存不进去。这两种情况如实说。
+      if (listed.ok !== true) {
+        return { ok: true, dir: where.dir, ready: true, today, todayDone: false, count: 0, recent: [], broken: true, error: listed.error ?? '那个文件夹读不出来。' }
+      }
+      const recent = listed.diaries.slice(0, 7)
+      return {
+        ok: true,
+        dir: where.dir,
+        ready: true,
+        today,
+        todayDone: recent.some((d) => d.date === today),
+        count: Number(listed.total ?? listed.diaries.length),
+        recent,
+        missing: listed.missing === true,
+      }
+    },
+
+    /** 定下日记放哪儿（会顺手建好文件夹）。 */
+    'diary.dir.set': async (body) => {
+      const ws = await root(body)
+      const raw = String(body?.dir ?? '').trim()
+      if (raw === '') return { ok: false, error: '没有说是哪个文件夹。' }
+      const dir = diary.diaryRootFrom({ diary_dir: raw })
+      if (dir === '' || dir === path.parse(dir).root) return { ok: false, error: '不能整个磁盘根目录都当日记文件夹。换一个位置。' }
+      const veto = diaryDirVeto(dir)
+      if (veto !== '') return { ok: false, error: veto }
+      const made = await fs.mkdir(dir, { recursive: true }).then(() => true).catch(() => false)
+      if (!made) return { ok: false, error: '这个文件夹建不出来。换一个位置，或者检查一下有没有写的权限。' }
+      // 探针文件用完就删，但**先看它原本存不存在**：用户文件夹里真有个同名文件时，
+      // 我们既不该覆盖它，也不该删掉它。也不能给它传 undefined 当内容——
+      // Node 对 `writeFile(p, undefined)` 直接抛 TypeError，于是「本来好好的文件夹」
+      // 会被判成写不进去。
+      const probe = path.join(dir, '.lifecard-diary-probe')
+      const hadProbe = await fs.lstat(probe).then(() => true).catch(() => false)
+      const writable = await (hadProbe
+        ? fs.appendFile(probe, '')
+        : fs.writeFile(probe, 'x', { encoding: 'utf8' }).then(() => fs.rm(probe, { force: true }))
+      ).then(() => true).catch(() => false)
+      if (writable !== true) return { ok: false, error: '这个文件夹写不进去。换一个位置，或者检查一下有没有写的权限。' }
+      const saved = await store.writeConfig(ws, { diary_dir: dir })
+      if (saved?.ok !== true) return { ok: false, error: saved?.error ?? '位置没记住，下次还得再挑一次。' }
+      return { ok: true, dir }
+    },
+
+    /** 读某一天（不传就是今天）。 */
+    'diary.get': async (body) => {
+      const ws = await root(body)
+      const where = await diaryDirOf(ws)
+      if (where.ok !== true) return where
+      if (where.dir === '') return { ok: true, dir: '', ready: false, date: String(body?.date ?? '') || store.localDate(), data: null }
+      const date = String(body?.date ?? '').trim() === '' ? store.localDate() : String(body.date).trim()
+      if (diary.dateFileName(date) === '') return { ok: false, error: '日期看起来不对，应该是 2026-10-31 这种样子。' }
+      const got = await diary.readDiary(where.dir, date)
+      if (got.ok !== true) return got
+      // 除了五节，还得把「文件里本来还有」的东西交出去：用户写在开头那段话、
+      // 自己加的小节。不交的话界面上看不见它们，他会以为存丢了。
+      return {
+        ok: true,
+        dir: where.dir,
+        ready: true,
+        date,
+        data: got.data,
+        intro: got.intro ?? '',
+        extraSections: got.extraSections ?? [],
+        scoreLines: got.scoreLines ?? [],
+        missing: got.missing === true,
+      }
+    },
+
+    /** 存某一天。 */
+    'diary.save': async (body) => {
+      const ws = await root(body)
+      const where = await diaryDirOf(ws)
+      if (where.ok !== true) return where
+      if (where.dir === '') return { ok: false, error: '还没有定日记放在哪个文件夹。' }
+      const date = String(body?.date ?? '').trim() === '' ? store.localDate() : String(body.date).trim()
+      if (diary.dateFileName(date) === '') return { ok: false, error: '日期看起来不对，应该是 2026-10-31 这种样子。' }
+      // 先读一遍再写：写过的那一天，读出来是什么样，写的时候就得还是那个样子。
+      // 中间被别处改过（用户自己在访达里动了），这次一个字节都不写。
+      // 这条路由以前是裸写，谁调它都能把一整天整篇盖掉。
+      const existing = await diary.readDiary(where.dir, date)
+      if (existing.ok !== true) {
+        return { ok: false, error: `这一天读不出来，为了不覆盖掉原来的东西，这次没存：${String(existing.error ?? '')}` }
+      }
+      const saved = await diary.writeDiary(where.dir, { ...(body?.data ?? {}), date }, new Date(), {
+        expect: typeof existing.text === 'string' ? { text: existing.text } : {},
+      })
+      if (saved.ok !== true) return saved
+      return { ok: true, dir: where.dir, date, path: saved.path, mode: saved.mode }
+    },
+
+    /** 最近写过哪几天。 */
+    'diary.list': async (body) => {
+      const ws = await root(body)
+      const where = await diaryDirOf(ws)
+      if (where.ok !== true) return where
+      if (where.dir === '') return { ok: true, dir: '', ready: false, diaries: [] }
+      const listed = await diary.listDiaries(where.dir, { limit: Number(body?.limit) > 0 ? Number(body.limit) : 400 })
+      if (listed.ok !== true) return listed
+      return { ok: true, dir: where.dir, ready: true, diaries: listed.diaries }
+    },
+
+    /**
+     * 开今天这一场：给出预设名和第一句。
+     *
+     * 为什么不让客户端自己拼：要带上前几天写的、带着「我」那张卡里已经有的东西，
+     * 还要知道今天写过没有。这些都只有后台读得到。
+     */
+    'diary.start': async (body) => {
+      const ws = await root(body)
+      const where = await diaryDirOf(ws)
+      if (where.ok !== true) return where
+      const today = store.localDate()
+      let recent = ''
+      let todayDone = false
+      let draft = ''
+      if (where.dir !== '') {
+        const listed = await diary.listDiaries(where.dir, { limit: 40 })
+        if (listed.ok === true) {
+          todayDone = listed.diaries.some((d) => d.date === today)
+          // 今天已经写过的，把正文带上。不带的话模型看不见上午写的那几节，
+          // 只好从头重问一遍；存盘时它照着新问出来的整节重写，上午写的就没了。
+          if (todayDone) {
+            const got = await diary.readDiary(where.dir, today)
+            if (got.ok === true && got.data !== null) draft = diary.diaryBlock(got.data, { intro: got.intro, extraSections: got.extraSections })
+          }
+          const picked = listed.diaries.filter((d) => d.date !== today).slice(0, 3)
+          const texts = []
+          for (const item of picked) {
+            const got = await diary.readDiary(where.dir, item.date)
+            if (got.ok === true && got.data !== null) texts.push({ date: item.date, data: got.data, intro: got.intro, extraSections: got.extraSections })
+          }
+          recent = diary.recentBlock(picked.map((d) => d.date), texts)
+        }
+      }
+      const pin = pinnedCardIdSync(ws, 'diary')
+      let cardName = ''
+      let persona = ''
+      if (pin !== '') {
+        const abs = cardPathSync(ws, pin)
+        const raw = abs === '' ? null : readCachedSync(abs)
+        if (raw !== null) {
+          const parsed = core.parseCard(raw)
+          if (parsed.ok === true) {
+            cardName = String(parsed.data?.name ?? '').trim()
+            persona = ['自述', '性格', '口癖', '不会说的话', '不会做的事']
+              .map((title) => core.sectionBody(parsed.sections, title))
+              .filter((part) => typeof part === 'string' && part.trim() !== '')
+              .join('\n\n')
+          }
+        }
+      }
+      const text = [
+        '/lifecard-diary',
+        `今天是 ${today}。带我写今天这一篇。`,
+        draft === '' ? '' : `\n今天已经写下这些了：\n${draft}`,
+        draft === '' ? '' : '\n接着往下问，别把已经写过的重问一遍。要改哪一节先说清改成什么，我点头了再改。',
+        persona === '' ? '' : `\n带着这张卡里的人来问（${cardName}）：\n${persona}`,
+        recent === '' ? '' : `\n前几天写过这些：\n${recent}`,
+      ]
+        .filter((line) => line !== '')
+        .join('\n')
+      return { ok: true, preset: 'lc-diary', date: today, dir: where.dir, todayDone, cardName, personaChars: persona.length, draftChars: draft.length, text }
+    },
+
+    /** 把某一天写下的东西整理成「关于这个人的几条事实」，给改卡用。 */
+    'diary.digest': async (body) => {
+      const ws = await root(body)
+      const where = await diaryDirOf(ws)
+      if (where.ok !== true) return where
+      if (where.dir === '') return { ok: false, error: '还没有定日记放在哪个文件夹。' }
+      const date = String(body?.date ?? '').trim() === '' ? store.localDate() : String(body.date).trim()
+      const got = await diary.readDiary(where.dir, date)
+      if (got.ok !== true) return got
+      if (got.data === null) return { ok: false, error: '这一天还没写。' }
+      const built = diary.buildDigestPrompt({ date, text: diary.diaryBlock(got.data, { intro: got.intro, extraSections: got.extraSections }) })
+      const called = await callModel(ctx, { system: built.system, user: built.user, model: body?.model })
+      if (called.ok !== true) return { ok: false, error: `这次没整理出来：${called.error ?? '过一会儿再试一次'}` }
+      return { ok: true, date, text: String(called.text ?? '').trim() }
     },
 
     // ── 文字小说游戏：进到情节里，你来选，它来推 ────────────────
@@ -4044,11 +4422,11 @@ function cardPathSync(root, id) {
 async function clearPinsFor(ws, rel, data) {
   const state = await store.readConfigState(ws)
   if (state.ok !== true) return
-  const pins = { real: '', tavern: '', novel: '', ...(state.config?.default_cards ?? {}) }
+  const pins = { real: '', tavern: '', novel: '', diary: '', ...(state.config?.default_cards ?? {}) }
   const id = String(data?.id ?? '')
   const stem = path.posix.basename(rel).replace(/\.card\.md$/i, '')
   let changed = false
-  for (const mode of ['real', 'tavern', 'novel']) {
+  for (const mode of ['real', 'tavern', 'novel', 'diary']) {
     const picked = String(pins[mode] ?? '')
     if (picked !== '' && (picked === id || picked === rel || picked === stem)) {
       pins[mode] = ''
@@ -4069,6 +4447,46 @@ function pinnedCardIdSync(root, mode) {
   } catch {
     return ''
   }
+}
+
+/**
+ * 日记放在哪个文件夹。
+ *
+ * 和别的东西不一样：日记**不在这个工作区里**，它是用户在第一次点「写日记」时
+ * 自己挑的一个位置。所以这里不回落到工作区，没定过就老实说没定。
+ */
+/**
+ * 日记文件夹不能挑在这些地方。
+ *
+ * 以前只挡了文件系统根目录，于是 `~/.ssh`、`~/Library`、`/tmp` 全照收：
+ * 一个手滑把 `.ssh` 设成日记夹，往后每一次「写日记」都往密钥目录里写文件。
+ * 这里只挡「明显不该往里写东西」的几处，不是白名单——用户自己的
+ * `~/Documents/xxx`、外接盘、iCloud 都照旧能选。
+ *
+ * @returns {string} 不许的话，一句人话；可以的话空串。
+ */
+function diaryDirVeto(dir) {
+  const abs = path.normalize(String(dir ?? ''))
+  const home = homedir()
+  const under = (base) => base !== '' && (abs === base || abs.startsWith(base + path.sep))
+  if (abs === path.parse(abs).root) return '不能整个磁盘根目录都当日记文件夹。换一个位置。'
+  if (abs === os.tmpdir()) {
+    // 只挡临时目录本身：那是系统会整个清掉的地方。它下面自己建的具体文件夹
+    // 不挡——外接盘、同步盘的挂载点有时候就长在系统临时路径下面。
+    return '别把系统临时文件夹本身当日记文件夹——那里会被系统整个清掉，日记会跟着没。换一个位置。'
+  }
+  if (under(path.join(home, '.ssh'))) return '这是放密钥的地方，不能当日记文件夹。换一个位置。'
+  if (under(path.join(home, '.gnupg'))) return '这是放密钥的地方，不能当日记文件夹。换一个位置。'
+  if (under(path.join(home, 'Library'))) return '这是系统自己用的文件夹，别往里写日记。换一个位置，比如「文稿」。'
+  if (abs === home) return '整个家目录太大了，给日记单独建个文件夹吧。换一个位置。'
+  return ''
+}
+
+async function diaryDirOf(ws) {
+  const state = await store.readConfigState(ws)
+  if (state.ok !== true) return { ok: false, error: state.error ?? '这个文件夹里的设置读不出来。' }
+  const dir = diary.diaryRootFrom(state.config ?? {})
+  return { ok: true, dir }
 }
 
 /** 把世界书条目排成人能读、模型也好读的样子。 */
@@ -4221,6 +4639,7 @@ function modeFromPresetRegistry(ctx, agent) {
     const blob = JSON.stringify(rows)
     if (blob.includes('lc-tavern')) return 'tavern'
     if (blob.includes('lc-novel')) return 'novel'
+    if (blob.includes('lc-diary')) return 'diary'
   } catch {
     /* 问不到就当不知道 */
   }
@@ -4233,6 +4652,7 @@ function modeForAgent(agent) {
   if (preset === '') return ''
   if (preset.includes('lc-tavern')) return 'tavern'
   if (preset.includes('lc-novel')) return 'novel'
+  if (preset.includes('lc-diary')) return 'diary'
   return ''
 }
 
@@ -4336,6 +4756,14 @@ function registerInterviewSkill(ctx) {
     name: 'novel-to-script',
     fallback: '小说改剧本：分场、把叙述换成 △ 动作、把心理换成演得出来的东西、台词按标点分工。',
     label: '改剧本',
+  })
+  // 带写日记的那份手艺。它不只是「怎么问」，还写着写完之后怎么反哺
+  // 「我」那张卡和日记助手那张卡——两条路都在这一份里。
+  registerBundledSkill(ctx, {
+    dir: 'lifecard-diary',
+    name: 'lifecard-diary',
+    fallback: '带写今天这一篇日记：一件事、情绪三层、一个能做的决定，末尾四样各打个分。',
+    label: '日记',
   })
   // 这三份是写作用得上的通用手艺，随包一起发：装插件即等于有，
   // 换台机器不必再单独装一遍。名字与内容都保持原样，方便用户照旧用
@@ -4584,14 +5012,21 @@ export function apply(ctx, config) {
         // 没有 Origin 就是同源请求（浏览器对同源 POST 一般不送）；`null` 是
         // 沙箱里的 iframe。这两种放行，只有「明确来自别家站点」才拦。
         if (origin !== '' && origin !== 'null') {
-          let sameHost = false
+          // 只比「Origin 和 Host 一致」是不够的：DNS rebinding 下攻击者页面的
+          // Origin 和它请求的 Host 都是它自己的域名，两面一致照样放行，
+          // 于是别人的网页能读、能改你的日记。这里再加一条——这一台服务只在
+          // 本机跑，所以请求的主机名必须真的是回环地址，别的一律不收。
+          let allowed = false
           try {
             const host = String(req.headers?.host ?? '')
-            sameHost = host !== '' && new URL(origin).host === host
+            const originUrl = new URL(origin)
+            const hostName = host === '' ? '' : new URL(`http://${host}`).hostname
+            const loopback = hostName === '127.0.0.1' || hostName === 'localhost' || hostName === '::1' || hostName === '[::1]'
+            allowed = loopback && originUrl.host === host
           } catch {
-            sameHost = false
+            allowed = false
           }
-          if (!sameHost) {
+          if (!allowed) {
             writeJson(res, 403, { ok: false, error: { code: 'forbidden', message: '这个来源不能改档案' } })
             return
           }

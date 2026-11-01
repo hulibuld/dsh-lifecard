@@ -154,6 +154,11 @@ console.log('\n=== 5. 给模型的话：演法约束必须写进去 ===')
   t('不许跳出角色加注释', system.includes('旁白'), '')
   t('不写名字前缀', system.includes('不要写「张三：」'), '')
   t('世界书带进去了', system.includes('八个月雨'), '')
+  // 下面三条来自用户拿来的那份「叙事守则」里能用的部分：群像要活、人各有声、
+  // 不拿总结代替过程。写不进提示词就等于白说，所以在这里钉住。
+  t('要求把在场的人写出来，不让他们当背景', system.includes('不要让他们全站着当背景'), '')
+  t('不许用一句总结代替过程', system.includes('不拿一句总结代替过程') && system.includes('沉默了半晌'), '')
+  t('要求每句话都是这个人才会说的', system.includes('换个人说也成立'), '')
   const first = tavern.buildRoleplayUser({ cardName: '张三', turns: [] })
   t('没有历史时请 TA 先说', first.includes('先说'), first)
   const next = tavern.buildRoleplayUser({ cardName: '张三', turns: [{ who: '我', text: '在吗' }, { who: '张三', text: '在。' }] })

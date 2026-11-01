@@ -31,7 +31,7 @@ const routeForbidden = ['lens', 'kind', 'world', 'consent', 'basis', 'recorded_a
 const files = ['index', 'store', 'core', 'score', 'codec', 'memory', 'jobs', 'jobs-store', 'jobs-interview',
   // novel 和 client 以前漏在名单外：`novel.js` 那句「这本书的命令行读不出来」
   // 真能上屏，测试却全绿。谁会在界面上说话，就把谁放进来。
-  'novel', 'prose', 'tavern', 'game', 'presets', 'career', 'client']
+  'novel', 'prose', 'tavern', 'game', 'presets', 'career', 'diary', 'client']
 
 /** 抠出「会显示给用户」的字符串字面量。只认单行，宁可漏也别误报。 */
 function shownStrings(source) {

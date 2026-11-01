@@ -598,10 +598,27 @@ export function splitSections(body) {
   return out.map((s) => ({ title: s.title, body: s.body.join('\n').replace(/^\n+|\n+$/g, '') }))
 }
 
-/** 取某小节正文；没有就返回空串。 */
+/**
+ * 取某小节正文；没有就返回空串。
+ *
+ * **同名小节要全取，不能只取第一份。**
+ *
+ * 人写东西不是围着我们的格式转的：早上写一段「今天最值得讲的一件事」，
+ * 晚上想起一句，很自然会再起一个同名标题接着写。以前这里用 `find` 只取
+ * 第一份，第二份在整份重写时被静默删掉，人只会觉得「我写的怎么没了」。
+ * 标题尾随多个空格（`## 下一步 `）会被规整成同名——同样得并起来。
+ *
+ * 用空行连接：正文小节是段落，空行是段落间的自然分隔；一行一条的小节
+ * 由 `parseList` 按行切，空行本来就会被跳过。
+ */
 export function sectionBody(sections, title) {
-  const found = sections.find((s) => s.title === title)
-  return found === undefined ? '' : found.body
+  const list = Array.isArray(sections) ? sections : []
+  const bodies = list
+    .filter((s) => s.title === title)
+    .map((s) => String(s.body ?? '').trim())
+    .filter((body) => body !== '')
+  if (bodies.length === 0) return ''
+  return bodies.join('\n\n')
 }
 
 /**

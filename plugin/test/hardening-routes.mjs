@@ -17,6 +17,7 @@ import path from 'node:path'
 import * as api from '../lib/index.js'
 import * as store from '../lib/store.js'
 import * as core from '../lib/core.js'
+import * as career from '../lib/career.js'
 
 let pass = 0, fail = 0
 const t = (name, cond, extra) => {
@@ -1494,6 +1495,74 @@ console.log('\n=== 27. 后台替用户开新对话（session.open）===')
   const none = api.buildApi({ get: () => undefined }, async () => ws, {})
   const missing = await none['session.open']({ preset: 'lc-real', text: 'x' })
   t('这台机器没有会话服务时如实说', missing.ok === false && String(missing.error).includes('复制'), missing)
+}
+
+console.log('\n=== 从卡里读简历：只摘不写，摘的每条都要对得上原话 ===')
+{
+  // 这一步最容易做错的两件事：
+  //   1. 模型写的「摘抄」其实原话里没有（补了一句好听的），不拦就会被当成经历写进简历；
+  //   2. 摘的那一趟顺手就把简历改了——用户还没看见摘了什么。
+  const mineWs = path.join(tmpdir(), 'lifecard-mine-' + stamp)
+  await fs.mkdir(mineWs, { recursive: true })
+  await store.openWorkspace(mineWs, { create: true })
+
+  const CARD = [
+    '---',
+    'lifecard: 0.1',
+    'id: lin',
+    'kind: real',
+    'world: reality',
+    'name: 林知远',
+    '---',
+    '',
+    '## 自述',
+    '',
+    '大四，在校刊做编辑，做了两年。',
+  ].join('\n')
+  await fs.mkdir(path.join(mineWs, 'people'), { recursive: true })
+  await fs.writeFile(path.join(mineWs, 'people/lin.card.md'), CARD, 'utf8')
+
+  const reply = (text) => ({ ok: true, text, model: 'x', provider: 'p' })
+  const mineLlm = {
+    listProviders: async () => [{ provider: 'buddy', models: [{ id: 'hy3' }] }],
+    listModels: async () => [],
+    stream: async () => (async function* () {
+      yield { type: 'text-delta', text: reply(JSON.stringify({
+        items: [
+          { slot: 'work', text: '在校刊做编辑，做了两年', quote: '在校刊做编辑，做了两年' },
+          { slot: 'work', text: '出版过一本诗集', quote: '出版过一本诗集' },
+          { slot: 'education', text: '大四', quote: '大四' },
+        ],
+      })).text }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })(),
+  }
+  const mineTable = api.buildApi({ ...ctx, get: (n) => (n === 'llm' ? mineLlm : undefined) }, async () => mineWs, { workspace: mineWs })
+
+  const got = await mineTable['career.mine']({ card: 'lin' })
+  t('摘得出来', got.ok === true, got)
+  t('原话对得上的留下', (got.items ?? []).some((x) => x.text === '在校刊做编辑，做了两年'), got.items)
+  t('原话里没有的那条被拦下', !(got.items ?? []).some((x) => x.text === '出版过一本诗集'), got.items)
+  t('拦下的说得出为什么', (got.dropped ?? []).some((x) => String(x.why ?? '') !== ''), got.dropped)
+  t('按格子归好了', Array.isArray(got.groups?.work) && got.groups.work.length >= 1, got.groups)
+  t('回执里带着卡名', String(got.card?.name ?? '') === '林知远', got.card)
+  t('摘这一趟不写简历', (await career.readProfile(mineWs)).data === null, '简历不该已经存在')
+
+  const noCard = await mineTable['career.mine']({})
+  t('没挑卡就说人话', noCard.ok === false && String(noCard.error).includes('挑一张卡'), noCard)
+  const ghost = await mineTable['career.mine']({ card: '查无此卡' })
+  t('卡不存在也说得清楚', ghost.ok === false && String(ghost.error).includes('没找到'), ghost)
+  const blank = await mineTable['career.merge']({ items: [] })
+  t('一条没挑就不并', blank.ok === false, blank)
+
+  const merged = await mineTable['career.merge']({ items: [{ slot: 'work', text: '在校刊做编辑，做了两年' }] })
+  t('并得进去', merged.ok === true && merged.added === 1, merged)
+  const after = await career.readProfile(mineWs)
+  t('真写到了磁盘上', String(after?.data?.做过什么 ?? '').includes('校刊做编辑'), after?.data)
+  t('没编的内容一个字都没多', !String(after?.data?.做过什么 ?? '').includes('诗集'), after?.data)
+
+  const twice = await mineTable['career.merge']({ items: [{ slot: 'work', text: '在校刊做编辑，做了两年' }] })
+  t('同一条并两次不会重复', twice.ok === true && twice.added === 0, twice)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)
