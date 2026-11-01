@@ -1176,10 +1176,87 @@ function buildApi(ctx, workspace, config, options) {
         ok: true,
         self: selfCard === null ? null : nodeOf(selfCard),
         rings: { self: rings[0], inner: rings[1], outer: rings[2] },
-        edges: edges.map((e) => ({ from: String(e.from ?? ''), to: String(e.to ?? ''), type: String(e.type ?? '') })),
+        // 边不只要「谁连谁」，还要能拿回去编辑：路径是它在磁盘上的位置，
+        // 点开一条边要能读到类型、亲疏、当时那句话。
+        edges: edges.map((e) => ({
+          path: String(e.path ?? ''),
+          from: String(e.from ?? ''),
+          to: String(e.to ?? ''),
+          type: String(e.type ?? ''),
+          label: String(e.label ?? ''),
+          affinity: e.affinity,
+          trust: e.trust,
+          authority: e.authority,
+          dependency: e.dependency,
+          note: String(e.note ?? ''),
+          at: String(e.at ?? ''),
+        })),
         counts: { self: rings[0].length, inner: rings[1].length, outer: rings[2].length, outside: outside.length },
         outside,
       }
+    },
+
+    /**
+     * 写一条关系边：谁和谁是什么关系。
+     *
+     * 这一屏以前只能看图不能改——「我表姐也是我妈的女儿」这件事，
+     * 用户只能自己去 relations/ 里手写 YAML。这里补上那条路。
+     *
+     * 只写一条边，不同时改两张卡：卡片上那个 `relation` 是「他和我」
+     * 的关系（一对一），边是「谁和谁」（可以有很多条）。混在一起写，
+     * 一次点保存会同时动两处，出错时说不清是哪一步坏的。
+     */
+    'relations.save': async (body) => {
+      const ws = await root(body)
+      const all = await store.listAll(ws)
+      const cards = Array.isArray(all.cards) ? all.cards : []
+      // 两端都可以给 id 或名字——界面上拿到的往往是名字，硬要求 id
+      // 等于让用户自己去看文件名。
+      const findId = (want) => {
+        const key = String(want ?? '').trim()
+        if (key === '') return null
+        const hit = cards.find((c) => String(c.id ?? '') === key)
+          ?? cards.find((c) => String(c.name ?? '').trim() === key)
+        return hit === undefined ? null : hit
+      }
+      const fromCard = findId(body?.from)
+      const toCard = findId(body?.to)
+      if (fromCard === null) return { ok: false, error: `没找到「${String(body?.from ?? '').trim()}」这个人。先在卡片里建好，再来连。` }
+      if (toCard === null) return { ok: false, error: `没找到「${String(body?.to ?? '').trim()}」这个人。先在卡片里建好，再来连。` }
+      if (String(fromCard.id) === String(toCard.id)) {
+        return { ok: false, error: '这两个是同一张卡。关系要连两个不同的人。' }
+      }
+      const saved = await store.writeRelation(ws, {
+        from: fromCard.id,
+        to: toCard.id,
+        type: body?.type,
+        label: body?.label,
+        since: body?.since,
+        affinity: body?.affinity,
+        trust: body?.trust,
+        note: body?.note,
+        authority: body?.authority,
+        dependency: body?.dependency,
+      })
+      if (saved.ok !== true) return saved
+      return {
+        ok: true,
+        path: saved.path,
+        created: saved.created === true,
+        note: saved.created === true
+          ? `连上了：「${fromCard.name || fromCard.id}」对「${toCard.name || toCard.id}」是什么，已经记下来。`
+          : '改好了。',
+      }
+    },
+
+    /** 断开一条关系。搬进回收目录，不直接抹掉（和删卡一样能反悔）。 */
+    'relations.delete': async (body) => {
+      const ws = await root(body)
+      const safe = await insideWorkspace(ws, body?.path)
+      if (safe.ok !== true) return { ok: false, error: safe.error }
+      const gone = await store.deleteRelation(ws, safe.rel)
+      if (gone.ok !== true) return gone
+      return { ok: true, path: gone.path, note: '这条关系断开了。原来的那份还在回收目录里，需要的话能找回来。' }
     },
       /**
      * 把一扇门从界面上收起来 / 装回来。

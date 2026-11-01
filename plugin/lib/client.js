@@ -1962,6 +1962,7 @@ function LifeCardTab(props) {
             openCard(hit)
           },
           onTalk: (name) => startInterview({ about: name, mode }),
+          relations: state?.relations ?? [],
         })
       case VIEWS.career:
         return h(CareerView, { flash, cards: listing?.cards ?? [], onOpenCard: openCard, onBack: () => setView(VIEWS.home) })
@@ -3582,10 +3583,19 @@ function keepButton(busy, dir, keep) {
  * 我有关系的人，2 圈是只和 1 圈里的人有关系的人。没有任何关系线索的
  * 人不进网，收在底下那一行——不收进来的话，他们会像凭空消失了一样。
  */
-function NetView({ onBack, onOpen, onTalk }) {
+function NetView({ onBack, onOpen, onTalk, relations }) {
   const [net, setNet] = useState(null)
   const [err, setErr] = useState(null)
   const [showOutside, setShowOutside] = useState(false)
+  // 连两个人这件事以前完全没有入口：网画得出来，却没法往里加一条线。
+  // addOpen 是那一小块表单收没收起来；a/b 是选中的两端（存 id）；
+  // rtype 是关系叫法，note 是「当时那句话」。
+  const [addOpen, setAddOpen] = useState(false)
+  const [a, setA] = useState('')
+  const [b, setB] = useState('')
+  const [rtype, setRtype] = useState('')
+  const [note, setNote] = useState('')
+  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -3596,6 +3606,55 @@ function NetView({ onBack, onOpen, onTalk }) {
     }).catch((e) => { if (alive === true) setErr(humanizeError(e)) })
     return () => { alive = false }
   }, [])
+
+  /** 改完一条边要重画：新连上的人可能从「网外」挪进圈里。 */
+  const reload = async () => {
+    const r = await call('relations.net', {}).catch((e) => ({ ok: false, error: humanizeError(e) }))
+    if (r?.ok !== true) { setErr(r?.error ?? '这张网没读出来'); return false }
+    setNet(r)
+    setErr(null)
+    return true
+  }
+
+  /** 把选中的两个人连起来。存完顺手收起表单、清空，下一次连不用重新选。 */
+  const connect = async () => {
+    if (saving === true) return
+    if (a === '' || b === '') { setErr('两头都得挑一个人。'); return }
+    setSaving(true)
+    try {
+      const r = await call('relations.save', { from: a, to: b, type: rtype, note })
+      if (r?.ok !== true) { setErr(r?.error ?? '这条关系没连上'); return }
+      const ok = await reload()
+      if (ok !== true) return
+      setAddOpen(false)
+      setA('')
+      setB('')
+      setRtype('')
+      setNote('')
+    } catch (e) {
+      setErr(humanizeError(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  /** 断开一条。会先问一句——断开是搬走不是抹掉，但仍然不该手滑就没。 */
+  const cut = async (edgePath) => {
+    const sure = typeof window !== 'undefined' && typeof window.confirm === 'function'
+      ? window.confirm('断开这条关系？断开以后那两个人不一定还在圈里，原来的那份会留在回收目录里。')
+      : true
+    if (sure !== true) return
+    setSaving(true)
+    try {
+      const r = await call('relations.delete', { path: edgePath })
+      if (r?.ok !== true) { setErr(r?.error ?? '这条关系没断开'); return }
+      await reload()
+    } catch (e) {
+      setErr(humanizeError(e))
+    } finally {
+      setSaving(false)
+    }
+  }
 
   if (net === null) {
     return h('div', { className: 'lc-pad lc-stack' },
@@ -3703,6 +3762,81 @@ function NetView({ onBack, onOpen, onTalk }) {
     tone === undefined ? null : h(Tag, { tone }, tone === 'ok' ? '直接认识' : '通过别人'),
   )
 
+  // 连两个人都得先有人：只有一张卡的时候连不起来。
+  const people = [
+    ...(self === null ? [] : [self]),
+    ...inner,
+    ...outer,
+    ...outside.map((one) => ({ ...one, kind: one.kind ?? 'real', relationLabel: '' })),
+  ]
+  const catalogue = (relations?.length ?? 0) > 0 ? relations : RELATION_FALLBACK
+  const nameOfId = (id) => {
+    const hit = people.find((one) => String(one.id ?? '') === String(id ?? ''))
+    return hit === undefined ? String(id ?? '') : String(hit.name ?? '')
+  }
+  const typeLabel = (edge) => {
+    if (String(edge?.label ?? '').trim() !== '') return String(edge.label)
+    const hit = catalogue.find((one) => String(one.id ?? '') === String(edge?.type ?? ''))
+    return hit === undefined ? String(edge?.type ?? '没有分类') : String(hit.label ?? hit.id)
+  }
+  const edges = Array.isArray(net.edges) ? net.edges : []
+  const edgeRow = (edge) => h('div', {
+    key: String(edge.path ?? `${edge.from}-${edge.to}`),
+    className: 'lc-listrow',
+    style: { display: 'flex', alignItems: 'center', gap: 9 },
+  },
+    h('span', { className: 'lc-grow' },
+      h('div', null, `${nameOfId(edge.from)} → ${nameOfId(edge.to)}`),
+      h('div', { className: 'lc-meta' },
+        typeLabel(edge),
+        String(edge.note ?? '').trim() === '' ? '' : `　·　${String(edge.note).trim()}`),
+    ),
+    h(Btn, { tone: 'ghost', size: 'sm', disabled: saving === true, onClick: () => cut(edge.path) }, '断开'),
+  )
+
+  const picker = (value, set, label) => h('label', { className: 'lc-fitem' },
+    h('span', { className: 'lc-flabel' }, label),
+    h('select', {
+      className: 'lc-select', value, style: { flex: 1, minWidth: 0 },
+      onChange: (e) => set(e.target.value),
+    },
+      h('option', { value: '' }, '（挑一个人）'),
+      ...people.map((one) => h('option', { key: one.id, value: String(one.id) }, String(one.name ?? one.id))),
+    ),
+  )
+
+  const connectForm = addOpen !== true
+    ? null
+    : h('div', { className: 'lc-stack', style: { marginTop: 8 } },
+        h('div', { className: 'lc-meta' }, '把两个人连起来。比如「表姐」和「妈妈」之间是「也是母女」。'),
+        picker(a, setA, '谁'),
+        picker(b, setB, '和谁'),
+        h('label', { className: 'lc-fitem' },
+          h('span', { className: 'lc-flabel' }, '是什么关系'),
+          h('select', {
+            className: 'lc-select', value: rtype, style: { flex: 1, minWidth: 0 },
+            onChange: (e) => setRtype(e.target.value),
+          },
+            h('option', { value: '' }, '（还没想好也行）'),
+            ...catalogue.map((one) => h('option', { key: one.id, value: one.id }, String(one.label ?? one.id))),
+          ),
+        ),
+        h('label', { className: 'lc-fitem' },
+          h('span', { className: 'lc-flabel' }, '一句当时的话（可以不写）'),
+          h('input', {
+            className: 'lc-input', value: note, placeholder: '比如：她俩其实一直不太对付',
+            onChange: (e) => setNote(e.target.value),
+          }),
+        ),
+        h('div', { className: 'lc-row' },
+          h(Btn, {
+            tone: 'primary', disabled: saving === true || a === '' || b === '',
+            onClick: connect,
+          }, saving === true ? '正在记…' : '连起来'),
+          h(Btn, { onClick: () => { setAddOpen(false); setErr(null) } }, '先不连'),
+        ),
+      )
+
   return h('div', { className: 'lc-pad lc-stack' },
     h('div', { className: 'lc-meta' },
       self === null
@@ -3746,6 +3880,27 @@ function NetView({ onBack, onOpen, onTalk }) {
               ),
         ),
 
+    // 已经连上的那些线。网的图里只画「谁带谁进来」的那一条，这里列的是
+    // 全部——同一个人身上可以有好几条（我妈和我表姐之间也有关系）。
+    edges.length === 0
+      ? null
+      : h('div', { className: 'lc-sec' },
+          h(GroupTitle, { icon: 'relation' }, `已经连上的（${edges.length}）`),
+          h('div', { className: 'lc-stack' }, edges.map(edgeRow)),
+        ),
+
+    people.length < 2
+      ? null
+      : h('div', { className: 'lc-sec' },
+          addOpen === true
+            ? null
+            : h(Btn, {
+                tone: 'doctor', icon: 'plus', disabled: saving === true,
+                onClick: () => { setAddOpen(true); setErr(null) },
+              }, '连两个人'),
+          connectForm,
+        ),
+
     err === null ? null : h(Err, { text: err }),
 
     h('div', { className: 'lc-row' },
@@ -3755,8 +3910,12 @@ function NetView({ onBack, onOpen, onTalk }) {
       h('div', { className: 'lc-grow' }),
       h(Btn, { onClick: onBack }, '回去'),
     ),
-    h('div', { className: 'lc-meta' },
-      '这张网只按卡片上写的关系连。想连得更细（谁和谁也有关系），现在还没有地方能写——那要一段一段自己填。'),
+    // 只有一个人的时候没有「连两个人」那个按钮，这句话就不能再说它，
+    // 否则读起来像界面上有个不存在的东西。
+    people.length < 2
+      ? null
+      : h('div', { className: 'lc-meta' },
+          '卡片上写的那个关系是「他和我」。谁和谁之间还有别的关系（表姐也是妈妈的女儿），用上面的「连两个人」加一条线。'),
   )
 }
 
