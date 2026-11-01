@@ -772,8 +772,12 @@ export function validateCard(data, options = {}) {
   if (data?.system !== undefined) {
     add('warn', '卡上不应有 system 字段；系统在调用时用 --system 指定（见 SPEC §5）', 'system')
   }
-  // affect 挂在关系边上，不在卡上
-  if (data?.affect !== undefined) {
+  // affect 挂在关系边上，不在卡上。
+  // 所以「有 affect」这件事本身，只有在一张**人物的**卡上才值得提醒：
+  // 关系边（kind: relation）本来就该有 affect，那是它唯一该在的地方。
+  // 以前不判 kind，于是每存一条边都跳一句「不该出现在卡上」——写边的
+  // 界面刚一上线，用户第一次点保存就会被自己的插件告一次状。
+  if (data?.affect !== undefined && kind !== 'relation') {
     add('warn', 'affect 属于关系边（relations/*.relation.md），不该出现在卡上', 'affect')
   }
   if (kind === 'real' || kind === 'fictional' || kind === 'hybrid') {
@@ -1069,10 +1073,14 @@ export function relationEdge(data) {
     from: String(data?.from ?? ''),
     to: String(data?.to ?? ''),
     type: String(data?.structure?.type ?? ''),
+    // 类型是那十几种固定叫法时，界面上显示的是类型；用户自己写的那句话
+    // 存在 label 里，否则「隔壁王叔」这种关系只能显示成「自己填」。
+    label: String(data?.structure?.label ?? ''),
     affinity: latest?.affinity,
     trust: latest?.trust,
     authority: numOr(data?.power?.authority, undefined),
     dependency: numOr(data?.power?.dependency, undefined),
+    note: String(latest?.note ?? ''),
     at: latest?.at,
   }
 }

@@ -2498,6 +2498,51 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   const broke = renderOne('人物关系网（读不出来）', Net, props, { 0: null, 1: '这个文件夹里的卡读不出来。', 2: false })
   t('读不出来时照实说', textOf(expand(broke)).includes('读不出来'), textOf(expand(broke)).slice(0, 300))
 
+  // 连两个人：这一屏以前只能看图不能改，连个入口都没有。
+  // hook 槽：3 addOpen / 4 a / 5 b / 6 rtype / 7 note / 8 saving
+  const EDGE = {
+    path: 'relations/dad--yi.relation.md', from: 'dad', to: 'yi', type: 'sibling',
+    label: '', affinity: -1, trust: undefined, authority: undefined, dependency: undefined,
+    note: '她俩其实一直不太对付', at: '2026-11-01',
+  }
+  const withEdge = { ...NET, edges: [EDGE] }
+  const edgeTree = renderOne('人物关系网（已经连上了一条）', Net, props, { 0: withEdge, 1: null, 2: false })
+  const edgeWords = textOf(expand(edgeTree))
+  t('已经连上的那些列出来了', edgeWords.includes('已经连上的（1）'), edgeWords.slice(0, 900))
+  t('关系两头都用名字说', edgeWords.includes('钱俊锋') && edgeWords.includes('我姨'), edgeWords.slice(0, 900))
+  t('关系叫法翻成人话', edgeWords.includes('兄弟姐妹'), edgeWords.slice(0, 900))
+  t('当时那句话也带着', edgeWords.includes('她俩其实一直不太对付'), edgeWords.slice(0, 900))
+  t('每条都能断开', collectIn(expand(edgeTree), (n) => n.type === 'button' && textOf(n).includes('断开')).length >= 1)
+  t('还没点开时不摆表单', !edgeWords.includes('把两个人连起来'), edgeWords.slice(0, 900))
+
+  const canAdd = renderOne('人物关系网（可以连两个人）', Net, props, { 0: withEdge, 1: null, 2: false })
+  t('给了「连两个人」这个入口', textOf(expand(canAdd)).includes('连两个人'), textOf(expand(canAdd)).slice(-400))
+
+  const openForm = renderOne('人物关系网（表单打开了）', Net, props, {
+    0: withEdge, 1: null, 2: false,
+    3: true, 4: 'dad', 5: 'yi', 6: 'sibling', 7: '她俩其实一直不太对付', 8: false,
+  })
+  const formWords = textOf(expand(openForm))
+  t('表单说清这是什么', formWords.includes('把两个人连起来'), formWords.slice(-800))
+  t('两头各有一个下拉', collectIn(expand(openForm), (n) => n.type === 'select').length >= 3, formWords.slice(-800))
+  t('下拉里能挑到人', formWords.includes('钱俊锋') && formWords.includes('我姨'), formWords.slice(-800))
+  t('关系用那套叫法', formWords.includes('父亲') && formWords.includes('兄弟姐妹'), formWords.slice(-800))
+  t('可以写一句当时的话', formWords.includes('一句当时的话'), formWords.slice(-800))
+  t('有「连起来」这一颗', formWords.includes('连起来'), formWords.slice(-800))
+  t('也有「先不连」', formWords.includes('先不连'), formWords.slice(-800))
+
+  const saving = renderOne('人物关系网（正在存）', Net, props, {
+    0: withEdge, 1: null, 2: false,
+    3: true, 4: 'dad', 5: 'yi', 6: 'sibling', 7: '', 8: true,
+  })
+  t('存的时候按钮说在做什么', textOf(expand(saving)).includes('正在记'), textOf(expand(saving)).slice(-800))
+
+  const onePerson = renderOne('人物关系网（只有一个人连不起来）', Net, props, {
+    0: { ...NET, self: SELF, rings: { self: [SELF], inner: [], outer: [] }, edges: [], counts: { self: 1, inner: 0, outer: 0, outside: 0 }, outside: [] },
+    1: null, 2: false,
+  })
+  t('只有一个人时不摆「连两个人」', !textOf(expand(onePerson)).includes('连两个人'), textOf(expand(onePerson)).slice(0, 400))
+
   // 首页那个入口：只在真实人物这扇门里有。
   const realHome = textOf(expand(renderRoot('首页（真实门有入口）', base('home'))))
   t('真实门首页有「人物关系网」', realHome.includes('人物关系网'), realHome.slice(0, 500))

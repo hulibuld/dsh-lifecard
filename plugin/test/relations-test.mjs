@@ -165,6 +165,71 @@ try {
     const hit = r.rings.inner.find((n) => n.id === 'nameless')
     t('没名字的人在网里还是有个说法', hit?.name === '（还没起名字）', hit)
   }
+  console.log('\n=== 9. 连两个人：这一屏以前只能看图不能改 ===')
+  {
+    const save = async (body) => table['relations.save'](body)
+    // 陈默在这份档案里没写「和我什么关系」，一直在网外。
+    const before = await callNet()
+    t('还没连的时候他在网外', before.outside.some((n) => n.id === 'chen'), before.outside.map((n) => n.id))
+
+    const r = await save({ from: 'dad', to: 'chen', type: 'friend', note: '厂里一起干了二十年' })
+    t('连上了', r.ok === true, r.error)
+    t('第一次连是新建', r.created === true, r.created)
+    t('回话里说了这两个人', String(r.note ?? '').includes('陈默'), r.note)
+
+    const after = await callNet()
+    t('连完他从网外进来了', !after.outside.some((n) => n.id === 'chen'), after.outside.map((n) => n.id))
+    t('落在第二圈（只和一圈里的人有关系）', after.rings.outer.some((n) => n.id === 'chen'), after.rings.outer.map((n) => n.id))
+    const edge = after.edges.find((e) => e.from === 'dad' && e.to === 'chen')
+    t('边也回给界面了', edge !== undefined, after.edges)
+    t('边上带着路径（断开要它）', typeof edge?.path === 'string' && edge.path.endsWith('.relation.md'), edge)
+    t('边上带着那句原话', edge?.note === '厂里一起干了二十年', edge)
+
+    // 再连一次，只改那句原话：类型不能丢（丢了这条线就变成「不知道是什么关系」）
+    const again = await save({ from: 'dad', to: 'chen', note: '后来他调走了' })
+    t('再连一次是改，不是新建', again.created === false, again.created)
+    const after2 = await callNet()
+    const edge2 = after2.edges.find((e) => e.from === 'dad' && e.to === 'chen')
+    t('类型没被冲掉', edge2?.type === 'friend', edge2)
+    t('原话换成新的', edge2?.note === '后来他调走了', edge2)
+
+    // 自己连自己 / 找不到人
+    const self1 = await save({ from: 'dad', to: 'dad', type: 'friend' })
+    t('自己连自己被拦下', self1.ok === false, self1)
+    t('并且说清为什么', String(self1.error ?? '').includes('同一张卡'), self1.error)
+    const ghost = await save({ from: 'dad', to: '查无此人', type: 'friend' })
+    t('找不到的人连不上', ghost.ok === false, ghost)
+    t('并且说清是哪一步', String(ghost.error ?? '').includes('查无此人'), ghost.error)
+
+    // 名字也能当键（界面上拿到的常常是名字）
+    const byName = await save({ from: '钱俊锋', to: '陈默', note: '用名字连' })
+    t('用名字也能连', byName.ok === true, byName.error)
+
+    // 断开
+    const cut = await table['relations.delete']({ path: edge.path })
+    t('断开了', cut.ok === true, cut.error)
+    t('断开后说明原份还在', String(cut.note ?? '').includes('回收'), cut.note)
+    const after3 = await callNet()
+    t('断开的那条不在列表里了', !after3.edges.some((e) => e.from === 'dad' && e.to === 'chen'), after3.edges)
+    const gone = await table['relations.delete']({ path: edge.path })
+    t('再断一次不炸', gone.ok === false, gone)
+  }
+
+  console.log('\n=== 10. 写关系用的是和写卡同一套保护 ===')
+  {
+    // 手改过的边再存一次：得留个底，不能悄悄盖掉。
+    await put('relations/dad--chen.relation.md', {
+      id: 'dad--chen', kind: 'relation', from: 'dad', to: 'chen',
+      structure: { type: 'friend' }, affect: [{ at: '2026-10-01', affinity: -2 }],
+    })
+    const r = await table['relations.save']({ from: 'dad', to: 'chen', affinity: 1 })
+    t('改一条已有的边也存得下', r.ok === true, r.error)
+    const text = await fs.readFile(path.join(ws, 'relations', 'dad--chen.relation.md'), 'utf8')
+    t('旧的 affect 那一条还在（是按时间追加，不是覆盖）',
+      text.includes('2026-10-01') && text.includes('-2'), text.slice(0, 500))
+    const snaps = await fs.readdir(path.join(ws, '.lifecard', 'snapshots', 'relations__dad--chen.relation.md')).catch(() => [])
+    t('改之前留了一份底', snaps.length >= 1, snaps)
+  }
 } finally {
   await fs.rm(ws, { recursive: true, force: true })
 }

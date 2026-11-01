@@ -713,6 +713,122 @@ export function cardRelPath(id, world) {
 }
 
 /**
+ * 一条关系边落在 `relations/` 下的相对路径。
+ *
+ * 文件名只是给人看的；读的时候一律以 frontmatter 里的 from / to 为准
+ * （SPEC §4）。所以这里改了命名规则也不会读错老文件。
+ */
+export function relationRelPath(from, to) {
+  return path.posix.join('relations', core.relationFileName(from, to))
+}
+
+/**
+ * 写一条关系边（谁和谁是什么关系）。
+ *
+ * 为什么要有这个函数：`relations/*.relation.md` 这套格式从一开始就在读、
+ * 在关系网里画，但**从来没有一条路能把它写出来**——界面上能看见第二圈是
+ * 空的，却没有任何地方能填。于是「我表姐也是我妈的女儿」这件事，只能靠
+ * 用户自己去 `relations/` 里手写 YAML。
+ *
+ * 写盘一律走 `writeCard`：那边有快照、有按路径排队、有「读不出来就别写」。
+ * 关系边和卡是同一类文件，保护逻辑没理由分两套。
+ *
+ * @param {object} edge - `{from, to, type, label, since, affinity, trust, note, authority, dependency}`
+ * @returns {Promise<{ok: boolean, path?: string, text?: string, error?: string}>}
+ */
+export async function writeRelation(root, edge, options = {}) {
+  const from = String(edge?.from ?? '').trim()
+  const to = String(edge?.to ?? '').trim()
+  if (from === '') return { ok: false, error: '这条关系缺了「谁」。' }
+  if (to === '') return { ok: false, error: '这条关系缺了「和谁」。' }
+  if (from === to) return { ok: false, error: '一个人跟自己的关系，这张网画不出来。换一个人。' }
+  const rel = relationRelPath(from, to)
+  // 老的那一份要读出来：只改「亲疏」的时候，类型与起始年份得留着，
+  // 不然一次保存会把「是我妈」改成空白。
+  const existing = await readCard(root, rel)
+  if (existing.ok !== true && existing.error !== '文件不存在') return existing
+  const old = existing.ok === true ? (existing.data ?? {}) : {}
+  const oldStructure = old?.structure !== null && typeof old?.structure === 'object' ? old.structure : {}
+  const pick = (next, prev) => (String(next ?? '').trim() === '' ? String(prev ?? '').trim() : String(next).trim())
+
+  const type = pick(edge?.type, oldStructure.type)
+  const label = pick(edge?.label, oldStructure.label)
+  const since = pick(edge?.since, oldStructure.since)
+  const structure = {}
+  if (type !== '') structure.type = type
+  if (label !== '') structure.label = label
+  if (since !== '') structure.since = since
+
+  // affect 是「一条一条按时间记下来的感受」，不是当前的数值。
+  // 所以有新的才往上追加一条，没有就把老的整段带回去——
+  // 覆盖掉等于把「去年夏天开始没那么亲了」这段历史抹平。
+  const affects = Array.isArray(old?.affect) ? old.affect.filter((a) => a !== null && typeof a === 'object') : []
+  const affinity = clampInt(edge?.affinity, -5, 5)
+  const trust = clampFloat(edge?.trust, 0, 1)
+  const affinityGiven = edge?.affinity !== undefined && edge?.affinity !== null && String(edge.affinity).trim() !== ''
+  const trustGiven = edge?.trust !== undefined && edge?.trust !== null && String(edge.trust).trim() !== ''
+  const note = String(edge?.note ?? '').trim()
+  if (affinityGiven || trustGiven || note !== '') {
+    const one = { at: localDate() }
+    if (affinityGiven) one.affinity = affinity
+    if (trustGiven) one.trust = trust
+    if (note !== '') one.note = note
+    affects.push(one)
+  }
+
+  const power = {}
+  const oldPower = old?.power !== null && typeof old?.power === 'object' ? old.power : {}
+  for (const key of ['authority', 'dependency']) {
+    const given = clampFloat(edge?.[key], 0, 1)
+    const has = edge?.[key] !== undefined && edge?.[key] !== null && String(edge[key]).trim() !== ''
+    const prev = Number(oldPower[key])
+    if (has) power[key] = given
+    else if (Number.isFinite(prev)) power[key] = prev
+  }
+
+  const data = { lifecard: core.DATA_VERSION, id: `${core.safeId(from)}--${core.safeId(to)}`, kind: 'relation', from: core.safeId(from), to: core.safeId(to) }
+  if (Object.keys(structure).length > 0) data.structure = structure
+  if (affects.length > 0) data.affect = affects
+  if (Object.keys(power).length > 0) data.power = power
+
+  // `force` 是给「关系边没有正文」这一件事留的：writeCard 的校验只管
+  // frontmatter，关系边本来就该是空的正文段，不该因为这个拒写。
+  const saved = await writeCard(root, rel, data, [], { ...options, force: options?.force ?? true })
+  if (saved.ok !== true) return saved
+  return { ok: true, path: rel, text: saved.text, data, created: existing.ok !== true }
+}
+
+/** 删掉一条关系边：搬到回收目录，不直接抹掉。 */
+export async function deleteRelation(root, relPath) {
+  const rel = String(relPath ?? '')
+  if (!rel.endsWith('.relation.md')) return { ok: false, error: '这个位置不是一条关系。' }
+  const at = await resolveIn(root, rel)
+  if (!at.ok) return { ok: false, error: at.error }
+  const exists = await fs.stat(at.abs).then((s) => s.isFile()).catch(() => false)
+  if (!exists) return { ok: false, error: '磁盘上找不到这条关系。' }
+  const dirAbs = path.join(root, REDACTED_DIR, 'relations')
+  await fs.mkdir(dirAbs, { recursive: true })
+  const base = path.posix.basename(rel)
+  let name = base
+  const taken = await fs.access(path.join(dirAbs, name)).then(() => true).catch(() => false)
+  if (taken) name = `${base}.${new Date().toISOString().replace(/[:.]/g, '-')}`
+  await fs.rename(at.abs, path.join(dirAbs, name))
+  return { ok: true, path: rel, redacted: path.posix.join(REDACTED_DIR, 'relations', name) }
+}
+
+function clampInt(value, min, max) {
+  const n = Math.round(Number(value))
+  if (!Number.isFinite(n)) return min
+  return Math.max(min, Math.min(max, n))
+}
+
+function clampFloat(value, min, max) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return min
+  return Math.max(min, Math.min(max, n))
+}
+
+/**
  * 读一张卡（已过墓碑过滤）。
  *
  * 撤掉的卡一定带 `withdrawn: true`——不管文件是已经被搬进回收目录（原位
@@ -2328,6 +2444,9 @@ export default {
   sha256,
   moveCardToRedacted,
   cardRelPath,
+  relationRelPath,
+  writeRelation,
+  deleteRelation,
   readCard,
   writeCard,
   updateCard,
