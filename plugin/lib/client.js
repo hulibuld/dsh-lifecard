@@ -3952,6 +3952,14 @@ function CareerView({ onBack, flash, cards, onOpenCard }) {
   const [pick, setPick] = useState('')
   const [mine, setMine] = useState(null)
   const [picked, setPicked] = useState({})
+  // 体检这一组。新 hook 一律排在最后：render-all 用数字引前面的槽位。
+  const [jd, setJd] = useState('')
+  const [coach, setCoach] = useState(null)
+  const [cov, setCov] = useState(null)
+  const [versions, setVersions] = useState(null)
+  const [vname, setVname] = useState('')
+  const [line, setLine] = useState('')
+  const [rw, setRw] = useState(null)
 
   /** 把读回来的东西摆到界面上。读不出来就照实说，别让它只停在转圈上。 */
   const applyRead = (r) => {
@@ -4044,6 +4052,98 @@ function CareerView({ onBack, flash, cards, onOpenCard }) {
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
   }
 
+  /**
+   * 体检。这一趟不联网，纯数一遍你写了什么。
+   *
+   * 它排在「让 AI 帮忙」前面，是因为顺序反过来人就会先拿到一份漂亮稿子，
+   * 而不知道为什么漂亮、也不知道自己差在哪。
+   */
+  const checkIt = async () => {
+    setBusy('coach'); setErr(null)
+    try {
+      const r = await call('career.coach', { jd })
+      if (r?.ok !== true) { setErr(r?.error ?? '没数出来'); return }
+      setCoach(r)
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  /** 招聘说明里要的，简历里有没有。 */
+  const checkJd = async () => {
+    setBusy('jd'); setErr(null)
+    try {
+      const r = await call('career.jd', { jd })
+      if (r?.ok !== true) { setErr(r?.error ?? '没对上'); return }
+      setCov(r)
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  const loadVersions = async () => {
+    setBusy('vlist'); setErr(null)
+    try {
+      const r = await call('career.versions.list', {})
+      if (r?.ok !== true) { setErr(r?.error ?? '存过的那些读不出来'); return }
+      setVersions(asArray(r.versions))
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  const saveVersion = async () => {
+    const name = String(vname ?? '').trim()
+    if (name === '') { setErr('给这一版起个名字，不然以后分不清哪份投哪儿。'); return }
+    setBusy('vsave'); setErr(null)
+    try {
+      const r = await call('career.versions.save', { name, target, jd, profile: profile ?? {} })
+      if (r?.ok !== true) { setErr(r?.error ?? '没存下来'); return }
+      setVname('')
+      flash?.(`存成「${name}」了`)
+      await loadVersions()
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  const restoreVersion = async (rel) => {
+    if (typeof window !== 'undefined' && typeof window.confirm === 'function'
+      && window.confirm('用这一版，现在填的这六格就换成它了。换吗？') !== true) return
+    setBusy('vrest'); setErr(null)
+    try {
+      const r = await call('career.versions.restore', { path: rel })
+      if (r?.ok !== true) { setErr(r?.error ?? '没换过来'); return }
+      setProfile(buildCareerForm(r.profile ?? {}))
+      setDirty(false)
+      flash?.('换成这一版了')
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  const dropVersion = async (rel) => {
+    if (typeof window !== 'undefined' && typeof window.confirm === 'function'
+      && window.confirm('删掉这一版？删了以后这儿就翻不回来了。') !== true) return
+    setBusy('vdel'); setErr(null)
+    try {
+      const r = await call('career.versions.delete', { path: rel })
+      if (r?.ok !== true) { setErr(r?.error ?? '没删掉'); return }
+      await loadVersions()
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  /** 把一条经历改得先说做了什么、再说怎么做的、最后说做出来什么。 */
+  const rewrite = async () => {
+    const one = String(line ?? '').trim()
+    if (one === '') { setErr('先把一条经历写进去。'); return }
+    setBusy('rw'); setErr(null); setRw(null)
+    try {
+      const r = await call('career.rewrite', { line: one, target, jd })
+      if (r?.ok !== true) { setErr(r?.error ?? '没改出来'); return }
+      setRw(r)
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
+  /** 把改好的那条接进「做过什么」。接着往后加，不覆盖原来写的。 */
+  const useRewrite = () => {
+    const good = String(rw?.after ?? '').trim()
+    if (good === '') return
+    const now = String(profile?.['做过什么'] ?? '').trim()
+    setField('做过什么', now === '' ? good : `${now}\n${good}`)
+    setRw(null); setLine('')
+  }
+
   // 先看有没有出错：出错的渲染在下面（要 profile 读出来才轮得到），
   // 所以这里必须自己先把错说出来，否则用户看到的是一辈子转圈。
   if (profile === null) {
@@ -4132,6 +4232,136 @@ function CareerView({ onBack, flash, cards, onOpenCard }) {
           h(Btn, { tone: 'primary', disabled: busy !== '', onClick: mergePicked },
             busy === 'merge' ? '并着…' : '把勾着的并进简历'),
           h(Btn, { size: 'sm', disabled: busy !== '', onClick: () => { setMine(null); setErr(null) } }, '不要了'),
+        ),
+      ),
+    ),
+
+    // 体检放在「让 AI 帮忙」前面：先知道自己写了什么、差在哪，
+    // 再让它帮忙。顺序反过来，人会先拿到一份漂亮稿子，
+    // 却不知道自己差在哪、也不知道它有没有替他编。
+    h('div', { className: 'lc-sec lc-stack' },
+      h('div', { className: 'lc-fhint' }, '先数一遍写了什么'),
+      h('div', { className: 'lc-meta' }, '这一趟不联网，就数你上面写的东西：有没有数、有没有结果、是不是只写了「参与」。数完告诉你先去改哪几条。'),
+      h('Btn', { block: true, icon: 'check', disabled: busy !== '', onClick: checkIt },
+        busy === 'coach' ? '数着…' : '数一遍'),
+      coach === null ? null : h('div', { className: 'lc-stack' },
+        h('div', { className: 'lc-row', style: { alignItems: 'baseline', gap: 8 } },
+          h('div', { style: { fontSize: 26, fontWeight: 600, lineHeight: 1.1 } }, String(coach.score ?? 0)),
+          h('div', { className: 'lc-meta' }, coach.grade ?? ''),
+          h('div', { className: 'lc-grow' }),
+          coach.hasJd === true ? null : h('span', { className: 'lc-tag' }, '没贴招聘说明，岗位相关性这一项没算'),
+        ),
+        h('div', { className: 'lc-stack', style: { gap: 6 } },
+          asArray(coach.breakdown).map((one) => h('div', { key: one.key, className: 'lc-stack', style: { gap: 3 } },
+            h('div', { className: 'lc-row', style: { alignItems: 'baseline', gap: 8 } },
+              h('div', { className: 'lc-grow' }, one.label),
+              h('div', { className: 'lc-meta' }, `${Math.round(one.got)} / ${one.max}`),
+            ),
+            h(Bar, { value: one.max === 0 ? 0 : (one.got / one.max) * 100 }),
+          )),
+        ),
+        asArray(coach.findings).length === 0
+          ? h(Note, { tone: 'ok', icon: 'check' }, '这一份没被挑出问题。可以贴招聘说明对一对，或者直接让它写。')
+          : h('div', { className: 'lc-stack', style: { gap: 6 } },
+              asArray(coach.findings).map((f, i) => h('div', { key: i, className: 'lc-sec' },
+                h('div', { className: 'lc-row', style: { alignItems: 'baseline', gap: 8 } },
+                  h('span', { className: 'lc-tag' }, f.where ?? '整体'),
+                  h('div', { className: 'lc-grow' }, f.message),
+                ),
+                h('div', { className: 'lc-meta', style: { marginTop: 4 } }, `改这里：${f.fix}`),
+              )),
+            ),
+      ),
+    ),
+
+    // 招聘说明：一岗一版的原件，也是关键词对照和体检「岗位相关性」的输入。
+    h('div', { className: 'lc-sec lc-stack' },
+      h('div', { className: 'lc-fhint' }, '要投的那份招聘说明'),
+      h('div', { className: 'lc-meta' }, '整个贴进来，不用挑。贴了才能对「它要什么、你有没有」。'),
+      h('textarea', {
+        className: 'lc-textarea', rows: 6, value: jd, spellCheck: false,
+        placeholder: '把招聘网站上那段复制进来',
+        onChange: (e) => { setJd(e.target.value); setCov(null); setCoach(null) },
+      }),
+      h('div', { className: 'lc-row', style: { flexWrap: 'wrap' } },
+        h('Btn', { size: 'sm', icon: 'check', disabled: busy !== '' || jd.trim() === '', onClick: checkJd },
+          busy === 'jd' ? '对着…' : '它对什么，我有吗'),
+        h('Btn', { size: 'sm', ghost: true, icon: 'check', disabled: busy !== '' || jd.trim() === '', onClick: checkIt },
+          '带上它再数一遍'),
+      ),
+      cov === null ? null : h('div', { className: 'lc-stack' },
+        h('div', { className: 'lc-row', style: { alignItems: 'baseline', gap: 8 } },
+          h('div', { className: 'lc-grow' }, `它要的 ${cov.total} 样，你写了 ${cov.covered} 样`),
+          h('div', { className: 'lc-meta' }, `${cov.percent}%`),
+        ),
+        h(Bar, { value: cov.percent }),
+        h('div', { className: 'lc-chips' },
+          asArray(cov.terms).map((one, i) => h('span', {
+            key: i, className: 'lc-chip', 'data-has': one.has === true ? 'yes' : 'no',
+            style: one.has === true ? undefined : { opacity: 0.5 },
+          }, one.has === true ? one.term : `${one.term}（没写）`)),
+        ),
+        asArray(cov.terms).some((one) => one.has !== true)
+          ? h('div', { className: 'lc-meta' }, '灰掉的这几样，你要是真会、真做过，就写进「会用哪些工具」或者「做过什么」里。不会的别硬写——面试会问到。')
+          : h('div', { className: 'lc-meta' }, '它要的你全写上了。'),
+      ),
+    ),
+
+    // 一岗一版：同一份简历投十个地方，总有几句要换。
+    h('div', { className: 'lc-sec lc-stack' },
+      h('div', { className: 'lc-fhint' }, '一岗存一版'),
+      h('div', { className: 'lc-meta' }, '投不同地方要说的话不一样。存下来，以后被问「你当时投的那份写了什么」还找得到。'),
+      h('div', { className: 'lc-row' },
+        h('input', {
+          className: 'lc-input', value: vname, spellCheck: false, style: { flex: 1, minWidth: 0 },
+          placeholder: '这一版叫什么，比如「校招-内容运营」',
+          onChange: (e) => setVname(e.target.value),
+        }),
+        h('Btn', { size: 'sm', icon: 'check', disabled: busy !== '' || vname.trim() === '', onClick: saveVersion },
+          busy === 'vsave' ? '存着…' : '存成这一版'),
+      ),
+      h('Btn', { block: true, ghost: true, size: 'sm', onClick: loadVersions, disabled: busy !== '' },
+        versions === null ? '看看存过哪些' : '重新读一遍'),
+      versions === null ? null : (versions.length === 0
+        ? h('div', { className: 'lc-meta' }, '还没存过。存了以后这里会列出来，用哪版就换哪版。')
+        : h('div', { className: 'lc-stack', style: { gap: 6 } },
+            versions.map((one) => h('div', { key: one.path, className: 'lc-listrow' },
+              h('div', { className: 'lc-grow' },
+                h('div', null, one.name),
+                h('div', { className: 'lc-meta' }, [one.target, one.updated_at === '' ? '' : shortDate(one.updated_at)].filter((x) => String(x ?? '').trim() !== '').join(' · ')),
+              ),
+              h('Btn', { size: 'sm', ghost: true, disabled: busy !== '', onClick: () => restoreVersion(one.path) }, '用这版'),
+              h('Btn', { size: 'sm', ghost: true, disabled: busy !== '', onClick: () => dropVersion(one.path) }, '删'),
+            )),
+          )),
+    ),
+
+    // 逐条改：一条一条改，改完自己看要不要。整篇重写会把没问题的句子也搅一遍。
+    h('div', { className: 'lc-sec lc-stack' },
+      h('div', { className: 'lc-fhint' }, '把一条改具体'),
+      h('div', { className: 'lc-meta' }, '把「做过什么」里的某一条贴进来，让它改成先说做了什么、再说怎么做的、最后说做出来什么。它不许给你添原话里没有的事。'),
+      h('textarea', {
+        className: 'lc-textarea', rows: 3, value: line, spellCheck: false,
+        placeholder: '比如：参与校刊编辑工作',
+        onChange: (e) => { setLine(e.target.value); setRw(null) },
+      }),
+      h('Btn', { block: true, icon: 'spark', disabled: busy !== '' || line.trim() === '', onClick: rewrite },
+        busy === 'rw' ? '改着…' : '改这一条'),
+      rw === null ? null : h('div', { className: 'lc-stack' },
+        h('div', { className: 'lc-fhint' }, '原来是这句'),
+        h('div', { className: 'lc-quote' }, rw.before ?? ''),
+        h('div', { className: 'lc-fhint', style: { marginTop: 6 } }, '改成这样'),
+        h('div', { style: { whiteSpace: 'pre-wrap', lineHeight: 1.8, fontSize: 14.5 } }, rw.after ?? ''),
+        rw.safe === true
+          ? null
+          : h(Note, { tone: 'warn', icon: 'warning' },
+              `这一版我不太敢用：${asArray(rw.problems).join('；')}。要用的话自己再看一遍，别把没做过的事写上去。`),
+        asArray(rw.changed).length === 0 ? null : h('div', { className: 'lc-meta' }, `改了三处：${asArray(rw.changed).join('、')}`),
+        asArray(rw.missing).length === 0 ? null : h('div', { className: 'lc-meta' }, `它还缺：${asArray(rw.missing).join('、')}。有就补上，没有就别编。`),
+        h('div', { className: 'lc-row' },
+          h(Btn, { tone: 'primary', size: 'sm', disabled: busy !== '' || String(rw.after ?? '').trim() === '', onClick: useRewrite },
+            '用这一版，接在「做过什么」后面'),
+          h(Btn, { size: 'sm', ghost: true, disabled: busy !== '', onClick: () => { setRw(null); setLine('') } }, '不要了'),
         ),
       ),
     ),
@@ -8246,6 +8476,14 @@ function JobReport({ report }) {
 // ── 模拟面试 ──────────────────────────────────────────────────────
 
 /** 面试官提问的说法。和宿主侧 jobs-interview.js 的 KIND_LABEL 同一套。 */
+/** 复盘的四个档位。跟后端的 VERDICT_LABEL 说的一样，这里只用于那排计数。 */
+const VERDICT_TEXT = {
+  solid: '答得完整',
+  okay: '还能再补',
+  thin: '答得太薄',
+  skipped: '跳过了',
+}
+
 const ASK_LABEL = {
   gap: '材料里没写的',
   behavior: '讲一件具体的事',
@@ -8274,6 +8512,7 @@ function MockView({ company, role, requirements, onBack, flash }) {
   const [done, setDone] = useState(null)
   // 新 hook 一律排最后（render-all 用数字引前面的槽位）
   const [past, setPast] = useState(null)
+  const [report, setReport] = useState(null)
 
   const turns = session?.turns ?? []
   const last = turns.length === 0 ? null : turns[turns.length - 1]
@@ -8324,6 +8563,22 @@ function MockView({ company, role, requirements, onBack, flash }) {
       setSummary(r.summary ?? [])
       setDone('这一场结束了。')
       flash('存下来了')
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
+  }
+
+  /**
+   * 看这一场的复盘。
+   *
+   * 对话本来就攒下来了，缺的是产出物——只给一句「说得再具体一点」，
+   * 用户不知道自己到底哪一题丢了分、丢在哪个毛病上。这里把它算成
+   * 分数、四档计数、话题分组、四维、两栏、逐题卡片、接下来练什么。
+   */
+  const openReview = async (id) => {
+    setBusy(true); setErr(null)
+    try {
+      const r = await call('job.interview.review', { id })
+      if (r?.ok !== true) { setErr(r?.error ?? '这一场的复盘算不出来。'); return }
+      setReport(r.report ?? null)
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy(false) }
   }
 
@@ -8413,6 +8668,95 @@ function MockView({ company, role, requirements, onBack, flash }) {
       h('div', { className: 'lc-meta' }, '这一场也留在「以前练过的」里，面试前一天翻出来看一遍。'),
     ),
 
+    // 复盘报告：七块。这个品类里最值钱的不是「练了几场」，是练完知道
+    // 自己哪句话站不住、下一场该练什么。
+    report === null ? null : h('div', { className: 'lc-sec lc-stack' },
+      h('div', { className: 'lc-row' },
+        h('div', { className: 'lc-fhint lc-grow' }, '这一场的复盘'),
+        h(Btn, { size: 'sm', ghost: true, onClick: () => setReport(null) }, '收起来'),
+      ),
+
+      // 一、总分 + 一句总评
+      h('div', { className: 'lc-row', style: { alignItems: 'baseline', gap: 8 } },
+        h('div', { style: { fontSize: 26, fontWeight: 600, lineHeight: 1.1 } },
+          report.score === null ? '—' : String(report.score)),
+        h('div', { className: 'lc-meta' }, report.grade ?? ''),
+        h('div', { className: 'lc-grow' }),
+        h('div', { className: 'lc-meta' }, `${report.answered ?? 0} / ${report.turns ?? 0} 题答了`),
+      ),
+
+      // 二、四档计数
+      h('div', { className: 'lc-row', style: { flexWrap: 'wrap', gap: 6 } },
+        ['solid', 'okay', 'thin', 'skipped'].map((k) => h('span', {
+          key: k, className: 'lc-chip', 'data-scored': k,
+        }, `${VERDICT_TEXT[k] ?? k} ${(report.counts ?? {})[k] ?? 0}`)),
+      ),
+
+      // 三、按话题分组：最弱的最前面，练的就是这几块
+      asArray(report.byKind).length === 0 ? null : h('div', { className: 'lc-stack', style: { gap: 4 } },
+        h('div', { className: 'lc-meta' }, '按问法分开看'),
+        asArray(report.byKind).map((one) => h('div', { key: one.kind, className: 'lc-stack', style: { gap: 3 } },
+          h('div', { className: 'lc-row', style: { alignItems: 'baseline', gap: 8 } },
+            h('div', { className: 'lc-grow' }, one.label),
+            h('div', { className: 'lc-meta' }, one.score === null ? '没答' : `${one.score}`),
+          ),
+          h(Bar, { value: one.score === null ? 0 : one.score }),
+        )),
+      ),
+
+      // 四、四维：不是评分，是「哪一类毛病踩了几次」
+      asArray(report.dims).length === 0 ? null : h('div', { className: 'lc-stack', style: { gap: 4 } },
+        h('div', { className: 'lc-meta' }, '四个毛病，看哪个踩得多'),
+        asArray(report.dims).map((one) => h('div', { key: one.key, className: 'lc-stack', style: { gap: 3 } },
+          h('div', { className: 'lc-row', style: { alignItems: 'baseline', gap: 8 } },
+            h('div', { className: 'lc-grow' }, one.label),
+            h('div', { className: 'lc-meta' }, `${Math.round(Number(one.got ?? 0))}`),
+          ),
+          h(Bar, { value: Number(one.got ?? 0) }),
+        )),
+      ),
+
+      // 五、优势 / 可提升两栏
+      asArray(report.strengths).length === 0 && asArray(report.improves).length === 0 ? null : h('div', { className: 'lc-stack' },
+        asArray(report.strengths).length === 0 ? null : h('div', null,
+          h('div', { className: 'lc-meta' }, '站得住的'),
+          asArray(report.strengths).map((x, i) => h('div', { key: i, className: 'lc-meta' }, `· ${x}`)),
+        ),
+        asArray(report.improves).length === 0 ? null : h('div', { style: { marginTop: 6 } },
+          h('div', { className: 'lc-meta' }, '下一场先改这个'),
+          asArray(report.improves).map((x, i) => h('div', { key: i, className: 'lc-meta' }, `· ${x}`)),
+        ),
+      ),
+
+      // 六、逐题卡片：题干、判定、你当时的原话、问题在哪
+      asArray(report.cards).length === 0 ? null : h('div', { className: 'lc-stack' },
+        h('div', { className: 'lc-meta' }, '一题一题看'),
+        asArray(report.cards).map((c) => h('div', { key: c.no, className: 'lc-sec' },
+          h('div', { className: 'lc-row', style: { alignItems: 'baseline', gap: 6 } },
+            h('span', { className: 'lc-tag' }, `第 ${c.no} 题`),
+            h('span', { className: 'lc-tag' }, c.kindLabel ?? ''),
+            h('div', { className: 'lc-grow' }),
+            h('div', { className: 'lc-meta' }, c.verdictLabel ?? ''),
+          ),
+          h('div', { className: 'st', style: { marginTop: 4 } }, c.question),
+          c.skipped === true
+            ? h('div', { className: 'lc-meta', style: { marginTop: 4 } }, '这题跳过了。跳过的题面试里也要答，可以先自己写一句。')
+            : h('div', { className: 'sb', style: { marginTop: 6, whiteSpace: 'pre-wrap' } }, c.answer ?? ''),
+          asArray(c.findings).length === 0 ? null : h('div', { className: 'lc-stack', style: { marginTop: 4 } },
+            asArray(c.findings).map((f, i) => h('div', { key: i, className: 'lc-meta' }, `· ${f}`)),
+          ),
+        )),
+      ),
+
+      // 七、接下来练什么
+      asArray(report.next).length === 0 ? null : h('div', { className: 'lc-sec' },
+        h('div', { className: 'lc-fhint' }, '明天练这个'),
+        asArray(report.next).map((x, i) => h('div', { key: i, className: 'lc-meta', style: { marginTop: 2 } }, `· ${x}`)),
+      ),
+
+      h(Btn, { block: true, ghost: true, size: 'sm', onClick: () => { setSession(null); setDone(null); setReport(null); setSummary([]); setTips([]) } }, '照这个再练一场'),
+    ),
+
     // 以前练过的：面试前一晚最有用的东西是自己上次怎么答的
     h('div', { style: { marginTop: 14 } },
       h('button', { className: 'lc-btn ghost sm', type: 'button', onClick: loadPast, style: { width: '100%', justifyContent: 'flex-start' } },
@@ -8422,8 +8766,14 @@ function MockView({ company, role, requirements, onBack, flash }) {
       past === null ? null : h('div', { className: 'lc-stack', style: { marginTop: 8 } },
         past.length === 0
           ? h('div', { className: 'lc-meta' }, '还没练过。练一场就会有记录。')
-          : past.slice(0, 8).map((it) => h('div', { key: it.id, className: 'lc-sec' },
-              h('div', { className: 'st' }, `${it.company === '' ? '没写公司' : it.company}${it.role === '' ? '' : ' · ' + it.role}`),
+          : past.slice(0, 8).map((it) => h('div', {
+              key: it.id, className: 'lc-sec', role: 'button', style: { cursor: 'pointer' },
+              onClick: () => openReview(it.id),
+            },
+              h('div', { className: 'lc-row', style: { alignItems: 'baseline', gap: 8 } },
+                h('div', { className: 'st lc-grow' }, `${it.company === '' ? '没写公司' : it.company}${it.role === '' ? '' : ' · ' + it.role}`),
+                h('div', { className: 'lc-meta' }, '看复盘'),
+              ),
               h('div', { className: 'lc-meta' }, `${shortDate(it.started_at)} · 问了 ${it.turns} 个，答了 ${it.answered} 个${it.done === true ? ' · 练完了' : ''}`),
             )),
       ),

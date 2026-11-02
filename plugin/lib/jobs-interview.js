@@ -280,6 +280,9 @@ export function checkQuestion(raw, ctx = {}) {
   }
 }
 
+/** 中文数字 + 量词。「四十多个人」「两周」「三份」都算有数，「一起」不算。 */
+const CJK_SCALE = /[一二三四五六七八九十百千万两\d]+\s*(?:多\s*)?(?:个|人|次|天|周|月|年|篇|份|门|科|名|场|条|倍|小时|分钟|届|期|轮|版)/
+
 /**
  * 本地给一次回答打分。
  *
@@ -305,7 +308,10 @@ export function reviewAnswer(answer) {
   const hasDoing = didWords.test(text)
   if (!hasDoing) findings.push({ code: 'no-action', say: '没听见「我做了什么」。面试官想听你自己动手的那部分。' })
 
-  const hasNumber = /\d/.test(text)
+  // 数字要认阿拉伯数字，也要认「四十多个人」这种中文数字。
+  // 只认半角数字的话，一段明明白白带了规模的话会被判成「一个数字都没有」，
+  // 那比不判更糟——用户会觉得这东西根本没在听。
+  const hasNumber = /\d/.test(text) || CJK_SCALE.test(text)
   if (!hasNumber) findings.push({ code: 'no-number', say: '一个数字都没有。时间、人数、次数、涨了多少，随便补一个都更可信。' })
 
   const hasResult = /(结果|最后|后来|所以|因此|上线了|通过了|降到|提到|省了|少了|多了|解决|搞定|没成)/.test(text)
@@ -377,6 +383,233 @@ export function summarize(session) {
   return { lines, answered: answered.length, turns: turns.length }
 }
 
+// ── 复盘报告 ──────────────────────────────────────────────────────
+//
+// 一场面试打完，只回一句「有 3 次没给数字」是不够用的。真正有用的复盘有七块：
+// 一个总分、四档计数、按话题分组的分、四维雷达、优势与可提升两栏、
+// 逐题卡片（题干 / 判定 / 你的原话 / 问题出在哪 / 更好的回答）、
+// 以及「接下来练什么」。
+//
+// 其中「更好的回答」必须联网让模型写——但那一步最容易出事：模型会顺手把
+// 用户没说的事编进去。所以它产出的每一句都要过 checkImprovement，
+// 多出来的数字、多出来的大词，一律当场标出来，不给用户看。
+
+/** 一题答成什么样算哪一档。判定复用 reviewAnswer 的 findings。 */
+export function verdictOf(review) {
+  const findings = Array.isArray(review?.findings) ? review.findings : []
+  const codes = findings.map((f) => f.code)
+  // 跳过有两种写法：题上直接标 skipped，或者答案被评成 empty。
+  // 两个都得认——只认一个的话，没答的题会被算进「答得完整」，
+  // 分数凭空变高，用户拿着这个分数去面试。
+  if (review?.skipped === true) return 'skipped'
+  if (review?.verdict === 'skipped') return 'skipped'
+  if (codes.includes('empty')) return 'skipped'
+  if (codes.includes('too-short')) return 'thin'
+  if (codes.length >= 3) return 'thin'
+  if (codes.length === 0) return 'solid'
+  return 'okay'
+}
+
+/** 四档的中文说法。 */
+export const VERDICT_LABEL = {
+  solid: '答得完整',
+  okay: '还能再补',
+  thin: '答得太薄',
+  skipped: '跳过了',
+}
+
+/** 四维雷达：这四样是面试官真正在听的。 */
+const DIMENSIONS = [
+  { key: 'action', label: '你自己做了什么', code: 'no-action' },
+  { key: 'number', label: '有没有数', code: 'no-number' },
+  { key: 'result', label: '有没有结果', code: 'no-result' },
+  { key: 'focus', label: '有没有绕弯', code: 'filler', also: ['buried'] },
+]
+
+/**
+ * 一场面试的复盘。
+ *
+ * 纯本地算。不含「更好的回答」——那一段要模型写，单独走 buildImprovePrompt。
+ */
+export function reviewReport(session) {
+  const turns = Array.isArray(session?.turns) ? session.turns : []
+  const rows = turns.map((t, i) => {
+    const answer = String(t.answer ?? '').trim()
+    const skipped = t.skipped === true
+    const review = t.review ?? (skipped ? { length: 0, verdict: 'skipped', findings: [] } : reviewAnswer(answer))
+    const verdict = verdictOf({ ...review, verdict: skipped ? 'skipped' : review.verdict })
+    return {
+      no: i + 1,
+      question: String(t.question ?? ''),
+      kind: String(t.kind ?? 'behavior'),
+      kindLabel: KIND_LABEL[String(t.kind ?? 'behavior')] ?? '让你讲一件具体的事',
+      answer,
+      skipped,
+      verdict,
+      verdictLabel: VERDICT_LABEL[verdict],
+      findings: Array.isArray(review.findings) ? review.findings : [],
+      better: '',
+    }
+  })
+
+  const answered = rows.filter((r) => r.skipped !== true && r.answer !== '')
+  const counts = { solid: 0, okay: 0, thin: 0, skipped: 0 }
+  for (const r of rows) counts[r.verdict] += 1
+
+  // 总分：只按真答过的题算，跳过的题不参与——跳过等于没答，不该拉低分数，
+  // 但也不该被算成满分。
+  const weights = { solid: 100, okay: 70, thin: 35 }
+  const score = answered.length === 0
+    ? null
+    : Math.round(answered.reduce((acc, r) => acc + (weights[r.verdict] ?? 0), 0) / answered.length)
+  const grade = score === null ? '没答上题' : score >= 80 ? '这一场能打' : score >= 55 ? '有内容，但经不起追问' : '还得多练几场'
+
+  // 按话题分组：同一个问法底下答得怎么样，看得出弱在哪一类问题上。
+  const byKind = []
+  for (const kind of KINDS) {
+    const got = rows.filter((r) => r.kind === kind)
+    if (got.length === 0) continue
+    const real = got.filter((r) => r.verdict !== 'skipped')
+    byKind.push({
+      kind,
+      label: KIND_LABEL[kind] ?? kind,
+      turns: got.length,
+      answered: real.length,
+      score: real.length === 0 ? null : Math.round(real.reduce((acc, r) => acc + (weights[r.verdict] ?? 0), 0) / real.length),
+    })
+  }
+  byKind.sort((a, b) => (a.score ?? 101) - (b.score ?? 101))
+
+  // 四维雷达：每个维度看「有多少题没踩这个坑」。
+  const dims = DIMENSIONS.map((dim) => {
+    if (answered.length === 0) return { key: dim.key, label: dim.label, got: 0, max: 100 }
+    const codes = [dim.code, ...(dim.also ?? [])]
+    const clean = answered.filter((r) => !r.findings.some((f) => codes.includes(f.code))).length
+    return { key: dim.key, label: dim.label, got: Math.round((clean / answered.length) * 100), max: 100 }
+  })
+
+  // 优势与可提升：按踩坑次数最多的两条、最少的这条分成两栏。
+  const codeCount = new Map()
+  for (const r of answered) {
+    for (const f of r.findings) codeCount.set(f.code, (codeCount.get(f.code) ?? 0) + 1)
+  }
+  const ranking = [...codeCount.entries()].sort((a, b) => b[1] - a[1])
+  const improves = ranking.slice(0, 3).map(([code, n]) => ({ code, times: n, say: SAY_OF[code] ?? '这里还能再具体一点。' }))
+  const strengths = []
+  const cleanDims = dims.filter((d) => d.got >= 80)
+  for (const d of cleanDims) strengths.push(`${d.label}这一项没出过问题。`)
+  if (answered.length > 0 && ranking.length === 0) strengths.push('每一题都有具体的事、你自己的动作和结果，这个状态去面就行。')
+  if (rows.some((r) => r.kind === 'gap' && r.verdict !== 'skipped')) strengths.push('材料里没写的那些，你也能当场答上来——这一块提前想过。')
+
+  // 接下来练什么：1–3 条，必须能明天就做。
+  const next = []
+  if (answered.length === 0) {
+    next.push('这一场一题都没答。先挑一个最熟的事，从头到尾讲两分钟，再回来练。')
+  } else {
+    if (improves.some((one) => one.code === 'no-number')) next.push('下次开口前先想一个数：几个人、多久、几次、多少份。想不起来就估一个保守的。')
+    if (improves.some((one) => one.code === 'no-action')) next.push('把「我们」全换成「我」讲一遍同一件事，录下来听。')
+    if (improves.some((one) => one.code === 'no-result')) next.push('每讲完一件事，加一句「最后怎么样了」。没有结果就讲你学到了什么，别停在中途。')
+    if (improves.some((one) => one.code === 'too-short')) next.push('用 STAR 的顺序把一件事讲够两分钟：情境两分、任务两分、你做的占大头、结果两分。')
+    if (improves.some((one) => one.code === 'buried')) next.push('第一句话先说结论。把「我先说下背景」这句从习惯里删掉。')
+    if (improves.some((one) => one.code === 'give-up')) next.push('被问到不会的，先说「我没直接做过，但有一件类似的」，再讲那件。')
+    if (next.length === 0) next.push('按你自己的材料再练一场，换一个问法磨同一件事。')
+  }
+
+  return {
+    score,
+    grade,
+    counts,
+    answered: answered.length,
+    turns: rows.length,
+    byKind,
+    dims,
+    strengths: strengths.slice(0, 3),
+    improves,
+    cards: rows,
+    next: next.slice(0, 3),
+  }
+}
+
+/** 每种问题对应的那句话。和 reviewAnswer 里的措辞保持一致。 */
+const SAY_OF = {
+  'no-number': '答里没有数，听着像"做过一些"。',
+  'no-action': '听不出你自己做了什么。',
+  'no-result': '讲完了过程，没讲结果。',
+  'too-short': '答得太短，对方会以为你没做过。',
+  buried: '开头在铺垫，先说结论。',
+  filler: '口头语偏多，听着像在拖时间。',
+  'give-up': '一上来就说不会，把还能讲的那部分堵住了。',
+  empty: '这一题没答。',
+}
+
+/**
+ * 让模型把一题答案改成更好的那一版。
+ *
+ * 关键在于：只许用答案里已经出现过的事实重新组织，不许补新事实。
+ * 三道具体的禁令写在提示词里，回来还要过 checkImprovement 再核一遍——
+ * 光写在提示词里，模型会自作聪明地绕过去。
+ */
+export function buildImprovePrompt({ question, answer, kind } = {}) {
+  const q = String(question ?? '').trim()
+  const a = String(answer ?? '').trim()
+  const system = [
+    '你在帮人把一段面试回答改成更好的那一版。',
+    '',
+    '只做一件事：用他这段话里已经有的事实，重新组织一遍。',
+    '',
+    '三条绝对不许：',
+    '- 不许加他原话里没有的事。原话没说带了几个人，就不许写「三个人」。',
+    '- 不许加原话里没有的数字。「大概」「差不多」都不许替他定成一个数。',
+    '- 不许替他编结果。原话只说做到一半，就停在做到一半。',
+    '',
+    '要做的：',
+    '1. 第一句先说结论，不铺垫。',
+    '2. 按情境 → 任务 → 你做了什么 → 结果的顺序排。你做的部分要占最大一块。',
+    '3. 「我们」改成「我」——他本人做的那部分说清楚。',
+    '4. 有数字的地方把数字说出来。',
+    '5. 说话，不要写成书面语。这是他张嘴要说的话，不是简历条目。',
+    '',
+    '如果他这段话里实在没有结果，就在最后如实停住，然后另起一行写',
+    '「还缺结果：这件事最后怎么样了，想起来补一句」。不要自己编一个。',
+    '',
+    '输出只有一个 JSON 对象，不要解释，不要 Markdown 围栏：',
+    '{"better":"更好的那一版，说话口气","used":["用了他原话里的哪几个事实"],"added":"还缺什么，没有就给空串"}',
+  ].join('\n')
+  const user = [
+    kind === undefined ? '' : `这一题问的是：${KIND_LABEL[kind] ?? '一件具体的事'}`,
+    `问题：${q === '' ? '（没记下来）' : q}`,
+    '',
+    '他的回答：',
+    a === '' ? '（这题他没答）' : a,
+    '',
+    '把这段改成更好的那一版。只能用上面已经出现的事实。',
+  ].filter((one) => one !== '').join('\n')
+  return { system, user }
+}
+
+/**
+ * 检查模型改出来的那一版有没有编东西。
+ *
+ * 只在「多出数字」「多出大词」「多出职业名」这几件硬事上拦。
+ * 语言上的重排不拦——那本来就是让它做的。
+ */
+export function checkImprovement(answer, better) {
+  const a = String(answer ?? '')
+  const b = String(better ?? '')
+  const problems = []
+  if (b.trim() === '') return { ok: false, problems: ['改写后是空的。'] }
+  const beforeNums = new Set(a.match(/\d+(?:\.\d+)?/g) ?? [])
+  for (const n of b.match(/\d+(?:\.\d+)?/g) ?? []) {
+    if (!beforeNums.has(n)) problems.push(`多了一个他原话里没有的数：${n}`)
+  }
+  const BIG = ['主导', '牵头', '从零到一', '体系', '赋能', '闭环', '方法论', '顶层', '战略', '标杆', '颠覆', '卓越', '极致', '显著']
+  for (const w of BIG) {
+    if (b.includes(w) && !a.includes(w)) problems.push(`多了一个原话撑不起的词：「${w}」`)
+  }
+  if (b.length > Math.max(200, a.length * 3)) problems.push('改完比原话长了三倍多，这不像是说出来的话。')
+  return { ok: problems.length === 0, problems }
+}
+
 /** 把整场面试写成能读的一段文字（存盘用）。 */
 export function renderTranscript(session) {
   // 小标题之间必须留空行，否则 Markdown 会把「## 对话」和下一行揉成一行。
@@ -431,4 +664,9 @@ export default {
   pickFocus,
   summarize,
   renderTranscript,
+  reviewReport,
+  verdictOf,
+  VERDICT_LABEL,
+  buildImprovePrompt,
+  checkImprovement,
 }

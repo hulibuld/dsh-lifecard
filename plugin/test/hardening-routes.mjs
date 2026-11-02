@@ -1565,5 +1565,95 @@ console.log('\n=== 从卡里读简历：只摘不写，摘的每条都要对得�
   t('同一条并两次不会重复', twice.ok === true && twice.added === 0, twice)
 }
 
+console.log('\n=== 体检、招聘说明对照、一岗一版、逐条改写（路由层） ===')
+{
+  // 这一组钉的是「界面点了按钮会不会静默失败」：
+  //   1. 体检必须不碰模型——碰了就会卡二十秒，而且每次点都得联网；
+  //   2. 招聘说明空着要说人话，不能返回一个 0% 让人以为自己对不上；
+  //   3. 存下来的那一版必须真在磁盘上、还能换回来；
+  //   4. 改写的越界版本不许被当成「更好的回答」。
+  const coachWs = path.join(tmpdir(), 'lifecard-coach-' + stamp)
+  await fs.mkdir(coachWs, { recursive: true })
+  await store.openWorkspace(coachWs, { create: true })
+
+  // 模型一被调用就留痕：体检那条路由要证明自己没碰它。
+  let llmCalls = 0
+  const coachLlm = {
+    listProviders: async () => [{ provider: 'buddy', models: [{ id: 'hy3' }] }],
+    listModels: async () => [],
+    stream: async () => {
+      llmCalls += 1
+      return (async function* () {
+        yield { type: 'text-delta', text: JSON.stringify({ rewritten: '我在校刊做编辑，2025 年出了两期。', changed: ['主语'], missing: '' }) }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })()
+    },
+  }
+  const coachTable = api.buildApi({ ...ctx, get: (n) => (n === 'llm' ? coachLlm : undefined) }, async () => coachWs, { workspace: coachWs })
+
+  const blank = await coachTable['career.coach']({})
+  t('简历还是空的时候体检也不报错', blank.ok === true, blank)
+  t('空简历明说它是空的', blank.score === 0 && /空/.test(String(blank.grade ?? '')), blank)
+  t('空简历带了一句该怎么开头', (blank.findings ?? []).length === 1 && String(blank.findings[0].fix ?? '') !== '', blank.findings)
+
+  await career.writeProfile(coachWs, {
+    基本情况: '杭州师范大学 汉语言文学 大四',
+    学过什么: ['中国古代文学｜熟'],
+    做过什么: ['参与校刊编辑工作', '在公众号写读书笔记｜2025 年全年｜发了 30 篇'],
+    会用哪些工具: ['Word', 'Excel'],
+    想去哪: '内容运营',
+    还差什么: ['六级还没过'],
+  })
+
+  const checked = await coachTable['career.coach']({})
+  t('填了以后有分数', checked.ok === true && checked.score > 0, checked)
+  t('六维表带回来了', Array.isArray(checked.breakdown) && checked.breakdown.length === 5, checked.breakdown)
+  t('没贴招聘说明就不算岗位相关性', (checked.breakdown ?? []).every((b) => b.label !== '岗位相关性'), checked.breakdown)
+  t('体检这一趟一次都没调模型', llmCalls === 0, llmCalls)
+
+  const withJd = await coachTable['career.coach']({ jd: '任职要求：熟悉内容运营，会用 Excel。' })
+  t('贴了就多出岗位相关性这一维', (withJd.breakdown ?? []).some((b) => b.label === '岗位相关性'), withJd.breakdown)
+  t('体检仍然没调模型', llmCalls === 0, llmCalls)
+
+  const noJd = await coachTable['career.jd']({})
+  t('招聘说明空着就说人话', noJd.ok === false && String(noJd.error).includes('招聘说明'), noJd)
+
+  const cover = await coachTable['career.jd']({ jd: '任职要求：熟悉内容运营，会用 Excel，有数据分析经验。' })
+  t('对照算得出来', cover.ok === true && cover.total > 0, cover)
+  t('对上的说对上', (cover.terms ?? []).some((x) => x.term === 'Excel' && x.has === true), cover.terms)
+  t('没写的标出来', (cover.terms ?? []).some((x) => x.has === false), cover.terms)
+
+  const savedVer = await coachTable['career.versions.save']({ name: '校招-内容运营', target: '某厂 内容运营', jd: '要求：熟悉内容运营。' })
+  t('存一版', savedVer.ok === true, savedVer)
+  t('存在 career/resumes 下面', String(savedVer.path ?? '').startsWith('career/resumes/'), savedVer)
+  t('磁盘上真有这个文件', await fs.stat(path.join(coachWs, savedVer.path)).then((s) => s.isFile()).catch(() => false), savedVer.path)
+
+  const verList = await coachTable['career.versions.list']({})
+  t('列得出来', verList.ok === true && verList.versions.length === 1, verList)
+  t('带名字', verList.versions?.[0]?.name === '校招-内容运营', verList.versions)
+
+  const noName = await coachTable['career.versions.save']({ profile: {} })
+  t('没名字不让存', noName.ok === false && /名字/.test(String(noName.error)), noName)
+
+  // 换一版回来：先把简历改乱，再恢复那一版
+  await career.writeProfile(coachWs, { 基本情况: '改乱了', 学过什么: [], 做过什么: [], 会用哪些工具: [], 想去哪: '', 还差什么: [] })
+  const back = await coachTable['career.versions.restore']({ path: savedVer.path })
+  t('换回来了', back.ok === true, back)
+  const restored = await career.readProfile(coachWs)
+  t('原来的内容真回来了', String(restored?.data?.基本情况 ?? '').includes('杭州师范大学'), restored?.data)
+
+  const badVer = await coachTable['career.versions.get']({ path: '../../../etc/passwd' })
+  t('版本路径不许往上跳', badVer.ok === false, badVer)
+
+  const rewrite = await coachTable['career.rewrite']({ line: '参与校刊编辑工作｜2025 年出了两期' })
+  t('改写回得来', rewrite.ok === true && String(rewrite.after ?? '') !== '', rewrite)
+  t('改写带原句', String(rewrite.before ?? '').includes('校刊'), rewrite)
+  t('改写给了安全判定', typeof rewrite.safe === 'boolean', rewrite)
+
+  const rewriteEmpty = await coachTable['career.rewrite']({ line: '' })
+  t('没写要改哪条就说人话', rewriteEmpty.ok === false && /一条/.test(String(rewriteEmpty.error)), rewriteEmpty)
+  t('这句话里没有技术词', !/undefined|null|Error|error/i.test(String(rewriteEmpty.error ?? '')), rewriteEmpty)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

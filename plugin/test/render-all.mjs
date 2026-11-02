@@ -1395,6 +1395,41 @@ if (seen.has('CardRow')) {
   t('以前练过的那一场显示出来了', joined.includes('以前练过的'))
   t('写着问了几个答了几个', joined.includes('问了 2 个'))
   t('练完了有标记', joined.includes('练完了'))
+  t('每一场都能点开看复盘', joined.includes('看复盘'))
+
+  // 复盘报告：七块产出物缺一块，用户就不知道自己丢在哪。
+  before = visibleText.length
+  renderOne('模拟面试（复盘报告）', seen.get('MockView'), { company: '某公司', role: '后端', requirements: [], onBack: () => {}, flash: () => {} }, {
+    0: null,
+    8: {
+      score: 47, grade: '还得多练几场', answered: 3, turns: 4,
+      counts: { solid: 0, okay: 1, thin: 2, skipped: 1 },
+      byKind: [{ kind: 'gap', label: '材料里没写的', turns: 1, answered: 1, score: 35 }, { kind: 'behavior', label: '讲一件具体的事', turns: 2, answered: 2, score: 70 }],
+      dims: [{ key: 'action', label: '你自己做了什么', got: 33, max: 100 }, { key: 'number', label: '有没有数', got: 0, max: 100 }],
+      strengths: ['有没有绕弯这一项没出过问题。'],
+      improves: [{ code: 'no-action', times: 2, say: '听不出你自己做了什么。' }],
+      cards: [{
+        no: 1, question: '讲讲你做过的一个项目。', kind: 'behavior', kindLabel: '讲一件具体的事',
+        answer: '我参与了一个项目，做了一些工作。', skipped: false, verdict: 'thin', verdictLabel: '答得太薄',
+        findings: ['答得太短，对方会以为你没做过。'], better: '',
+      }],
+      next: ['把「我们」全换成「我」讲一遍同一件事，录下来听。'],
+    },
+  })
+  joined = visibleText.slice(before).join('|')
+  t('摆出总分', joined.includes('47'))
+  t('摆出分档', joined.includes('还得多练几场'))
+  t('四档计数都在', joined.includes('答得完整') && joined.includes('答得太薄') && joined.includes('跳过了'))
+  t('按问法分组看得见', joined.includes('按问法分开看') && joined.includes('材料里没写的'))
+  t('四个毛病那一栏在', joined.includes('四个毛病'))
+  t('优势那一栏在', joined.includes('站得住的'))
+  t('该改什么那一栏在', joined.includes('下一场先改这个'))
+  t('逐题卡片在', joined.includes('讲讲你做过的一个项目'))
+  t('卡片带判定', joined.includes('答得太薄'))
+  t('卡片带他当时的原话', joined.includes('我参与了一个项目'))
+  t('卡片说得出毛病', joined.includes('答得太短'))
+  t('说了明天练什么', joined.includes('明天练这个'))
+  t('能照这个再练一场', joined.includes('照这个再练一场'))
 }
 
 // 遍历渲染完之后再核对：所有子组件都该被访问到过。
@@ -2184,6 +2219,70 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   t('被拦下的也说一句', minedWords.includes('没敢用'), minedWords.slice(0, 900))
   t('有并进去的按钮', minedWords.includes('把勾着的并进简历'), minedWords.slice(0, 900))
   t('给一个「再试一次」', words.includes('再试一次'), words.slice(0, 300))
+}
+
+{
+  // 体检 / 招聘说明 / 一岗一版 / 逐条改：这四块是新加的，
+  // 每一块都得有入口、都得说清它做什么，而且不许出现技术黑话。
+  const FULL = { 基本情况: '杭州师范大学 汉语言文学 大四', 学过什么: '中国古代文学｜熟', 做过什么: '参与校刊编辑工作', 会用哪些工具: 'Word', 想去哪: '内容运营', 还差什么: '六级还没过' }
+  const props = { flash: () => {}, cards: [], onOpenCard: () => {}, onBack: () => {} }
+
+  const plain = textOf(expand(renderOne('简历与规划（体检入口）', seen.get('CareerView'), props, { 0: FULL, 7: false })))
+  t('有「先数一遍写了什么」这一节', plain.includes('先数一遍写了什么'), plain.slice(0, 900))
+  t('说清这一趟不联网', plain.includes('不联网'), plain.slice(0, 900))
+  t('有「数一遍」这一颗', plain.includes('数一遍'), plain.slice(0, 900))
+  t('没点之前不摆分数', !/\d+\s*\/\s*\d+/.test(plain.slice(0, 200)), plain.slice(0, 200))
+  t('有招聘说明那一节', plain.includes('要投的那份招聘说明'), plain.slice(0, 1400))
+  t('有对上对不上的按钮', plain.includes('它对什么，我有吗'), plain.slice(0, 1600))
+  t('有一岗一版那一节', plain.includes('一岗存一版'), plain.slice(0, 2000))
+  t('有逐条改那一节', plain.includes('把一条改具体'), plain.slice(0, 2400))
+
+  // 数完了：分数、分项、每条毛病都要说「去改哪里」
+  const COACH = {
+    ok: true, score: 46, grade: '有几条，但还撑不起来', hasJd: false,
+    breakdown: [
+      { key: 'quant', label: '成果量化', got: 0, max: 25 },
+      { key: 'prof', label: '专业性', got: 12, max: 20 },
+    ],
+    findings: [{ level: 'warn', code: 'no-number', where: '做过什么', message: '有 2 条既没有数、也没有别的能说明规模的东西。', fix: '写清几个、几次、多久。想不起来就估一个保守的。' }],
+  }
+  const scored = textOf(expand(renderOne('简历与规划（数完了）', seen.get('CareerView'), props, { 0: FULL, 7: false, 12: COACH })))
+  t('摆出分数', scored.includes('46'), scored.slice(0, 900))
+  t('摆出分档', scored.includes('有几条，但还撑不起来'), scored.slice(0, 900))
+  t('分项都在', scored.includes('成果量化') && scored.includes('专业性'), scored.slice(0, 1200))
+  t('每条毛病都指向该改的格子', scored.includes('做过什么'), scored.slice(0, 1600))
+  t('每条都说清改哪里', scored.includes('改这里：'), scored.slice(0, 1600))
+  t('没贴招聘说明时说不算那一维', scored.includes('岗位相关性这一项没算'), scored.slice(0, 900))
+
+  // 对完了：对上几样、缺的是哪几样
+  const COV = { ok: true, terms: [{ term: '内容运营', has: true }, { term: '数据分析', has: false }], covered: 1, total: 2, percent: 50 }
+  const covered = textOf(expand(renderOne('简历与规划（对完了）', seen.get('CareerView'), props, { 0: FULL, 7: false, 13: COV })))
+  t('说清它要几样、你写了几样', covered.includes('它要的 2 样，你写了 1 样'), covered.slice(0, 1400))
+  t('缺的那几样标出来', covered.includes('数据分析（没写）'), covered.slice(0, 1400))
+  t('告诉人缺的怎么补', covered.includes('不会的别硬写'), covered.slice(0, 1600))
+
+  // 存过的版本：能看、能换、能删
+  const VERS = [
+    { name: '校招-内容运营', target: '某厂 内容运营', updated_at: '2026-11-01T10:00:00.000Z', jd: '', path: 'career/resumes/校招-内容运营.md', words: 120 },
+  ]
+  const vers = textOf(expand(renderOne('简历与规划（存过版本）', seen.get('CareerView'), props, { 0: FULL, 7: false, 14: VERS })))
+  t('列出版本名', vers.includes('校招-内容运营'), vers.slice(0, 1800))
+  t('每个版本能换回来', vers.includes('用这版'), vers.slice(0, 1800))
+  t('每个版本能删', vers.includes('删'), vers.slice(0, 1800))
+  t('说清投的是哪儿', vers.includes('某厂 内容运营'), vers.slice(0, 1800))
+
+  // 改完了：原句、新句、安不安全、要不要用
+  const RW = { ok: true, before: '参与校刊编辑工作', after: '我在校刊做编辑，2025 年出了两期。', changed: ['主语'], missing: '没有印数', safe: false, problems: ['改写后多了一个原句里没有的数：500。'] }
+  const rw = textOf(expand(renderOne('简历与规划（改完了）', seen.get('CareerView'), props, { 0: FULL, 7: false, 17: RW })))
+  t('摆出原句', rw.includes('参与校刊编辑工作'), rw.slice(0, 2400))
+  t('摆出新句', rw.includes('我在校刊做编辑，2025 年出了两期。'), rw.slice(0, 2400))
+  t('越界时说不放心用', rw.includes('我不太敢用'), rw.slice(0, 2600))
+  t('越界时把问题原样说出来', rw.includes('500'), rw.slice(0, 2600))
+  t('有一个「用这一版」', rw.includes('用这一版'), rw.slice(0, 2600))
+
+  // 门上不许出现技术黑话（这一组是新增的，最容易漏）
+  const ban = ['schema', 'JSON', 'frontmatter', 'workspace', '.lifecard', 'proposal']
+  t('体检这块没有技术黑话', ban.every((w) => !plain.includes(w) && !scored.includes(w) && !covered.includes(w) && !vers.includes(w) && !rw.includes(w)), ban.filter((w) => plain.includes(w) || scored.includes(w) || covered.includes(w) || vers.includes(w) || rw.includes(w)))
 }
 
 {

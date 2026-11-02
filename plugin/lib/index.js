@@ -21,6 +21,7 @@ import * as store from './store.js'
 import * as prose from './prose.js'
 import * as prompts from './prompts.js'
 import * as diary from './diary.js'
+import * as resumeCoach from './resume.js'
 
 import * as score from './score.js'
 import * as memory from './memory.js'
@@ -3471,6 +3472,173 @@ function buildApi(ctx, workspace, config, options) {
       if (called.ok !== true) return { ok: false, error: `这次没规划出来：${called.error ?? '过一会儿再试一次'}` }
       const text = String(called.text ?? '').trim()
       return { ok: true, goal, horizon, text, steps: career.parseSteps(text) }
+    },
+
+    // ── 简历体检：能拿出去投吗、对不对口、一岗一版 ─────────────
+    //
+    // 这一组全在本地算，不调模型。体检要能随叫随到——改一个字就重算一次，
+    // 每算一次都等模型二十秒，那就不叫体检了。
+
+    /**
+     * 体检。
+     *
+     * 贴了招聘说明就把「对不对口」一起算进去；没贴就只算前五维，
+     * 不硬扣那一维的分——否则不贴 JD 的人永远封顶 85，那是骗人的。
+     */
+    'career.coach': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
+      const profile = await career.readProfile(ws)
+      if (profile.ok !== true) return profile
+      const jd = String(body?.jd ?? '').trim()
+      const result = resumeCoach.checkResume(profile.sections ?? {}, { jd })
+      return { ok: true, ...result, missing: profile.data === null }
+    },
+
+    /** 招聘说明要什么、简历里对上了几样。 */
+    'career.jd': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
+      const profile = await career.readProfile(ws)
+      if (profile.ok !== true) return profile
+      const jd = String(body?.jd ?? '').trim()
+      if (jd === '') return { ok: false, error: '先把招聘说明贴进来。' }
+      const cover = resumeCoach.coverageOf(profile.sections ?? {}, jd)
+      return { ok: true, ...cover }
+    },
+
+    /** 把一条经历改写一遍（要过原句门禁）。 */
+    'career.rewrite': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
+      const line = String(body?.line ?? '').trim()
+      if (line === '') return { ok: false, error: '先把要改的那一条写出来。' }
+      const built = resumeCoach.buildStarPrompt({ line, target: body?.target, jd: body?.jd })
+      const called = await callModel(ctx, { system: built.system, user: built.user, model: body?.model })
+      if (called.ok !== true) return { ok: false, error: `这次没改出来：${called.error ?? '过一会儿再试一次'}` }
+      const parsed = extractJson(called.text)
+      const text = String(parsed?.rewritten ?? '').trim()
+      if (text === '') return { ok: false, error: '这次回来的东西看不明白，再点一次试试。' }
+      // 模型改写最容易在这一步越界：把「帮同学装系统」写成「主导体系建设」。
+      // 所以改完一律本地再核一遍，越界的原样标出来交给用户判断。
+      const check = resumeCoach.checkRewrite(line, text)
+      return {
+        ok: true,
+        before: line,
+        after: text,
+        changed: Array.isArray(parsed?.changed) ? parsed.changed.map((x) => String(x)).filter((x) => x !== '') : [],
+        missing: String(parsed?.missing ?? '').trim(),
+        safe: check.ok,
+        problems: check.problems,
+      }
+    },
+
+    /** 列存下来的那几版简历。 */
+    'career.versions.list': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
+      return await resumeCoach.listVersions(ws)
+    },
+
+    /** 读某一版。 */
+    'career.versions.get': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
+      return await resumeCoach.readVersion(ws, body?.path)
+    },
+
+    /**
+     * 存一版。
+     *
+     * 不传 `profile` 就存现在这一份（常用：改完简历存成「投某厂」那一版）。
+     * 传了就存传进来的那一份（常用：从某一版恢复回来）。
+     */
+    'career.versions.save': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
+      const name = String(body?.name ?? '').trim()
+      if (name === '') return { ok: false, error: '给这一版起个名字，不然以后分不清哪份投哪儿。' }
+      let profile = body?.profile
+      if (profile === null || profile === undefined) {
+        const now = await career.readProfile(ws)
+        if (now.ok !== true) return now
+        if (now.data === null) return { ok: false, error: '简历还是空的，先填一点再存。' }
+        profile = now.sections
+      }
+      const saved = await resumeCoach.writeVersion(ws, {
+        name,
+        target: String(body?.target ?? '').trim(),
+        jd: String(body?.jd ?? '').trim(),
+        profile,
+      })
+      if (saved.ok !== true) return saved
+      return { ok: true, path: saved.path, version: saved.version }
+    },
+
+    /** 恢复某一版：把它写成现在的简历。 */
+    'career.versions.restore': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
+      const got = await resumeCoach.readVersion(ws, body?.path)
+      if (got.ok !== true) return got
+      const saved = await career.writeProfile(ws, { ...(got.profile ?? {}) })
+      if (saved.ok !== true) return saved
+      return { ok: true, name: got.name, profile: got.profile, path: saved.path }
+    },
+
+    /** 删一版（搬到回收目录，不是真删）。 */
+    'career.versions.delete': async (body) => {
+      const ws = await root(body); const mods = await ensureModules(); if (mods.career !== true) return missingFeature('career')
+      const gone = await resumeCoach.deleteVersion(ws, body?.path)
+      if (gone.ok !== true) return gone
+      return { ok: true, path: gone.path, note: '这一版删掉了。原来的文件在回收目录里，需要的话能找回来。' }
+    },
+
+    // ── 模拟面试复盘 ─────────────────────────────────────────────
+    //
+    // 对话数据本来就在产生，缺的是产出物。这一条把它算成七块：
+    // 总分、四档计数、按话题分组、四维、两栏、逐题卡片、接下来练什么。
+    // 「更好的那一版」要联网，单独走 job.interview.improve 一条一条问。
+
+    /** 一场面试的复盘报告（纯本地算）。 */
+    'job.interview.review': async (body) => {
+      const ws = await root(body)
+      const got = await jobsStore.readInterview(ws, body?.id)
+      if (got.ok !== true) return got
+      const report = interview.reviewReport(got.session)
+      return { ok: true, report, session: { id: got.session?.id, company: got.session?.company, role: got.session?.role } }
+    },
+
+    /** 把某一题改成更好的那一版（要过「没编东西」的核）。 */
+    'job.interview.improve': async (body) => {
+      const ws = await root(body)
+      const got = await jobsStore.readInterview(ws, body?.id)
+      if (got.ok !== true) return got
+      const session = got.session
+      const turns = Array.isArray(session.turns) ? session.turns : []
+      const index = Number(body?.index)
+      if (!Number.isInteger(index) || index < 0 || index >= turns.length) return { ok: false, error: '没找到这一题。' }
+      const turn = turns[index]
+      const answer = String(turn.answer ?? '').trim()
+      if (answer === '' || turn.skipped === true) return { ok: false, error: '这一题没答，没什么可改的。' }
+      const built = interview.buildImprovePrompt({ question: turn.question, answer, kind: turn.kind })
+      const called = await callModel(ctx, { system: built.system, user: built.user, model: body?.model })
+      if (called.ok !== true) return { ok: false, error: `这次没改出来：${called.error ?? '过一会儿再试一次'}` }
+      const parsed = extractJson(called.text)
+      const better = String(parsed?.better ?? '').trim()
+      if (better === '') return { ok: false, error: '这次回来的东西看不明白，再点一次试试。' }
+      const check = interview.checkImprovement(answer, better)
+      // 越界的那一版不给用户当「更好的回答」看——那正是会让人在真面试里
+      // 把没做过的事说出口的东西。只把问题原样报出来。
+      if (!check.ok) {
+        return { ok: true, index, better: '', used: [], added: '', safe: false, problems: check.problems }
+      }
+      turns[index] = { ...turn, better }
+      session.turns = turns
+      const saved = await jobsStore.saveInterview(ws, session)
+      if (saved.ok !== true) return saved
+      return {
+        ok: true,
+        index,
+        better,
+        used: Array.isArray(parsed?.used) ? parsed.used.map((x) => String(x)).filter((x) => x !== '') : [],
+        added: String(parsed?.added ?? '').trim(),
+        safe: true,
+        problems: [],
+      }
     },
 
     // ── 写日记：一天一篇，AI 带着写 ──────────────────────────────

@@ -312,6 +312,70 @@ console.log('\n=== 11. 这一层不自己联网 ===')
   t('空字符串当场不生效', iv.buildTurnPrompt({ ...base, reject: '   ' }) === without)
 }
 
+// ── 复盘报告 ──────────────────────────────────────────────────
+console.log('\n=== 复盘报告：七块产出物 ===')
+{
+  // 这一块最容易做错的地方：
+  //   1. 只有一句「说得再具体一点」——用户不知道自己哪一题丢了分、丢在哪个毛病上；
+  //   2. 分数把跳过的题也算进去，等于没答的题也扣分；
+  //   3. 「更好的回答」越界了还给用户看——那正是会让人在真面试里
+  //      把没做过的事说出口的东西。
+  const session = {
+    turns: [
+      { question: '讲讲你做过的一个项目。', kind: 'behavior', answer: '我参与了一个项目，做了一些工作。', skipped: false },
+      { question: '为什么选我们公司？', kind: 'motivation', answer: '因为比较喜欢这个行业。', skipped: false },
+      { question: '你最大的缺点是什么？', kind: 'gap', answer: '', skipped: true },
+    ],
+  }
+  const r = iv.reviewReport(session)
+  t('有总分', typeof r.score === 'number', r.score)
+  t('有分档', typeof r.grade === 'string' && r.grade !== '', r.grade)
+  t('四档计数都给了', ['solid', 'okay', 'thin', 'skipped'].every((k) => typeof r.counts[k] === 'number'), r.counts)
+  t('计数加起来就是题数', ['solid', 'okay', 'thin', 'skipped'].reduce((a, k) => a + r.counts[k], 0) === 3, r.counts)
+  t('跳过的单独算一档', r.counts.skipped === 1, r.counts)
+  t('答了几题说清楚', r.answered === 2 && r.turns === 3, { answered: r.answered, turns: r.turns })
+  t('按问法分组', Array.isArray(r.byKind) && r.byKind.length >= 2, r.byKind)
+  t('每组都有分或明说没答', r.byKind.every((x) => x.score === null || typeof x.score === 'number'), r.byKind)
+  t('最弱的排在前面', r.byKind[0].score === null || r.byKind[0].score <= (r.byKind[1]?.score ?? 100), r.byKind.map((x) => x.score))
+  t('四个维度都在', Array.isArray(r.dims) && r.dims.length === 4, r.dims)
+  t('维度是百分制', r.dims.every((d) => d.got >= 0 && d.got <= 100), r.dims)
+  t('逐题都给了一张卡', Array.isArray(r.cards) && r.cards.length === 3, r.cards.length)
+  t('卡片带题号', r.cards.every((c) => typeof c.no === 'number'), r.cards.map((c) => c.no))
+  t('卡片带判定', r.cards.every((c) => typeof c.verdict === 'string' && c.verdict !== ''), r.cards.map((c) => c.verdict))
+  t('卡片带人话判定', r.cards.every((c) => typeof c.verdictLabel === 'string' && c.verdictLabel !== ''), r.cards.map((c) => c.verdictLabel))
+  t('跳过的题标出来了', r.cards.some((c) => c.skipped === true && c.verdict === 'skipped'), r.cards)
+  t('每题都说得出毛病', r.cards.filter((c) => c.skipped !== true).every((c) => Array.isArray(c.findings)), r.cards)
+  t('说了下一场练什么', Array.isArray(r.next) && r.next.length >= 1 && r.next.length <= 3, r.next)
+  t('练什么是一条能做的话', r.next.every((x) => typeof x === 'string' && x.length > 8), r.next)
+  t('优势最多三条', Array.isArray(r.strengths) && r.strengths.length <= 3, r.strengths)
+  t('可提升最多三条', Array.isArray(r.improves) && r.improves.length <= 3, r.improves)
+  t('可提升带次数和原话', r.improves.every((x) => typeof x.times === 'number' && typeof x.say === 'string'), r.improves)
+
+  const empty = iv.reviewReport({ turns: [] })
+  t('一场都没答也不炸', empty.ok !== false && (empty.score === null || empty.score === 0), empty)
+  t('空场说清「没答上题」', empty.score === null, empty.score)
+  t('空场也给一条下一步', empty.next.length >= 1, empty.next)
+  t('没传参也不抛', (() => { try { iv.reviewReport(undefined); return true } catch { return false } })())
+
+  t('判定函数认得四档', iv.verdictOf({ skipped: true }) === 'skipped' && typeof iv.VERDICT_LABEL.thin === 'string', iv.VERDICT_LABEL)
+}
+
+console.log('\n=== 更好的那一版：不许编 ===')
+{
+  const built = iv.buildImprovePrompt({ question: '讲讲你的项目。', answer: '我参与了一个项目，做了一些工作。', kind: 'behavior' })
+  t('提示词带问题', built.user.includes('讲讲你的项目'))
+  t('提示词带他的原话', built.user.includes('我参与了一个项目'))
+  t('提示词写了不许加原话没有的事', /不许|不能|不要/.test(built.system))
+  t('提示词要 JSON', /better/.test(built.user) || /better/.test(built.system))
+
+  const ok = iv.checkImprovement('我参与了一个项目，做了一些工作。', '我在那个项目里负责对账那一段，每周跑一次，把原来三个小时压到半小时。')
+  t('正常的版本放行', ok.ok === true, ok)
+  const fake = iv.checkImprovement('我参与了一个项目，做了一些工作。', '我主导了整个项目的架构设计，服务了 200 万用户。')
+  t('加了原话没有的数就拦', fake.ok === false, fake)
+  t('拦的时候说清是哪条', Array.isArray(fake.problems) && fake.problems.length > 0, fake)
+  t('大词也拦', iv.checkImprovement('我参与了一个项目', '我主导了闭环赋能体系').ok === false)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exitCode = 1
 await fs.rm(root, { recursive: true, force: true }).catch(() => {})

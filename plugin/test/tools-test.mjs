@@ -656,9 +656,12 @@ console.log('\n=== 11. 聊完那一篇得真的落在磁盘上 ===')
   const looseFile = await diary.readDiary(diaryDir, spare)
   t('「今天那件事」并进了第一节', String(looseFile.data?.['今天最值得讲的一件事'] ?? '').includes('看了牙'), loose)
   t('数组写法也收', Array.isArray(looseFile.data?.['下一步']) && looseFile.data['下一步'].includes('下周复诊'))
+  // 这个日子同样不能写死：写死的那天正好是今天，就会撞上「这一天已经有了」，
+  // 报出来的错换成了拦覆盖，这条断言就白测了（2026-11-02 真撞过）。
+  const spare2 = ['2026-09-17', '2026-09-18', '2026-09-19'].find((d) => d !== today && d !== spare) ?? '2026-09-20'
   t('没认出来的节名要指出来、并且一个字节都不写', (await call('lifecard_diary_save', {
-    date: '2026-11-02', sections: [{ title: '天气', body: '多云。' }],
-  })).includes('没认出来') && !(await readdir(diaryDir)).includes('2026-11-02.md'))
+    date: spare2, sections: [{ title: '天气', body: '多云。' }],
+  })).includes('没认出来') && !(await readdir(diaryDir)).includes(`${spare2}.md`))
 
   console.log('\n--- 11.4 接着写：没提到的节不许被弄空 ---')
   const more = await call('lifecard_diary_save', {
