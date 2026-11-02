@@ -148,6 +148,41 @@ t('正文空的卡不注入', buildPersonaSection(root, 'tavern') === '', buildP
   t('没有 systemPrompt 服务时不崩', index.attachCardToAgent({ id: 'a5', options: { agentPreset: 'lc-tavern' }, ctx: { get: () => undefined, effect: () => {} } }, { rootNow: () => root }) === false)
 }
 
+// ── 重排整份系统提示：酒馆门里那句「你是 DeepSeek 的 agent」必须消失 ──
+// 上一版只把卡的 order 压到 -1001，卡确实第一个出现，可模型读到的下一条
+// 身份句还是「You are an AI agent powered by DeepSeek.」，它在思考里就写
+// 「the rat persona is injected via custom instructions」——用户的原话
+// 「所以还是不行」。所以改成在 system-prompt/assemble 里重写 sections。
+{
+  const assembly = {
+    sections: [
+      { name: 'harness:identity', text: 'You are an AI agent powered by DeepSeek.', interpolate: false },
+      { name: 'deployment:persona-prefix', text: '你在陪用户做角色扮演。演的是一个人物，不是你自己。', interpolate: false },
+      { name: 'lifecard:card', text: '# 沈九\n\n旧有的卡正文', interpolate: false },
+      { name: 'tool:read', text: 'Use the read tool — not shell commands like cat.' },
+      { name: 'deployment:persona-suffix', text: '收尾的几句话。' },
+    ],
+  }
+  const card = '# 沈九\n\n旧码头的木桩露出来。'
+  const out = index.composePromptSections(assembly, card, 'tavern')
+  t('重排之后第一段就是那张卡', out[0].name === 'lifecard:card' && out[0].text === card)
+  t('重排之后只剩一份卡，不会重复', out.filter((one) => one.name === 'lifecard:card').length === 1)
+  t('那句「你是 DeepSeek 的 agent」不再出现', !out.some((one) => one.name === 'harness:identity'))
+  t('整份提示词里读不到 AI agent 那句', !out.map((one) => one.text).join('\n').includes('You are an AI agent'))
+  t('「你在陪用户做角色扮演」也换掉了', !out.map((one) => one.text).join('\n').includes('角色扮演'))
+  t('换成的是「你就是这个人」那段', out.some((one) => one.text.includes('你就是这个人')))
+  t('工具说明留着，不然模型调不了工具', out.some((one) => one.name === 'tool:read'))
+  t('收尾段留着', out.some((one) => one.name === 'deployment:persona-suffix'))
+
+  const novel = index.composePromptSections(assembly, card, 'novel')
+  t('小说门只把卡提到最前，身份句留着', novel[0].name === 'lifecard:card' && novel.some((one) => one.name === 'harness:identity'))
+  t('小说门不换掉部署人设', novel.some((one) => one.name === 'deployment:persona-prefix' && one.text.includes('角色扮演')))
+
+  t('没挑卡时不动提示词', index.composePromptSections(assembly, '', 'tavern') === null)
+  t('空段落不会被塞进去', index.composePromptSections({ sections: [{ name: 'tool:read', text: '' }, { name: 'x', text: '有内容' }] }, card, 'tavern').every((one) => String(one.text ?? '') !== ''))
+  t('没有 sections 时也不崩', index.composePromptSections({}, card, 'tavern')[0].name === 'lifecard:card')
+}
+
 await rm(root, { recursive: true, force: true })
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

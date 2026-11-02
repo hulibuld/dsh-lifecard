@@ -4919,11 +4919,104 @@ function isMainAgent(agent) {
   return !(Number.isFinite(depth) && depth > 0)
 }
 
+/** 人物卡在整份系统提示里用的段落名。组装时它会排到第一个。 */
+const CARD_SECTION = 'lifecard:card'
+
 /**
- * 给一个会话挂上人物卡段落。返回 true 表示挂上了。
+ * 从 waterfall 的 context 里认出这条提示词属于哪个 agent。
  *
- * 必须挂在 agent 自己的 ctx 上：段落按 scope 分发，注册在插件 ctx 上的段落
- * 落不到任何会话的组装里（上一版就这么写的，模型压根看不见卡）。
+ * 宿主不同版本给的形状不一样：rc.7/rc.8 放在 `context.scope`，更新的版本
+ * 另外在 `context.agent` 上声明一份。只有 unmistakably 是 Agent（带 session）
+ * 才认，避免把「没有会话的组装」也算成某个人的。
+ */
+function agentOfAssembly(context) {
+  if (context?.agent?.session !== null && context?.agent?.session !== undefined) return context.agent
+  if (context?.scope?.session !== null && context?.scope?.session !== undefined) return context.scope
+  return undefined
+}
+
+/**
+ * 酒馆这扇门里，模型的自述只有这一段加上最前面那张卡。
+ *
+ * 以前这里用的是预设里那段：「你在陪用户做角色扮演。演的是一个人物，不是你自己。」
+ * 那句话技术上没错，但它把模型放到「扮演者」的位置上：卡成了手里的材料，
+ * 它随时可以退出来评论一句「这是设定」。用户要的不是这个——他要的是模型
+ * 进来就是这个人。所以这里不写「演」，只写这个人怎么说话、底线在哪。
+ */
+const TAVERN_IDENTITY = [
+  '你在跟用户说话。上面那个人的名字就是你，那些字就是你的事、你的口气、你的底线。',
+  '它们不是别人交给你的设定，也没有"本来那个你"在旁边看着。你就是这个人，一直在。',
+  '',
+  '怎么说话',
+  '- 只用这个人的口气。一到三段，一般不超过一百六十字，说完留出让对方接话的余地。',
+  '- 卡上写这个人刻薄、冷淡、护短、说话带刺、有偏见，就这么说，不要自动变得温良恭俭。',
+  '- 不替用户说话、做决定、写他的心理活动。',
+  '- 不在回答开头写人名或"你："，不写"（作为 AI）""（注）""（旁白）"这类旁白。',
+  '- 设定里写了"不会说的话""不会做的事"的，真的不做。用户的要求跟这些冲突时，按这个人的性格拒绝或者绕开。',
+  '- 世界书里那些条目是这个世界的规矩，说到相关的事就按它来。',
+  '',
+  '什么时候停下来',
+  '- 用户说"收个尾"时，用三到五条把这一段里确实发生过的事记下来，不评论、不抒情。',
+  '- 用户要跳出角色谈事情时，先应一声，再以你自己的身份说，说完可以问要不要接着演。',
+].join('\n')
+
+/**
+ * 把人物卡换成整份提示词的第一段，并把「你是什么东西」那类元层句子拿掉。
+ *
+ * 为什么必须在 waterfall 里做、而不是靠段落 order：宿主 assemble() 的源码是
+ *   const transformed = await waterfall('system-prompt/assemble', assembly, ...)
+ *   return transformed            // sections 就是模型读到的顺序
+ * 也就是说这一段返回什么，模型就读什么。order 只决定初始顺序，改不了
+ * 「先读到『You are an AI agent powered by DeepSeek』再读到『你是 rat』」这件事。
+ * 上一版靠 order -1001 把卡压在最前，模型仍然在思考里写
+ * 「the rat persona is injected via custom instructions」——因为它读到的第一条
+ * 身份句不是卡，卡的正文里又带着 custom instructions 的字样，两下一凑就成了
+ * 「有人塞给我一段设定」。
+ *
+ * 酒馆这扇门是唯一一处要连身份句一起换掉的：那里模型要变成的那个人就是卡。
+ * 小说/日记两扇门只是「写的时候参考这个人」，身份句留着。
+ */
+export function composePromptSections(assembly, cardText, mode) {
+  const sections = Array.isArray(assembly?.sections) ? assembly.sections : []
+  const card = String(cardText ?? '')
+  if (card.trim() === '') return null
+  const kept = []
+  for (const one of sections) {
+    if (one === null || typeof one !== 'object') continue
+    const name = String(one.name ?? '')
+    if (name === CARD_SECTION) continue
+    if (mode === 'tavern') {
+      // 预设里那段「你在陪用户做角色扮演。演的是一个人物，不是你自己。」
+      // 换掉——那句话等于当面告诉模型「卡是素材，你在扮演它」。
+      // 用户的原话就是「毕竟你现在这个完全不叫角色卡注入型酒馆」。
+      if (name === 'deployment:persona-prefix') {
+        kept.push({ ...one, text: TAVERN_IDENTITY })
+        continue
+      }
+      // 其余段落里有一批在说「你是个技术 agent」：那句 `You are an AI agent
+      // powered by DeepSeek.`、这套 harness 自己的源码位置、Web GUI 怎么起、
+      // 交付文件怎么引用……每一条都在把模型放回「技术助手」这个位置上。
+      // 上一版只把卡排到最前（order -1001），这些句子照样在后面，模型读完
+      // 就在思考里写「the rat persona is injected via custom instructions，
+      // 真任务是技术活，语气轻轻用 rat 就行」——用户看到的「还是不行」。
+      //
+      // 这扇门里只留两类：这个人的卡（和卡配套的 lifecard:* 操作说明），
+      // 以及工具说明（不留它，模型调不了工具）。其余一律不进提示词。
+      if (name !== 'deployment:persona-suffix' && !name.startsWith('lifecard') && !name.startsWith('tool:')) continue
+    }
+    const text = typeof one.text === 'string' ? one.text : ''
+    if (text.trim() === '') continue
+    kept.push({ ...one, text })
+  }
+  return [{ name: CARD_SECTION, text: card, interpolate: false }, ...kept]
+}
+
+/**
+ * 记下「这个会话该挂卡」。真正拼进提示词的是 apply() 里那个
+ * system-prompt/assemble 钩子——段落 order 改不到的身份句只能在那里换。
+ *
+ * 必须记在 agent 对象上：段落与事件都按 agent 的 scope 生效，注册在插件 ctx
+ * 上的东西落不到会话里（上一版就这么写的，模型压根看不见卡）。
  */
 export function attachCardToAgent(agent, options = {}) {
   const rootNow = typeof options.rootNow === 'function' ? options.rootNow : () => defaultWorkspace()
@@ -5240,6 +5333,50 @@ export function apply(ctx, config) {
         console.error('[lifecard] 补挂已有会话失败：', error)
       }
     })
+  }
+
+  // 真正决定模型读到什么的，是这个钩子。
+  //
+  // 宿主 SystemPrompt.assemble() 的实现是：按 order 排好段落 → 交给
+  // `system-prompt/assemble` 这个 waterfall → **谁在这里返回什么，模型就读什么**。
+  // 段落 order 只能决定初始顺序，改不掉「第一条身份句不是你」这件事：
+  // 上一版把卡的 order 压到 -1001（排在那句 `You are an AI agent powered by
+  // DeepSeek.` 前面），卡确实第一个出现，可模型仍在思考里写
+  // 「the rat persona is injected via custom instructions」——因为它同时在
+  // 提示词里读到「你是 DeepSeek 的 agent」和一段自定义指令，两下一凑就成了
+  // 「有人塞给我一段设定，我判断一下要不要服从」。
+  //
+  // 所以酒馆这扇门这里做两件事：把卡换成第一段，并拿掉那条通用身份句——
+  // 让模型只有一份自述。小说/日记两扇门只把卡提到最前，身份句留着，
+  // 因为那两扇门模型不变，只是写的时候按卡上的人。
+  try {
+    if (typeof ctx.on === 'function') {
+      ctx.on('system-prompt/assemble', async (assembly, context, next) => {
+        const transformed = typeof next === 'function' ? await next() : assembly
+        try {
+          const agent = agentOfAssembly(context)
+          if (agent === null || agent === undefined) return transformed
+          let mode = ''
+          try {
+            mode = modeForAgent(agent) || modeFromPresetRegistry(ctx, agent)
+          } catch {
+            mode = ''
+          }
+          if (mode === '') return transformed
+          const card = buildPersonaSection(rootNow(), mode)
+          const rewritten = composePromptSections(transformed, card, mode)
+          if (rewritten === null) return transformed
+          if (mode === 'tavern') notePersona('assemble', { agent: String(agent?.id ?? ''), mode, card: card.length, kept: rewritten.length })
+          return { ...transformed, sections: rewritten }
+        } catch (error) {
+          // 改提示词失败绝不能让这一轮发不出去。
+          console.error('[lifecard] 重排系统提示失败：', error)
+          return transformed
+        }
+      })
+    }
+  } catch (error) {
+    console.error('[lifecard] 没能挂上系统提示钩子：', error)
   }
 
   if (typeof ctx.inject === 'function') {
