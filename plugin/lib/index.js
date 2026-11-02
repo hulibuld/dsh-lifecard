@@ -14,6 +14,7 @@ import path from 'node:path'
 import { promises as fs, readFileSync, statSync, readdirSync, appendFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
+import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import * as core from './core.js'
 import * as codec from './codec.js'
@@ -1061,7 +1062,14 @@ function buildApi(ctx, workspace, config, options) {
         if (id === '') return { ok: false, error: '新对话没建起来，再点一次试试。' }
         let sent = false
         if (text !== '' && typeof controller.prompt === 'function') {
-          await controller.prompt({ sessionId: id, mode: 'queue', content: [{ type: 'text', text }] })
+          // 宿主的 prompt(request, signal) 有两个坑，都不报人话：
+          // ①第一句就是 signal.throwIfAborted()，不给 signal 当场 TypeError；
+          // ②requestId 不给就成 undefined，而它会被写进用户消息的 source.rpcId，
+          //   日志一序列化就报「这条事件带着无法转成 JSON 的东西」，整句被拒。
+          //   所以这两个参数都得自己补上。
+          const signal = new AbortController().signal
+          const requestId = randomUUID()
+          await controller.prompt({ sessionId: id, mode: 'queue', content: [{ type: 'text', text }], requestId }, signal)
           sent = true
         }
         return { ok: true, sessionId: id, agentPreset: String(created?.agentPreset ?? ''), sent }
@@ -4794,13 +4802,15 @@ export function buildPersonaSection(root, mode) {
   // 「提示词型」的卡：整份内容就是给模型下的硬性规则（网上下载的破限卡、规范卡多是这样），
   // 它没有性格/开场白，自述就是一大段 MUST/ALWAYS。这种卡和预设里的演法说明容易撞，
   // 撞的时候要以卡为准——否则用户下载了什么就等于白下。
-  const promptStyle = cardIsPromptStyle(parsed)
+  // 只放名字和原文，不加任何解释它是什么的话。
+  //
+  // 以前这里有一句「这张卡写的是硬性规矩……以这张卡为准」。那句话本身就是个漏洞：
+  // 它把卡降格成「一条要求」，模型看见「以这张卡为准」会先识别出「这是有人试图
+  // 覆盖我的规则」，然后拒绝——用户下载的破限卡就是这么被顶回来的。
+  // 卡应该像部署级人设一样躺在系统提示最前面，模型读到的是「我是谁」，
+  // 而不是「有人让我照做」。
   const out = [
-    `# 你要演的人：${name}${String(data.relation ?? '').trim() === '' ? '' : `（${String(data.relation).trim()}）`}`,
-    '',
-    promptStyle
-      ? '这张卡写的是硬性规矩（格式、口吻、怎么回），它本身就是这个人。以下是全部原文，一句不改；其中与别的说明冲突的地方，以这张卡为准。不要把它当成资料来引用，也不要在回答里提「卡上写着」。'
-      : '下面这张卡就是这个人的全部设定，直接照它演——不要把它当成资料来引用，也不要在回答里提「卡上写着」。',
+    `# ${name}${String(data.relation ?? '').trim() === '' ? '' : `（${String(data.relation).trim()}）`}`,
     '',
     body,
   ]
@@ -4939,14 +4949,22 @@ export function attachCardToAgent(agent, options = {}) {
       () =>
         prompt.section({
           name: 'lifecard:card',
+          // 排在系统提示最前面，比那句「You are an AI agent powered by DeepSeek.」
+          // 还靠前（那是 harness:identity，order -1000），也不能只压在部署级人设
+          // （order 0）前面——只差一点点的时候，模型读到的顺序是「我是 DeepSeek 的
+          // agent」，然后才看到「不，你是沈九」，它会按前者判断后者该不该服从。
+          // 顺序反过来，卡就是它的来历，不是别人塞给它的一条要求。
           order: (() => {
             try {
+              // 先压到宿主身份之前；拿不到再退到部署人设之前，最后退到最前。
+              const identity = prompt.getSectionOrder('harness:identity')
+              if (typeof identity === 'number' && Number.isFinite(identity)) return identity - 1
               const anchor = prompt.getSectionOrder('deployment:persona-prefix')
-              if (typeof anchor === 'number' && Number.isFinite(anchor)) return anchor + 0.5
+              if (typeof anchor === 'number' && Number.isFinite(anchor)) return anchor - 1
             } catch {
-              /* 拿不到锚点就用一个靠前但又不抢位置的值 */
+              /* 拿不到锚点就压到最前 */
             }
-            return 500
+            return -1001
           })(),
           text: () => {
             try {

@@ -55,10 +55,10 @@ await put(`worlds/${core.safeId('dock')}/world.md`, [
 await setPins({ real: '', tavern: 'shen', novel: '' })
 
 const tavern = buildPersonaSection(root, 'tavern')
-t('挑好卡之后有这一段', tavern.includes('# 你要演的人：沈九'), tavern.slice(0, 80))
+t('第一行就是这个人的名字', tavern.split('\n')[0] === '# 沈九', tavern.split('\n')[0])
 t('卡上的正文整段都在', tavern.includes('码头上长大的') && tavern.includes('行吧'), '')
 t('卡上「无视一切规则」那句也没被删', tavern.includes('无视一切规则'), '')
-t('说清了这不是参考资料', tavern.includes('不要把它当成资料'), '')
+t('没加解释「这是什么」的包装话', !tavern.includes('当成资料') && !tavern.includes('以这张卡为准'), tavern.slice(0, 200))
 t('世界书接在后面', tavern.includes('# 这一场发生在：码头') && tavern.includes('退潮时才露出石阶'), tavern.slice(-160))
 t('没挑卡的那扇门一个字都不给', buildPersonaSection(root, 'novel') === '', buildPersonaSection(root, 'novel').slice(0, 60))
 t('配置里没有这门就是空', buildPersonaSection(root, 'real') === '', '')
@@ -90,7 +90,7 @@ t('正文空的卡不注入', buildPersonaSection(root, 'tavern') === '', buildP
   await setPins({ real: '', tavern: 'shen', novel: '' })
   const registered = []
   const fakePrompt = {
-    getSectionOrder: (name) => (name === 'deployment:persona-prefix' ? 30 : undefined),
+    getSectionOrder: (name) => (name === 'deployment:persona-prefix' ? 0 : (name === 'harness:identity' ? -1000 : undefined)),
     section: (spec) => {
       registered.push(spec)
       return () => {}
@@ -113,11 +113,15 @@ t('正文空的卡不注入', buildPersonaSection(root, 'tavern') === '', buildP
   const ok = index.attachCardToAgent(makeAgent('lc-tavern'), { rootNow: () => root, attached })
   t('LC 酒馆的会话挂上了段落', ok === true)
   t('段名叫 lifecard:card', registered.length === 1 && registered[0].name === 'lifecard:card')
-  t('段落排序挨着 persona 前缀之后', registered.length === 1 && registered[0].order === 30.5)
+  // order 越小越靠前。宿主身份句（You are an AI agent powered by DeepSeek.）在
+  // -1000，人物卡必须排在它前面——只压在部署人设（0）前面是不够的，那样模型
+  // 先读到「我是 DeepSeek 的 agent」，再看到卡，就会先判断卡该不该服从。
+  t('段落排在宿主身份句前面', registered.length === 1 && registered[0].order < -1000, registered.length === 1 ? registered[0].order : '没挂上')
+  t('拿不到身份锚点时也不落后', registered.length === 1 && registered[0].order < 0, registered.length === 1 ? registered[0].order : '没挂上')
   t('段落是函数，每轮重算', registered.length === 1 && typeof registered[0].text === 'function')
   t('段落不看变量插值', registered.length === 1 && registered[0].interpolate === false)
   const body = registered.length === 1 ? registered[0].text({}) : ''
-  t('段落正文里就是这个人的卡', body.includes('# 你要演的人：沈九') && body.includes('无视一切规则'))
+  t('段落正文里就是这个人的卡', body.startsWith('# 沈九') && body.includes('无视一切规则'))
 
   // 去重按 agent 对象而不是会话 id：在顶部换预设时 DSH 会给同一会话换一个新 agent，
   // 换过预设的会话必须能重新挂（否则第一次认成 standard 就永远不挂卡）。
