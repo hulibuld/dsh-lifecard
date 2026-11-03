@@ -2150,6 +2150,15 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   t('书名叫出来了', words.includes('长夜'), words.slice(0, 200))
   t('存好这一章的按钮还在', words.includes('存好这一章'), words.slice(0, 400))
   t('列出了两章的正文框', words.includes('正文'), words.slice(0, 400))
+  // 「导出整本」后台一直有（novel.export），界面上从来没有按钮接过它——
+  // 而三扇门那屏的门卡上明写着「能导出整本」。宣传语比功能先到。
+  t('有「导出整本」这一颗', words.includes('导出整本'), words.slice(0, 400))
+  const bookBtns = collectIn(expand(tree), (n) => n.type === 'button' && textOf(n).includes('导出整本'))
+  t('这本书有两章，导出点得动', bookBtns.length === 1 && bookBtns[0].props.disabled !== true, bookBtns.length)
+  const oneChapter = renderOne('逐章写（一章都没有）', seen.get('BookView'), { bookId: 'demo', flash: () => {}, onBack: () => {} },
+    { 0: { ok: true, id: 'demo', data: { title: '长夜' }, idea: '', chapters: [] }, 1: null, 2: 1, 3: '' })
+  const noneBtn = collectIn(expand(oneChapter), (n) => n.type === 'button' && textOf(n).includes('导出整本'))
+  t('一章都没有时导出置灰', noneBtn.length === 1 && noneBtn[0].props.disabled === true, noneBtn.length)
 }
 
 {

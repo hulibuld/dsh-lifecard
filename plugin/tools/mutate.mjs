@@ -122,6 +122,14 @@ const MUTATIONS = [
     test: 'test/render-all.mjs',
     note: '还没挑人时不能摆出一堆白勾的框',
   },
+  {
+    name: 'M11 一章都没有时「导出整本」还能点',
+    file: 'lib/client.js',
+    from: 'disabled: busy !== \'\' || chapters.length === 0, onClick: exportBook',
+    to: 'disabled: busy !== \'\', onClick: exportBook',
+    test: 'test/render-all.mjs',
+    note: '点了只会得到一句「还一章都没有」，不如先让他看见「0 章」',
+  },
 ]
 
 // ── 参数 ──────────────────────────────────────────────────────────

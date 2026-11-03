@@ -5000,6 +5000,27 @@ function BookView({ bookId, onBack, flash, flushRef }) {
     } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
   }
 
+  /**
+   * 导出整本。
+   *
+   * 这个功能后台一直有（`novel.export`），但界面上从来没有按钮接过它——
+   * 三扇门那屏的门卡上却明写着「能导出整本」。宣传语比功能先到，用户点遍整本书
+   * 也找不到那一颗。0.97.4 那条教训：读完、写完、展示完，不等于用户能自己做出这件事。
+   */
+  const exportBook = async () => {
+    // 先替人把没存的那一章存回去。导出读的是磁盘上的文件，不先存的话，
+    // 他刚写完的那一段不会在导出的稿子里，而且他不会知道少了什么。
+    if ((await keepBody()) !== true) return
+    if ((await settleScript('导出')) !== true) return
+    setBusy('export'); setErr(null)
+    try {
+      const r = await call('novel.export', { id: bookId })
+      if (r?.ok !== true) { setErr(r?.error ?? '这一本没导出来'); return }
+      downloadText(String(r.text ?? ''), `${String(r.title ?? bookId).trim() === '' ? '未命名' : String(r.title).trim()}.md`)
+      flash?.(`导出来了：${Number(r.chapters ?? 0)} 章`)
+    } catch (e) { setErr(humanizeError(e)) } finally { setBusy('') }
+  }
+
   const acceptDraft = async () => {
     if (draft === null) return
     setBusy('save'); setErr(null)
@@ -5173,6 +5194,9 @@ function BookView({ bookId, onBack, flash, flushRef }) {
       } }, '回书架'),
       h('div', { className: 'lc-grow lc-ellipsis', style: { fontWeight: 700, fontSize: 16.5 } }, `《${title}》`),
       h('span', { className: 'lc-meta' }, `${chapters.length} 章`),
+      // 一章都没有的时候置灰：点了只会得到一句「这本书还一章都没有」，
+      // 不如让他先看见左边那个「0 章」。
+      h(Btn, { size: 'sm', icon: 'download', disabled: busy !== '' || chapters.length === 0, onClick: exportBook, title: '把这本书从第一章到最后一章拼成一个文件存下来' }, busy === 'export' ? '正在拼…' : '导出整本'),
     ),
     String(book.idea ?? '').trim() === '' ? null : h('div', { className: 'lc-meta', style: { lineHeight: 1.7 } }, String(book.idea).trim()),
 
