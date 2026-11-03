@@ -2651,5 +2651,95 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   t('酒馆门不摆「人物关系网」', !tavernHome.includes('人物关系网'), tavernHome.slice(0, 500))
 }
 
+{
+  // 「给模型看哪几节」：卡上的正文是按 `## 小节` 拼起来的，以前插件里写死一张清单，
+  // 卡上有哪几节就一股脑全塞进系统提示。用户从网上下的卡四五十 KB，除了人物设定
+  // 还夹着大段给模型下的命令——他想要的可能只是「这个人怎么说话」，却只能整张进、
+  // 或者一个字不进。这一屏把那串清单交给他自己勾。
+  renderRoot('给模型看哪几节（先注册组件）', base('persona'))
+  const PV = seen.get('PersonaView')
+  t('给模型看哪几节那一屏注册上了', PV !== undefined)
+
+  const SECTIONS = [
+    { title: '自述', hasBody: true, picked: true },
+    { title: '性格', hasBody: true, picked: true },
+    { title: '口癖', hasBody: true, picked: true },
+    { title: '外貌', hasBody: false, picked: true },
+    { title: '备注', hasBody: true, picked: false },
+  ]
+  const GOT = {
+    ok: true, mode: 'tavern', cardId: 'shen', cardName: '沈九', hasCard: true,
+    include: ['自述', '性格', '口癖', '外貌'], isDefault: false,
+    going: ['自述', '性格', '口癖'], empty: ['外貌'], missing: ['关系史'], leftOut: ['备注'],
+    chars: 1234, bodyChars: 900, sections: SECTIONS, handledElsewhere: [],
+    defaults: ['自述', '性格'],
+  }
+  // hook 槽：0 data / 1 busy / 2 err / 3 peek / 4 peekBusy
+  const pvProps = { mode: 'tavern', onBack: () => {}, flash: () => {} }
+  const tree = renderOne('给模型看哪几节（读过卡）', PV, pvProps, { 0: GOT, 1: false, 2: null, 3: null, 4: false })
+  const words = textOf(expand(tree))
+  t('说清这是哪扇门', words.includes('酒馆这扇门'), words.slice(0, 400))
+  t('说清现在用哪张卡', words.includes('沈九'), words.slice(0, 400))
+  t('说清没勾的一个字都看不到', words.includes('看不到'), words.slice(0, 500))
+  const boxes = collectIn(expand(tree), (n) => n.type === 'input' && n.props?.type === 'checkbox')
+  t('卡上能勾的每一节都摆出来', boxes.length === SECTIONS.length, `boxes=${boxes.length}`)
+  t('勾上的默认是勾着的', boxes.filter((b) => b.props.checked === true).length === 4, boxes.map((b) => String(b.props?.checked)).join(','))
+  t('勾了但那一节还空着，单独说一句', words.includes('外貌') && words.includes('还空着'), words.slice(0, 800))
+  t('说清现在真进去几节、多少字', words.includes('3 节') && words.includes('1234'), words.slice(0, 800))
+  t('卡上有没勾的会列出来', words.includes('备注') && words.includes('没给模型看'), words.slice(0, 900))
+  t('勾了但卡里没有的那一节也会说', words.includes('关系史'), words.slice(0, 900))
+  t('有「一节都不给它看」', words.includes('一节都不给它看'), words.slice(-800))
+  t('有「恢复成默认那几节」', words.includes('恢复成默认那几节'), words.slice(-800))
+  t('有「看看它这回会读到什么」', words.includes('看看它这回会读到什么'), words.slice(-800))
+
+  // 一节都没勾：得当场说清「它不知道自己在演谁」，不能让用户以为设置好了。
+  const none = renderOne('给模型看哪几节（一节都没勾）', PV, pvProps, {
+    0: { ...GOT, include: [], going: [], chars: 0, leftOut: ['自述', '性格', '口癖'], empty: [], missing: [] },
+    1: false, 2: null, 3: null, 4: false,
+  })
+  t('一节都没勾时照实说', textOf(expand(none)).includes('不知道自己在演谁'), textOf(expand(none)).slice(0, 600))
+
+  // 存的过程中：勾选要锁住，按钮要说在做什么，否则连点两下就是两次写。
+  const saving = renderOne('给模型看哪几节（正在存）', PV, pvProps, { 0: GOT, 1: true, 2: null, 3: null, 4: false })
+  t('存的时候按钮说在做什么', textOf(expand(saving)).includes('正在存'), textOf(expand(saving)).slice(-800))
+  t('存的时候勾不动', collectIn(expand(saving), (n) => n.type === 'input' && n.props?.type === 'checkbox').every((b) => b.props.disabled === true))
+
+  // 还没挑人：不能摆出一堆勾选框让人白勾，要先请他去挑一张。
+  const bare = renderOne('给模型看哪几节（还没挑人）', PV, pvProps, {
+    0: { ...GOT, hasCard: false, cardName: '', sections: [], include: [], going: [], chars: 0, empty: [], missing: [], leftOut: [] },
+    1: false, 2: null, 3: null, 4: false,
+  })
+  const bareWords = textOf(expand(bare))
+  t('还没挑人时说清先去挑一张', bareWords.includes('还没挑人'), bareWords.slice(0, 600))
+  t('还没挑人时不摆勾选框', collectIn(expand(bare), (n) => n.type === 'input' && n.props?.type === 'checkbox').length === 0)
+
+  // 「看看它这回会读到什么」：这是这一屏最要紧的一半——以前想知道模型拿到了什么，
+  // 只能去解会话日志，用户看不到。
+  const peeked = renderOne('给模型看哪几节（看过预览）', PV, pvProps, {
+    0: GOT, 1: false, 2: null,
+    3: { ok: true, chars: 26, text: '# 沈九\n\n码头上长大的，说话短。', hasCard: true },
+    4: false,
+  })
+  // 预览的正文是一块只读文本框里的 value，不是子节点——`visibleText` 只收
+  // 子节点和 title/placeholder 那几样，所以这里直接看 value 那个属性。
+  const peekWords = textOf(expand(peeked))
+  const peekBox = collectIn(expand(peeked), (n) => n.type === 'textarea' && n.props?.readOnly === true)[0]
+  t('预览是一块只读的文字', peekBox !== undefined)
+  t('预览里摆出模型会读到的原文', String(peekBox?.props?.value ?? '').includes('码头上长大的'), String(peekBox?.props?.value ?? '').slice(0, 200))
+  t('预览说清一共多少字', peekWords.includes('26 字'), peekWords.slice(-900))
+
+  // 首页那个入口：挑过卡才摆。没挑人时摆上去，点进去是空的，用户会以为是坏的。
+  const Home = seen.get('HomeView')
+  t('首页那一屏注册上了', Home !== undefined)
+  const homeProps = {
+    state: STATE, listing: LISTING, mode: 'tavern', busy: '', intro: false,
+    chats: [], books: [], onPickPin: () => {}, onOpenPersona: () => {},
+  }
+  const pinned = textOf(expand(renderOne('首页（挑过卡有入口）', Home, { ...homeProps, pinId: 'shen' })))
+  t('挑过卡才摆「给模型看哪几节」', pinned.includes('给模型看哪几节'), pinned.slice(0, 600))
+  const unpinned = textOf(expand(renderOne('首页（没挑卡不摆入口）', Home, { ...homeProps, pinId: '' })))
+  t('没挑卡时不摆这个入口', !unpinned.includes('给模型看哪几节'), unpinned.slice(0, 600))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

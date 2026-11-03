@@ -841,7 +841,7 @@ const SECTIONS_REL = [
 
 // ── 主界面 ────────────────────────────────────────────────────────
 
-const VIEWS = { doors: 'doors', novel: 'novel', book: 'book', game: 'game', career: 'career', tavern: 'tavern', tavernChat: 'tavernChat', home: 'home', card: 'card', diary: 'diary', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs', net: 'net' }
+const VIEWS = { doors: 'doors', novel: 'novel', book: 'book', game: 'game', career: 'career', tavern: 'tavern', tavernChat: 'tavernChat', home: 'home', card: 'card', diary: 'diary', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs', net: 'net', persona: 'persona' }
 
 // ── 开一个新会话去问 ──────────────────────────────────────────────
 //
@@ -1709,6 +1709,7 @@ function LifeCardTab(props) {
       [VIEWS.jobs]: '求职',
       [VIEWS.diary]: '写日记',
       [VIEWS.net]: '人物关系网',
+      [VIEWS.persona]: '给模型看哪几节',
     }
     // 「选个文件夹」页一般不该有返回按钮（还没地方可回），
     // 但已经选过文件夹、是从首页主动进来换的时候要能退回去。
@@ -1861,7 +1862,7 @@ function LifeCardTab(props) {
         // 直接退回首页，用户点了没反应，还以为坏了。现在把清单单独摊开。
         return activeCard === null
           ? proposal === null
-            ? h(HomeView, { state, listing, mode, onDiary: startDiary, onStartInterview: startInterview, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
+            ? h(HomeView, { state, listing, mode, onDiary: startDiary, onStartInterview: startInterview, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), onOpenPersona: () => setView(VIEWS.persona), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
             : h('div', { className: 'lc-pad lc-stack' },
                 proposal.about === undefined || String(proposal.about).trim() === ''
                   ? null
@@ -1923,7 +1924,7 @@ function LifeCardTab(props) {
         })
       case VIEWS.world:
         return activeWorld === null
-          ? h(HomeView, { state, listing, mode, onDiary: startDiary, onStartInterview: startInterview, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
+          ? h(HomeView, { state, listing, mode, onDiary: startDiary, onStartInterview: startInterview, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), onOpenPersona: () => setView(VIEWS.persona), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
           : h(WorldView, {
               world: activeWorld,
               listing,
@@ -1964,12 +1965,18 @@ function LifeCardTab(props) {
           onTalk: (name) => startInterview({ about: name, mode }),
           relations: state?.relations ?? [],
         })
+      case VIEWS.persona:
+        return h(PersonaView, {
+          mode,
+          flash,
+          onBack: () => setView(VIEWS.home),
+        })
       case VIEWS.career:
         return h(CareerView, { flash, cards: listing?.cards ?? [], onOpenCard: openCard, onBack: () => setView(VIEWS.home) })
       case VIEWS.jobs:
         return h(JobsView, { onBack: () => setView(VIEWS.home), flash })
       default:
-        return h(HomeView, { state, listing, mode, onDiary: startDiary, onStartInterview: startInterview, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
+        return h(HomeView, { state, listing, mode, onDiary: startDiary, onStartInterview: startInterview, onOpen: openFromList, chats, onOpenChat: openChat, onOpenWorld: openWorld, onNavigate: go, onMore: () => setShowMore(!showMore), showMore, onProposal: openProposal, busy, intro: introSeen === false, onIntroDone: dismissIntro, onMaterial: (m) => { setMaterialFor(m.path); setView(VIEWS.analyze) }, onDeleteMaterial: deleteMaterial, onDoDoctor: () => runDoctor(), onForkCard: forkForTavern, onDeleteCard: deleteCard, onRestoreCard: restoreCard, onPurgeCard: purgeCard, onEditCard: (c) => openCard(c, true), pinId: (mode === 'real' ? pins.real : mode === 'tavern' ? pins.tavern : pins.novel), onPickPin: (id) => pinCard(mode, id), onOpenPersona: () => setView(VIEWS.persona), books, onOpenBook: openBook, onCreateBook: createBook, onDeleteBook: deleteBook, chatsNote })
     }
   }
 
@@ -2296,7 +2303,7 @@ function DoorsView({ onPick, state, features, hidden, onHide, onShow }) {
   )
 }
 
-function HomeView({ state, listing, mode, onStartInterview, onDiary, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial, chats, onOpenChat, onForkCard, onDeleteCard, onRestoreCard, onPurgeCard, onEditCard, books, onOpenBook, onCreateBook, onDeleteBook, chatsNote, pinId, onPickPin }) {
+function HomeView({ state, listing, mode, onStartInterview, onDiary, onOpen, onOpenWorld, onNavigate, onProposal, busy, onDoDoctor, showMore, onMore, intro, onIntroDone, onMaterial, onDeleteMaterial, chats, onOpenChat, onForkCard, onDeleteCard, onRestoreCard, onPurgeCard, onEditCard, books, onOpenBook, onCreateBook, onDeleteBook, chatsNote, pinId, onPickPin, onOpenPersona }) {
   // 这扇门是不是「真实人物记录」。写小说、酒馆那两扇门里不该出现
   // 「贴一份招聘说明」「从记忆里认人」这类动作——那是记录真人才用得上的。
   const isReal = mode !== 'novel' && mode !== 'tavern'
@@ -2518,6 +2525,11 @@ function HomeView({ state, listing, mode, onStartInterview, onDiary, onOpen, onO
         ? h(Btn, { tone: 'doctor', size: 'sm', icon: 'pencil', onClick: () => onDiary?.(), title: '今天哪件事最值得讲——开一个新对话，它带你写' }, '写日记')
         : null,
       h('div', { className: 'lc-grow' }),
+      // 「给模型看哪几节」：只有挑过卡才摆出来。没挑人的时候摆上去，点进去是空的，
+      // 用户会以为是坏的——界面上的入口不能指向一个还不存在的东西。
+      String(pinId ?? '') === ''
+        ? null
+        : h(Btn, { size: 'sm', icon: 'card', onClick: () => onOpenPersona?.(), title: '这张卡的哪几节给 AI 看——没勾的那几节，它一个字都看不到' }, '给模型看哪几节'),
       // 「贴一段文章让 AI 读」不是只有记录真人才用得上：写小说、酒馆里
       // 手里有一段人物设定/小说片段，一样想让它读成人设。所以三扇门都给。
       materials.length > 0
@@ -3583,6 +3595,168 @@ function keepButton(busy, dir, keep) {
  * 我有关系的人，2 圈是只和 1 圈里的人有关系的人。没有任何关系线索的
  * 人不进网，收在底下那一行——不收进来的话，他们会像凭空消失了一样。
  */
+/**
+ * 「给模型看这张卡的哪几节」。
+ *
+ * 为什么要给用户这个开关：从网上下的卡常常四五十 KB，除了人物设定，还夹着大段
+ * 给模型下的命令。以前插件里写死一张清单，卡上有哪几节就一股脑全塞进系统提示——
+ * 用户想只要「这个人怎么说话」，只能整张进、或者一个字不进，中间没有那一档。
+ *
+ * 这一屏只做三件事：勾、看现在真进去的是哪几节、按一下看模型这次到底会读到什么。
+ * 最后那一件最要紧：以前想知道这个，得去解会话日志、翻 system/message、数字节，
+ * 用户根本看不到自己的卡给出去的是什么。
+ *
+ * 勾选按门存（`persona.get` / `persona.set` 都带 mode）：酒馆勾的和写小说勾的
+ * 是两件事，不该互相看见。
+ */
+function PersonaView({ mode, onBack, flash }) {
+  const [data, setData] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const [peek, setPeek] = useState(null)
+  const [peekBusy, setPeekBusy] = useState(false)
+
+  const load = useCallback(async () => {
+    try {
+      const r = await call('persona.get', { mode })
+      if (r?.ok !== true) { setErr(String(r?.error ?? '这一屏读不出来。')); return }
+      setErr(null)
+      setData(r)
+    } catch (e) {
+      setErr(humanizeError(e))
+    }
+  }, [mode])
+
+  useEffect(() => { load() }, [load])
+
+  // 换了门就整个重来：上一次那扇门的勾选和预览都不该留在屏上。
+  useEffect(() => { setData(null); setPeek(null); setErr(null) }, [mode])
+
+  const save = async (include) => {
+    setBusy(true)
+    try {
+      const r = await call('persona.set', { mode, include })
+      if (r?.ok !== true) { flash?.(String(r?.error ?? '这一次没存上，再点一次试试。'), 'warn'); return }
+      setPeek(null)
+      await load()
+      const going = Array.isArray(r.going) ? r.going.length : 0
+      const picked = Array.isArray(r.include) ? r.include.length : 0
+      flash?.(picked === 0 ? '存好了：这张卡整张都不给模型看。' : `存好了：现在进去 ${going} 节，一共 ${Number(r.chars ?? 0)} 字。`)
+    } catch (e) {
+      flash?.(humanizeError(e), 'warn')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const toggle = (title, on) => {
+    const list = Array.isArray(data?.include) ? data.include : []
+    save(on ? [...list, title] : list.filter((one) => one !== title))
+  }
+
+  const doPeek = async () => {
+    setPeekBusy(true)
+    try {
+      const r = await call('persona.preview', { mode })
+      if (r?.ok !== true) { flash?.(String(r?.error ?? '这一下没读出来。'), 'warn'); return }
+      setPeek(r)
+    } catch (e) {
+      flash?.(humanizeError(e), 'warn')
+    } finally {
+      setPeekBusy(false)
+    }
+  }
+
+  const doorName = mode === 'tavern' ? '酒馆' : mode === 'novel' ? '写小说' : mode === 'diary' ? '写日记' : '真实人物记录'
+  const sections = Array.isArray(data?.sections) ? data.sections : []
+  const going = Array.isArray(data?.going) ? data.going : []
+  const leftOut = Array.isArray(data?.leftOut) ? data.leftOut : []
+  const emptyOnes = Array.isArray(data?.empty) ? data.empty : []
+  const missingOnes = Array.isArray(data?.missing) ? data.missing : []
+
+  return h('div', { className: 'lc-pad lc-stack' },
+    h('div', { className: 'lc-row', style: { justifyContent: 'space-between', alignItems: 'center' } },
+      h('div', null,
+        h('div', { style: { fontWeight: 700, fontSize: 16 } }, '给模型看哪几节'),
+        h('div', { style: { opacity: 0.7, marginTop: 2 } }, `${doorName}这扇门`)
+      ),
+      h(Btn, { size: 'sm', ghost: true, icon: 'back', onClick: onBack }, '回去')
+    ),
+    err === null ? null : h(Note, { tone: 'err', icon: 'warning' }, err),
+
+    data === null
+      ? h('div', { className: 'lc-empty', style: { padding: '18px 8px' } }, '正在读…')
+      : data.hasCard !== true
+        ? h(Note, { tone: 'warn', icon: 'warning' },
+            `${doorName}这扇门还没挑人。先回到上一屏，在卡片右上角点一下那个圆点挑一张，再回来勾。`)
+        : h('div', { className: 'lc-stack' },
+            h('div', { style: { lineHeight: 1.7 } },
+              `这扇门现在用「${String(data.cardName ?? '')}」。勾上的小节会进到 AI 每次开口前读的东西里；没勾的，它一个字都看不到。`
+            ),
+            h('div', { className: 'lc-stack', style: { gap: 6 } },
+              sections.map((one) => {
+                const title = String(one.title ?? '')
+                return h('label', {
+                  key: title,
+                  'data-lc-section': title,
+                  style: { display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px', borderRadius: 8, border: '1px solid rgba(0,0,0,.09)', cursor: busy ? 'default' : 'pointer' },
+                },
+                  h('input', {
+                    type: 'checkbox',
+                    checked: one.picked === true,
+                    disabled: busy,
+                    onChange: (e) => toggle(title, e.target.checked === true),
+                  }),
+                  h('span', { style: { fontWeight: one.picked === true ? 650 : 400 } }, title),
+                  one.hasBody === true
+                    ? null
+                    : h('span', { style: { opacity: 0.6, fontSize: 12.5 } }, '（这一节还空着，写了才算数）')
+                )
+              })
+            ),
+            h('div', { style: { lineHeight: 1.7 } },
+              going.length === 0
+                ? '现在一节都没勾——这张卡整张不给模型看，它不知道自己在演谁。'
+                : `现在进去 ${going.length} 节，一共 ${Number(data.chars ?? 0)} 字。`
+            ),
+            leftOut.length === 0 ? null : h('div', { style: { lineHeight: 1.7 } },
+              `这张卡还有 ${leftOut.length} 节没给模型看：${leftOut.join('、')}。`
+            ),
+            emptyOnes.length === 0 ? null : h('div', { style: { lineHeight: 1.7 } },
+              `勾了但还是空的：${emptyOnes.join('、')}——去卡里把它们写出来，下一句就生效。`
+            ),
+            missingOnes.length === 0 ? null : h('div', { style: { lineHeight: 1.7 } },
+              `勾了但这张卡没有的：${missingOnes.join('、')}。`
+            ),
+            h('div', { className: 'lc-row', style: { flexWrap: 'wrap', gap: 8, marginTop: 2 } },
+              h(Btn, { size: 'sm', tone: 'primary', icon: 'check', disabled: busy || data.isDefault === true, onClick: () => save(data.include) }, busy ? '正在存…' : '就这样，记住'),
+              h(Btn, { size: 'sm', ghost: true, icon: 'history', disabled: busy || data.isDefault === true, onClick: () => save(undefined) }, '恢复成默认那几节'),
+              h(Btn, { size: 'sm', ghost: true, icon: 'x', disabled: busy, onClick: () => save([]) }, '一节都不给它看'),
+              h(Btn, { size: 'sm', ghost: true, icon: 'list', disabled: peekBusy, onClick: doPeek }, peekBusy ? '正在拼…' : '看看它这回会读到什么')
+            ),
+            peek === null ? null : h('div', { className: 'lc-note' },
+              h('div', { style: { fontWeight: 650, marginBottom: 4 } },
+                `AI 这一次会读到的东西（${Number(peek.chars ?? 0)} 字）`
+              ),
+              h('div', { style: { lineHeight: 1.7, marginBottom: 6 } },
+                peek.hasCard === true
+                  ? `第一行是名字，后面是勾上的正文，最后是这个世界的设定。没勾的那几节一个字都没进去。`
+                  : '这扇门还没挑人，所以一个字都不会进。'
+              ),
+              h('textarea', {
+                readOnly: true,
+                spellCheck: false,
+                className: 'lc-input',
+                value: String(peek.text ?? ''),
+                rows: 12,
+                style: { width: '100%', resize: 'vertical', boxSizing: 'border-box', lineHeight: 1.6 },
+                onFocus: (e) => { try { e?.target?.select?.() } catch { /* 选不中也还能手动复制 */ } },
+              })
+            )
+          )
+  )
+}
+
 function NetView({ onBack, onOpen, onTalk, relations }) {
   const [net, setNet] = useState(null)
   const [err, setErr] = useState(null)
