@@ -62,7 +62,7 @@ try {
     t('老档案（real + relation 我）被认成中心', old.self?.id === 'wo-old', old.self)
 
     // 新档案的写法：kind self
-    await put('people/wo.card.md', { id: 'wo', kind: 'self', name: '钱禹舟', relation: '我' })
+    await put('people/wo.card.md', { id: 'wo', kind: 'self', name: '张一舟', relation: '我' })
     const fresh = await callNet()
     t('kind self 优先当中心', fresh.self?.id === 'wo', fresh.self)
     t('中心落在第 0 圈', fresh.rings.self.length === 1 && fresh.rings.self[0].id === 'wo', fresh.rings.self)
@@ -76,7 +76,7 @@ try {
     // 父亲的卡写得多（自述 + 性格 + 关系史 + 能力），亲戚那张只有自述。
     // 覆盖度就是靠这些撑起来的：写得多的排在前面。
     await put('people/dad.card.md', {
-      id: 'dad', kind: 'real', name: '钱俊锋', relation: 'father',
+      id: 'dad', kind: 'real', name: '李一锋', relation: 'father',
       competency: '修机器', knowledge: '厂里的事', address: '爸',
     }, [
       { title: '自述', body: '在厂里做了三十年钳工。' },
@@ -108,7 +108,7 @@ try {
     await put('people/yi.card.md', { id: 'yi', kind: 'real', name: '我姨', relation: 'relative' }, [
       { title: '自述', body: '在老家。' },
     ])
-    await put('people/dad2.card.md', { id: 'dad2', kind: 'real', name: '钱俊锋二号', relation: 'father' })
+    await put('people/dad2.card.md', { id: 'dad2', kind: 'real', name: '李一锋二号', relation: 'father' })
     const r = await callNet()
     const inner = r.rings.inner
     const rank = (id) => inner.findIndex((n) => n.id === id)
@@ -202,7 +202,7 @@ try {
     t('并且说清是哪一步', String(ghost.error ?? '').includes('查无此人'), ghost.error)
 
     // 名字也能当键（界面上拿到的常常是名字）
-    const byName = await save({ from: '钱俊锋', to: '陈默', note: '用名字连' })
+    const byName = await save({ from: '李一锋', to: '陈默', note: '用名字连' })
     t('用名字也能连', byName.ok === true, byName.error)
 
     // 断开

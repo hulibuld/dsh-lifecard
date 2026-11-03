@@ -19,11 +19,11 @@ const exists = (p) => fs.stat(p).then((s) => s.isFile()).catch(() => false)
 const profileData = {
   name: '林知远',
   updated_at: '2026-10-26',
-  基本情况: '杭州师范大学 汉语言文学 大四\n想留在杭州。',
+  基本情况: '某某师范大学 汉语言文学 大四\n想留在本地。',
   学过什么: ['中国古代文学｜熟', '自然地理学基础｜入门'],
   做过什么: ['给教研室整理古籍书目｜2025 年暑假｜整理出 420 条', '在公众号写读书笔记｜2025 年全年｜发了 30 篇'],
   会用哪些工具: ['Word', 'Excel', 'EndNote'],
-  想去哪: '考研考地质学，之后回杭州进地质类院所的技术岗。',
+  想去哪: '考研考地质学，之后回家乡进地质类院所的技术岗。',
   还差什么: ['六级还没过', '没修过地质类专业课', '没有野外作业经历'],
 }
 
@@ -54,7 +54,7 @@ try {
     t('六个小节都写出来了', career.PROFILE_SECTIONS.every((s) => text.includes('## ' + s)), career.PROFILE_SECTIONS)
     t('小节顺序固定', text.indexOf('## 基本情况') < text.indexOf('## 学过什么'), '')
     t('学过什么是一行一条', text.includes('- 中国古代文学｜熟'), '')
-    t('基本情况的换行原样保留', text.includes('大四\n想留在杭州'), '')
+    t('基本情况的换行原样保留', text.includes('大四\n想留在本地'), '')
   }
 
   console.log('\n=== 3. 简历：写下去再读回来，字段和小节都对 ===')
@@ -198,7 +198,7 @@ try {
     t('system 不许用「负责」这种空话', prompt.system.includes('负责'), '')
     t('system 要求短句', prompt.system.includes('句子要短'), '')
     t('system 要求能量化就量化', prompt.system.includes('量化'), '')
-    t('user 带上学校', prompt.user.includes('杭州师范大学'), '')
+    t('user 带上学校', prompt.user.includes('某某师范大学'), '')
     t('user 带上课程', prompt.user.includes('中国古代文学'), '')
     t('user 带上做过的事', prompt.user.includes('整理出 420 条'), '')
     t('user 带上还差什么', prompt.user.includes('六级还没过'), '')

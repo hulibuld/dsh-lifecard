@@ -1597,7 +1597,7 @@ console.log('\n=== 体检、招聘说明对照、一岗一版、逐条改写（�
   t('空简历带了一句该怎么开头', (blank.findings ?? []).length === 1 && String(blank.findings[0].fix ?? '') !== '', blank.findings)
 
   await career.writeProfile(coachWs, {
-    基本情况: '杭州师范大学 汉语言文学 大四',
+    基本情况: '某某师范大学 汉语言文学 大四',
     学过什么: ['中国古代文学｜熟'],
     做过什么: ['参与校刊编辑工作', '在公众号写读书笔记｜2025 年全年｜发了 30 篇'],
     会用哪些工具: ['Word', 'Excel'],
@@ -1640,7 +1640,7 @@ console.log('\n=== 体检、招聘说明对照、一岗一版、逐条改写（�
   const back = await coachTable['career.versions.restore']({ path: savedVer.path })
   t('换回来了', back.ok === true, back)
   const restored = await career.readProfile(coachWs)
-  t('原来的内容真回来了', String(restored?.data?.基本情况 ?? '').includes('杭州师范大学'), restored?.data)
+  t('原来的内容真回来了', String(restored?.data?.基本情况 ?? '').includes('某某师范大学'), restored?.data)
 
   const badVer = await coachTable['career.versions.get']({ path: '../../../etc/passwd' })
   t('版本路径不许往上跳', badVer.ok === false, badVer)

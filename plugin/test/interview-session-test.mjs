@@ -111,7 +111,7 @@ const run = async (args) => api.__openInterviewSession(args)
   }
   const opened = []
   api.__setHostServices(null, { openSession: (id) => opened.push(id), startSession: () => { throw new Error('不该走摆草稿') } })
-  const r = await api.__openInterviewSession({ about: '钱俊锋', mode: 'real' })
+  const r = await api.__openInterviewSession({ about: '李一锋', mode: 'real' })
   globalThis.fetch = realFetch
   const asked = posts.find((p) => p.url.endsWith('/session.open'))
   t('后台那条路被用上了', asked !== undefined, JSON.stringify(posts.map((p) => p.url)))

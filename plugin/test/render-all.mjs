@@ -2233,7 +2233,7 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
 {
   // 体检 / 招聘说明 / 一岗一版 / 逐条改：这四块是新加的，
   // 每一块都得有入口、都得说清它做什么，而且不许出现技术黑话。
-  const FULL = { 基本情况: '杭州师范大学 汉语言文学 大四', 学过什么: '中国古代文学｜熟', 做过什么: '参与校刊编辑工作', 会用哪些工具: 'Word', 想去哪: '内容运营', 还差什么: '六级还没过' }
+  const FULL = { 基本情况: '某某师范大学 汉语言文学 大四', 学过什么: '中国古代文学｜熟', 做过什么: '参与校刊编辑工作', 会用哪些工具: 'Word', 想去哪: '内容运营', 还差什么: '六级还没过' }
   const props = { flash: () => {}, cards: [], onOpenCard: () => {}, onBack: () => {} }
 
   const plain = textOf(expand(renderOne('简历与规划（体检入口）', seen.get('CareerView'), props, { 0: FULL, 7: false })))
@@ -2553,8 +2553,8 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   const Net = seen.get('NetView')
   t('人物关系网那一屏注册上了', Net !== undefined)
 
-  const SELF = { id: 'wo', name: '钱禹舟', kind: 'self', relation: '我', relationLabel: '我自己', extras: [], tags: [], intro: '', coverage: 72, path: 'people/钱禹舟.card.md' }
-  const DAD = { id: 'dad', name: '钱俊锋', kind: 'real', relation: 'father', relationLabel: '父亲', extras: ['也是家人'], tags: [], intro: '', coverage: 55, path: 'people/钱俊锋.card.md' }
+  const SELF = { id: 'wo', name: '张一舟', kind: 'self', relation: '我', relationLabel: '我自己', extras: [], tags: [], intro: '', coverage: 72, path: 'people/张一舟.card.md' }
+  const DAD = { id: 'dad', name: '李一锋', kind: 'real', relation: 'father', relationLabel: '父亲', extras: ['也是家人'], tags: [], intro: '', coverage: 55, path: 'people/李一锋.card.md' }
   const FRIEND = { id: 'li', name: '李雷', kind: 'real', relation: 'friend', relationLabel: '朋友', extras: [], tags: [], intro: '', coverage: 40, path: 'people/李雷.card.md' }
   const AUNT = { id: 'yi', name: '我姨', kind: 'real', relation: 'relative', relationLabel: '亲戚', extras: [], tags: [], intro: '', coverage: 20, path: 'people/我姨.card.md' }
   const STRANGER = { id: 'mo', name: '陈默', kind: 'real', relation: '', relationLabel: '', extras: [], tags: [], intro: '', coverage: 10, path: 'people/陈默.card.md' }
@@ -2568,7 +2568,7 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   const props = { onBack: () => {}, onOpen: () => {}, onTalk: () => {} }
   const tree = renderOne('人物关系网（有中心）', Net, props, { 0: NET, 1: null, 2: false })
   const words = textOf(expand(tree))
-  t('说清谁在中心、各圈几个人', words.includes('钱禹舟') && words.includes('2 个人是你直接认识的'), words.slice(0, 400))
+  t('说清谁在中心、各圈几个人', words.includes('张一舟') && words.includes('2 个人是你直接认识的'), words.slice(0, 400))
   t('有「我直接认识的」这一栏', words.includes('我直接认识的（2）'), words.slice(0, 400))
   t('有「通过别人认识的」这一栏', words.includes('通过别人认识的（1）'), words.slice(0, 400))
   t('父亲那张写着关系词', words.includes('父亲'), words.slice(0, 600))
@@ -2576,7 +2576,7 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   // 没写出关系的人不能凭空消失：收在底下那一行，点得开。
   t('没写关系的人收在底下那一行', words.includes('还有 1 个人'), words.slice(0, 700))
   t('并且说清卡片还在', words.includes('卡片在'), words.slice(0, 700))
-  t('每个名字都点得动', collectIn(expand(tree), (n) => n.type === 'button' && textOf(n).includes('钱俊锋')).length > 0)
+  t('每个名字都点得动', collectIn(expand(tree), (n) => n.type === 'button' && textOf(n).includes('李一锋')).length > 0)
 
   // 网上面的每一个点、每一条线都得画出来，否则只剩一列名单。
   const svg = collectIn(expand(tree), (n) => n.type === 'svg')[0]
@@ -2617,7 +2617,7 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   const edgeTree = renderOne('人物关系网（已经连上了一条）', Net, props, { 0: withEdge, 1: null, 2: false })
   const edgeWords = textOf(expand(edgeTree))
   t('已经连上的那些列出来了', edgeWords.includes('已经连上的（1）'), edgeWords.slice(0, 900))
-  t('关系两头都用名字说', edgeWords.includes('钱俊锋') && edgeWords.includes('我姨'), edgeWords.slice(0, 900))
+  t('关系两头都用名字说', edgeWords.includes('李一锋') && edgeWords.includes('我姨'), edgeWords.slice(0, 900))
   t('关系叫法翻成人话', edgeWords.includes('兄弟姐妹'), edgeWords.slice(0, 900))
   t('当时那句话也带着', edgeWords.includes('她俩其实一直不太对付'), edgeWords.slice(0, 900))
   t('每条都能断开', collectIn(expand(edgeTree), (n) => n.type === 'button' && textOf(n).includes('断开')).length >= 1)
@@ -2633,7 +2633,7 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   const formWords = textOf(expand(openForm))
   t('表单说清这是什么', formWords.includes('把两个人连起来'), formWords.slice(-800))
   t('两头各有一个下拉', collectIn(expand(openForm), (n) => n.type === 'select').length >= 3, formWords.slice(-800))
-  t('下拉里能挑到人', formWords.includes('钱俊锋') && formWords.includes('我姨'), formWords.slice(-800))
+  t('下拉里能挑到人', formWords.includes('李一锋') && formWords.includes('我姨'), formWords.slice(-800))
   t('关系用那套叫法', formWords.includes('父亲') && formWords.includes('兄弟姐妹'), formWords.slice(-800))
   t('可以写一句当时的话', formWords.includes('一句当时的话'), formWords.slice(-800))
   t('有「连起来」这一颗', formWords.includes('连起来'), formWords.slice(-800))
