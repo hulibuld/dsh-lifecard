@@ -10,7 +10,7 @@
  *   - 快照存全文，不存 diff。
  */
 
-import { promises as fs, readFileSync } from 'node:fs'
+import { promises as fs, readFileSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 import * as core from './core.js'
@@ -76,6 +76,13 @@ export function defaultConfig() {
     // 三扇门各自「当前用哪张卡」。写小说、酒馆那两扇门里演谁 / 写谁，
     // 不用每次都现挑；「真实人物记录」那扇门用它来决定首页先给谁。
     default_cards: { real: '', tavern: '', novel: '', diary: '' },
+    // 三扇门各自「卡上哪几节进系统提示」。`null` = 没配过，用默认那几节；
+    // `[]` = 一节都不带（这张卡整张不注入）；`['自述','口癖']` = 只带这几节。
+    //
+    // 为什么按门存、不按卡存：门记的是「这张卡现在归哪扇门用」（default_cards），
+    // 勾选跟着门走是同一个心智——用户在酒馆里调的是「这一扇门要给模型看什么」，
+    // 换一张卡时他要多半还是同一个打算。
+    persona_sections: { real: null, tavern: null, novel: null, diary: null },
     // 日记放在哪儿。**不在这个工作区里**：用户第一次点「写日记」时自己挑一个文件夹，
     // 之后每天那篇就落在那里。空串＝还没挑，界面会先问一句。
     diary_dir: '',
@@ -174,6 +181,44 @@ export async function readConfigState(root) {
 }
 
 /**
+ * 同步读配置。给「系统提示每次组装都要重算」那条路用——那条路必须同步返回，
+ * 而它现在要读「哪几节进提示词」这一项。
+ *
+ * 按修改时间和大小缓存：同一份没改过就不再读盘（一次组装可能读好几次）。
+ * 缓存要能被一次改动立刻打破，否则用户勾完、下一句还是老样子，他会以为没生效。
+ */
+const configSyncCache = new Map()
+
+export function readConfigSync(root) {
+  const abs = path.join(root, CONFIG_NAME)
+  let text
+  try {
+    const stat = statSync(abs)
+    const hit = configSyncCache.get(abs)
+    if (hit !== undefined && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) return hit.config
+    text = readFileSync(abs, 'utf8')
+  } catch {
+    // 读不出来（没配过、没权限、同步盘没挂上）一律当默认值。
+    // 这条路只决定「给模型看什么」，绝不能因为设置读不出来就把这一轮卡死。
+    configSyncCache.delete(abs)
+    return defaultConfig()
+  }
+  try {
+    const json = JSON.parse(text)
+    const config = { ...defaultConfig(), ...json }
+    try {
+      const after = statSync(abs)
+      configSyncCache.set(abs, { mtimeMs: after.mtimeMs, size: after.size, config })
+    } catch {
+      /* 写的时候刚好被换掉，这一次不缓存就是了 */
+    }
+    return config
+  } catch {
+    return defaultConfig()
+  }
+}
+
+/**
  * 写配置。
  *
  * 先建目录：还没选文件夹（或选的那个被删了）时直接写文件会抛 ENOENT，
@@ -205,6 +250,10 @@ async function writeConfigNow(root, patch, abs) {
     await fs.rm(tmp, { force: true }).catch(() => {})
     return { ok: false, config: state.config, error: '设置没能写进磁盘。检查一下那个文件夹是不是满了、有没有写的权限。' }
   }
+  // 这里**不**手动去清 configSyncCache。清过一次，变异验证说清不掉：把这一行删掉，
+// 测试照样全绿——因为上面那次 rename 总会把修改时间换掉，缓存本来就命不中。
+// 留一条没人能验证的守卫，等于在骗下一个读代码的人。键是「修改时间 + 大小」，
+// 而每一次写都是新建临时文件再改名，修改时间必然前进，这一条够用。
   return { ok: true, config: next }
 }
 
@@ -2427,6 +2476,7 @@ export default {
   defaultConfig,
   openWorkspace,
   readConfig,
+  readConfigSync,
   writeConfig,
   readConcept,
   writeConcept,

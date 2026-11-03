@@ -19,6 +19,7 @@ import os from 'node:os'
 import * as core from './core.js'
 import * as codec from './codec.js'
 import * as store from './store.js'
+import * as persona from './persona.js'
 import * as prose from './prose.js'
 import * as prompts from './prompts.js'
 import * as diary from './diary.js'
@@ -42,6 +43,8 @@ let game = null
 let career = null
 /** 哪个功能没装（给用户看的名字）。 */
 const FEATURE_NAMES = { tavern: '酒馆', novel: '写小说', presets: '预设', game: '文字小说游戏', career: '简历与规划' }
+/** 四扇门的代号。挑卡（`default_cards`）和挑注入哪几节（`persona_sections`）都按它存。 */
+const DOORS = ['real', 'tavern', 'novel', 'diary']
 /**
  * 按需把四个模块加载进来。已经加载过的不会重复加载。
  * @returns {Promise<Record<string, boolean>>} 每个模块现在在不在
@@ -1091,6 +1094,115 @@ function buildApi(ctx, workspace, config, options) {
       const saved = await store.writeConfig(ws, { default_cards: pins })
       if (saved?.ok !== true) return { ok: false, error: saved?.error ?? '这一张没能记住，下次还得再挑一次。', cards: pins }
       return { ok: true, cards: pins }
+    },
+
+    /**
+     * 「这扇门要给模型看这张卡的哪几节」——读。
+     *
+     * 回的东西分三份，界面照着这三份画：
+     *   ① 这张卡里能勾的节（`sections`），每节带「卡上有没有正文」「现在勾没勾」；
+     *   ② 现在真进去的是哪几节（`going`），以及勾了却落了空的（`empty` 是卡上写了
+     *      标题但内容空着，`missing` 是这张卡根本没有那一节）；
+     *   ③ 还有哪几节卡上有、但没勾（`leftOut`）——这一份要说出来，否则用户
+     *      永远不知道卡里那半截东西原来没给模型看。
+     */
+    'persona.get': async (body) => {
+      const ws = await root(body)
+      const mode = String(body?.mode ?? '')
+      if (!DOORS.includes(mode)) return { ok: false, error: '不知道你说的是哪扇门。' }
+      const detail = buildPersonaSectionDetail(ws, mode)
+      const picks = personaPicksSync(ws, mode)
+      const include = detail.card === '' ? persona.normalizeInclude(picks) : detail.include
+      let sections = []
+      let handledElsewhere = []
+      if (detail.card !== '') {
+        const text = readCachedSync(detail.card)
+        const parsed = text === null ? { sections: [] } : core.parseCard(text)
+        const cardSections = Array.isArray(parsed.sections) ? parsed.sections : []
+        sections = persona.candidatesFor(cardSections).map((title) => ({
+          title,
+          hasBody: String(core.sectionBody(cardSections, title) ?? '').trim() !== '',
+          picked: include.includes(title),
+        }))
+        handledElsewhere = persona.cardTitles(cardSections).filter((title) => persona.HANDLED_ELSEWHERE.includes(title))
+      }
+      return {
+        ok: true,
+        mode,
+        cardId: detail.cardId,
+        cardName: detail.cardName,
+        hasCard: detail.card !== '',
+        include,
+        isDefault: persona.isDefaultInclude(include),
+        going: detail.chosen,
+        empty: detail.empty,
+        missing: detail.absent,
+        leftOut: detail.skipped,
+        chars: detail.chars,
+        bodyChars: detail.bodyChars,
+        sections,
+        handledElsewhere,
+        defaults: [...persona.DEFAULT_INCLUDE],
+      }
+    },
+    /**
+     * 「这扇门要给模型看这张卡的哪几节」——写。
+     *
+     * `include` 给一串小节名就是「只要这几节」；给空数组是「一节都不要」（这张卡
+     * 整张不进系统提示）；压根不给这一项是「恢复成默认那几节」。
+     */
+    'persona.set': async (body) => {
+      const ws = await root(body)
+      const mode = String(body?.mode ?? '')
+      if (!DOORS.includes(mode)) return { ok: false, error: '不知道你说的是哪扇门。' }
+      const raw = body?.include
+      if (raw !== undefined && raw !== null && !Array.isArray(raw)) {
+        return { ok: false, error: '这一项要一串小节的名字。' }
+      }
+      const cfg = await store.readConfigState(ws)
+      if (cfg.ok !== true) return { ok: false, error: cfg.error ?? '这个文件夹里的设置读不出来。' }
+      const byDoor = { real: null, tavern: null, novel: null, diary: null, ...(cfg.config?.persona_sections ?? {}) }
+      byDoor[mode] = raw === undefined ? null : raw
+      const saved = await store.writeConfig(ws, { persona_sections: byDoor })
+      if (saved?.ok !== true) return { ok: false, error: saved?.error ?? '这一次没能记住，下次还得再勾一遍。' }
+      const detail = buildPersonaSectionDetail(ws, mode)
+      return {
+        ok: true,
+        include: persona.normalizeInclude(byDoor[mode]),
+        isDefault: persona.isDefaultInclude(byDoor[mode]),
+        going: detail.chosen,
+        empty: detail.empty,
+        missing: detail.absent,
+        chars: detail.chars,
+        bodyChars: detail.bodyChars,
+      }
+    },
+    /**
+     * 把「这一次组装，模型到底会读到什么」原样交出来。
+     *
+     * 用户问过太多次「它怎么还是不像」，而这个问题以前只能靠解会话日志回答
+     * （多帧 zstd、翻 system/message、数字节）。这份就是那个答案的成品：
+     * 一模一样的文字，外加多长、哪几节进去了。
+     */
+    'persona.preview': async (body) => {
+      const ws = await root(body)
+      const mode = String(body?.mode ?? '')
+      if (!DOORS.includes(mode)) return { ok: false, error: '不知道你说的是哪扇门。' }
+      const detail = buildPersonaSectionDetail(ws, mode)
+      return {
+        ok: true,
+        mode,
+        cardId: detail.cardId,
+        cardName: detail.cardName,
+        hasCard: detail.card !== '',
+        chars: detail.chars,
+        bodyChars: detail.bodyChars,
+        going: detail.chosen,
+        empty: detail.empty,
+        missing: detail.absent,
+        leftOut: detail.skipped,
+        text: detail.text,
+      }
     },
 
     /**
@@ -4783,21 +4895,45 @@ export function cardIsPromptStyle(parsed) {
  * @returns {string} 空串表示这一场不挂卡
  */
 export function buildPersonaSection(root, mode) {
+  return buildPersonaSectionDetail(root, mode).text
+}
+
+/**
+ * 同上，但把「这张卡哪几节进去了、哪几节被落下了」一起交出来，给界面看。
+ *
+ * 用户勾完「只要自述和口癖」，最需要知道的是「真的进去的到底是哪几节」——
+ * 只回一句「设置存好了」，他下一句还是不知道模型看见了什么。
+ */
+export function buildPersonaSectionDetail(root, mode) {
+  const blank = {
+    text: '', card: '', cardId: '', cardName: '', include: [], chosen: [], empty: [], absent: [], skipped: [], chars: 0, bodyChars: 0, body: '',
+  }
   const id = pinnedCardIdSync(root, mode)
-  if (id === '') return ''
+  if (id === '') return blank
   const abs = cardPathSync(root, id)
-  if (abs === '') return ''
+  if (abs === '') return blank
   const text = readCachedSync(abs)
-  if (text === null) return ''
+  if (text === null) return blank
   const parsed = core.parseCard(text)
-  if (parsed.ok !== true) return ''
+  if (parsed.ok !== true) return blank
   const data = parsed.data ?? {}
   const sections = Array.isArray(parsed.sections) ? parsed.sections : []
-  const body = ['自述', '性格', '外貌', '口癖', '不会说的话', '不会做的事', '场景', '开场白', '对话示例']
-    .map((title) => core.sectionBody(sections, title))
-    .filter((part) => typeof part === 'string' && part.trim() !== '')
-    .join('\n\n')
-  if (body.trim() === '') return ''
+  // 这扇门勾了哪几节进提示词。没配过就是默认那一串（和以前写死的那串一模一样）。
+  const picked = personaPicksSync(root, mode)
+  const selection = persona.describeSelection(sections, picked)
+  const body = selection.body
+  if (body.trim() === '') {
+    return {
+      ...blank,
+      card: abs,
+      cardId: id,
+      include: selection.include,
+      chosen: selection.chosen,
+      empty: selection.empty,
+      absent: selection.absent,
+      skipped: selection.skipped,
+    }
+  }
   const name = String(data.name ?? '').trim() === '' ? id : String(data.name).trim()
   // 「提示词型」的卡：整份内容就是给模型下的硬性规则（网上下载的破限卡、规范卡多是这样），
   // 它没有性格/开场白，自述就是一大段 MUST/ALWAYS。这种卡和预设里的演法说明容易撞，
@@ -4825,7 +4961,36 @@ export function buildPersonaSection(root, mode) {
       if (rendered !== '') out.push('', `# 这一场发生在：${String(worldParsed.data?.name ?? world).trim()}`, '', rendered)
     }
   }
-  return out.join('\n')
+  const full = out.join('\n')
+  return {
+    text: full,
+    card: abs,
+    cardId: id,
+    cardName: name,
+    include: selection.include,
+    chosen: selection.chosen,
+    empty: selection.empty,
+    absent: selection.absent,
+    skipped: selection.skipped,
+    chars: full.length,
+    bodyChars: body.length,
+    body,
+  }
+}
+
+/**
+ * 这扇门勾了哪几节。读设置是同步的（系统提示那条路必须同步返回），
+ * 读不出来一律当「没配过」，用默认那一串——绝不能因为设置坏了就把这一轮卡死。
+ */
+function personaPicksSync(root, mode) {
+  try {
+    const config = store.readConfigSync(root)
+    const byDoor = config?.persona_sections
+    if (byDoor === null || typeof byDoor !== 'object') return null
+    return byDoor[mode] ?? null
+  } catch {
+    return null
+  }
 }
 
 /** 把一个 agent 上跟「预设」有关的字段都抄出来，用来定位到底哪个字段才是真的。 */

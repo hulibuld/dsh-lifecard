@@ -26,6 +26,7 @@
     "lib/codec.js",
     "lib/store.js",
     "lib/prompts.js",
+    "lib/persona.js",
     "lib/prose.js",
     "lib/diary.js",
     "lib/score.js",
