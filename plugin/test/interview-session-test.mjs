@@ -121,6 +121,37 @@ const run = async (args) => api.__openInterviewSession(args)
   t('这条路也说自己办成了', r?.ok === true, JSON.stringify(r))
 }
 
+// 四c、有 uiWorkspace 能摆草稿时：先摆草稿，不替用户发送。
+// 这一条专门区分两条路的先后。旧顺序下这里会去 POST /session.open、
+// 把第一句直接发出去；新顺序下只摆草稿，一个字都不发送。
+{
+  const posted = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    posted.push(String(url))
+    return { ok: true, json: async () => ({ ok: true }) }
+  }
+  const drafts = []
+  api.__setHostServices(
+    { create: async () => ({ sessionId: 'srv-x' }), prompt: async () => {} },
+    {
+      openSession: () => {},
+      startSession: (workspaceId, options) => { drafts.push({ workspaceId, ...(options ?? {}) }) },
+    },
+  )
+  const r = await api.__openInterviewSession({ about: '王五', mode: 'real' })
+  globalThis.fetch = realFetch
+  t('有草稿能力时先摆草稿', drafts.length === 1, JSON.stringify(drafts))
+  t('草稿里带着那句话', String(drafts[0]?.prompt ?? '').includes('/lifecard-interview'), JSON.stringify(drafts))
+  t('草稿里带着预设', drafts[0]?.agentPreset === 'lc-real', JSON.stringify(drafts))
+  // 换掉上一份、不往后接：连点两次或换门时，不会把两段不同门的指令叠在一起。
+  // 试过 append（不覆盖已打的字），被 doors-test 的三条断言拦下——理由见那边用例名。
+  t('草稿换掉上一份，不往后接', drafts[0]?.whenDraftExists === 'replace', JSON.stringify(drafts))
+  // 核心那条：顺序一旦被改回去，这里立刻红。
+  t('摆完草稿没有替用户发出去', posted.filter((u) => u.endsWith('/session.open')).length === 0, JSON.stringify(posted))
+  t('这条路也说自己办成了', r?.ok === true, JSON.stringify(r))
+}
+
 // 五、老宿主（没有远程会话能力）：退回摆草稿，行为跟以前一样。
 {
   const drafts = []

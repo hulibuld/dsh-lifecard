@@ -38,18 +38,56 @@ export const SCENE_TITLE = '现在'
 export const HOLD_TITLE = '手上的'
 /** 剧情流水那一节的标题。 */
 export const STORY_TITLE = '剧情'
+/**
+ * 你操控的那个人此刻什么样。
+ *
+ * 和「手上的」分开是有原因的：「手上的」是物件清单（刀、地图、钥匙），
+ * 状态是**这个人**（在哪、还剩多少力气、心里绷着还是松了、谁还信他）。
+ * 混在一起的时候，界面只能把一串名词平铺出来，看不出他快撑不住了。
+ */
+export const STATUS_TITLE = '状态'
+/** 状态最多记几条。多了就不是「一眼看清」，是又一篇正文。 */
+export const MAX_STATUS_ITEMS = 12
+/** 状态提示块的开头标记。模型被要求每轮末尾按这个格式报一次。 */
+export const STATUS_MARK = '【状态】'
 
 /** 一局存档的路径。 */
 export function playRelPath(bookId, playId) {
   return path.posix.join(bookRelPath(bookId), PLAY_DIR, `${core.safeId(playId)}.md`)
 }
 
-/** 新存档 id：`play-20261026-0012-xxxx`。 */
-export function newPlayId(now = new Date()) {
+/**
+ * 新存档 id：`play-20261026-0012-xxxxxx`。
+ *
+ * 随机那截从 4 位加到 6 位，和会话 id 是同一个教训：`writePlay` 是
+ * 临时文件 + 改名，改名到一个**已经存在**的路径是静默覆盖。同一分钟里开第二局
+ * 又撞上同一个尾巴，上一局整份就没了，而且一个错都不报。
+ */
+export function newPlayId(now = new Date(), rand) {
   const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
   const time = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
-  const salt = Math.random().toString(36).slice(2, 6)
+  const salt = rand === undefined
+    ? Math.random().toString(36).slice(2, 8).padEnd(6, '0')
+    : String(rand)
   return `play-${stamp}-${time}-${salt}`
+}
+
+/**
+ * 问过盘面再给 id：32 次都撞上就用毫秒时间戳兜底。
+ *
+ * `rand` 只给测试钉住用；正常调用不传。
+ */
+export async function uniquePlayId(root, bookId, now = new Date(), rand) {
+  for (let i = 0; i < 32; i += 1) {
+    const id = rand === undefined ? newPlayId(now) : newPlayId(now, `${rand}${i.toString(36)}`.slice(0, 6).padEnd(6, '0'))
+    const abs = path.join(root, playRelPath(bookId, id))
+    try {
+      await fs.access(abs)
+    } catch {
+      return id
+    }
+  }
+  return newPlayId(now, Date.now().toString(36).slice(-6))
 }
 
 /**
@@ -90,6 +128,71 @@ function oneLine(text) {
   return String(text ?? '').replace(/[\r\n]+/g, ' ').trim()
 }
 
+/**
+ * 状态那一行拆成「名目 / 内容」。
+ *
+ * 用中文冒号，也认英文冒号和 `=`：这三种都见过，人自己手改存档时最爱用等号。
+ * 拆不开就把整行当名目、内容留空——界面上还能照原样显示，不至于丢一句。
+ */
+export function splitStatusLine(line) {
+  const raw = String(line ?? '').trim().replace(/^[-*]\s*/, '')
+  if (raw === '') return null
+  const m = /^(.{1,12}?)\s*[：:=]\s*(.*)$/.exec(raw)
+  if (m === null) return { key: raw.slice(0, 16), value: '' }
+  return { key: String(m[1]).trim(), value: String(m[2]).trim() }
+}
+
+/**
+ * 状态整份理一遍：去空、去重（同名只留最后一条，因为模型会长出新的一条旧的还在）、限量。
+ *
+ * 为什么「同名留最后一条」：一轮一轮往下推的时候，模型会把「体力：还行」和
+ * 「体力：几乎站不住」都写出来。留着两条，用户看到的第一条会是最早那句乐观的，
+ * 而真实的处境在最后。
+ */
+export function tidyStatus(list) {
+  const out = []
+  const seen = new Map()
+  for (const item of Array.isArray(list) ? list : []) {
+    const parsed = typeof item === 'string' ? splitStatusLine(item) : splitStatusLine(`${item?.key ?? ''}：${item?.value ?? ''}`)
+    if (parsed === null) continue
+    const line = parsed.value === '' ? parsed.key : `${parsed.key}：${parsed.value}`
+    if (line === '') continue
+    const at = seen.get(parsed.key)
+    if (at === undefined) {
+      seen.set(parsed.key, out.length)
+      out.push(line)
+    } else {
+      out[at] = line
+    }
+  }
+  return out.slice(-MAX_STATUS_ITEMS)
+}
+
+/**
+ * 从模型那一段里把末尾的 `【状态】` 块剥出来。
+ *
+ * 为什么让模型**每轮重报整份状态**、而不是只报变化：只报变化的话，一旦有一轮
+ * 漏了（模型经常漏），盘上就少一条，而且再也没人补回来。整份重报是幂等的，
+ * 漏一轮下一轮自己就修好了。
+ */
+export function parseStateBlock(text) {
+  const raw = String(text ?? '')
+  const at = raw.lastIndexOf(STATUS_MARK)
+  if (at < 0) return { body: raw.trim(), status: [], found: false }
+  const head = raw.slice(0, at).trimEnd()
+  const tail = raw.slice(at + STATUS_MARK.length)
+  const status = []
+  for (const line of tail.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (trimmed === '') continue
+    // 状态块之后的正文（模型偶尔会把结尾的话写在状态后面）不算状态。
+    if (!/^[-*•]\s*/.test(trimmed) && !/[：:=]/.test(trimmed)) break
+    const parsed = splitStatusLine(trimmed)
+    if (parsed !== null) status.push(parsed)
+  }
+  return { body: head === '' ? raw.trim() : head, status: tidyStatus(status), found: status.length > 0 }
+}
+
 export function renderPlayMarkdown(data, turns) {
   const head = { lifecard: core.DATA_VERSION, kind: 'play', ...data }
   const lines = ['---']
@@ -101,6 +204,8 @@ export function renderPlayMarkdown(data, turns) {
   lines.push('---', '')
   const scene = String(data?.scene ?? '').trim()
   if (scene !== '') lines.push(`## ${SCENE_TITLE}`, '', scene, '')
+  const status = tidyStatus(data?.status)
+  if (status.length > 0) lines.push(`## ${STATUS_TITLE}`, '', ...status.map((s) => `- ${oneLine(s)}`), '')
   const holding = Array.isArray(data?.holding) ? data.holding.filter((x) => String(x ?? '').trim() !== '') : []
   if (holding.length > 0) lines.push(`## ${HOLD_TITLE}`, '', ...holding.map((h) => `- ${oneLine(h)}`), '')
   lines.push(`## ${STORY_TITLE}`, '')
@@ -131,6 +236,12 @@ export function parsePlayText(text) {
   const sections = parsed.sections ?? []
   const pick = (title) => sections.find((s) => String(s.title ?? '') === title)
   const scene = String(pick(SCENE_TITLE)?.body ?? '').trim()
+  const status = tidyStatus(
+    String(pick(STATUS_TITLE)?.body ?? '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line !== ''),
+  )
   const holding = String(pick(HOLD_TITLE)?.body ?? '')
     .split(/\r?\n/)
     .map((line) => line.replace(/^\s*[-*]\s*/, '').trim())
@@ -155,7 +266,7 @@ export function parsePlayText(text) {
     }
   }
   if (pending.trim() !== '') turns.push({ kind: 'narrate', text: unescapeLines(pending.trim()) })
-  return { ok: true, data, scene, holding, turns }
+  return { ok: true, data, scene, status, holding, turns }
 }
 
 /** 读一局。 */
@@ -206,27 +317,35 @@ export async function listPlays(root, bookId) {
   try {
     names = await fs.readdir(dir)
   } catch (error) {
-    if (error?.code === 'ENOENT') return { ok: true, items: [] }
+    if (error?.code === 'ENOENT') return { ok: true, items: [], bad: 0, badIds: [] }
     return { ok: false, error: '存档列表读不出来' }
   }
   const items = []
+  // 读不出来的存档要报出来是哪几个文件，不能只丢一句「跳过」。
+  // 以前这里是静默 continue：用户看到列表少一局，无从知道是文件坏了还是自己记错。
+  const badIds = []
   for (const name of names) {
     if (!name.endsWith('.md')) continue
     const got = await readPlay(root, bookId, name.replace(/\.md$/, ''))
-    if (got.ok !== true) continue
+    if (got.ok !== true) {
+      badIds.push({ id: name.replace(/\.md$/, ''), error: String(got.error ?? '读不出来') })
+      continue
+    }
     const turns = got.turns.filter((t) => t.kind === 'choose').length
     items.push({
       id: String(got.data?.id ?? name.replace(/\.md$/, '')),
       book: bookId,
       chapter: Number(got.data?.chapter) || 0,
       preset: String(got.data?.preset ?? ''),
+      role: String(got.data?.role ?? ''),
       scene: String(got.scene ?? '').slice(0, 60),
+      status: got.status.length,
       turns,
       updated_at: String(got.data?.updated_at ?? ''),
     })
   }
   items.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))
-  return { ok: true, items }
+  return { ok: true, items, bad: badIds.length, badIds }
 }
 
 /**
@@ -238,7 +357,7 @@ export async function listPlays(root, bookId) {
  *     没有代价的选项等于没有选择。
  *   - 局面和手上的东西要跟着变，不能一百轮还站在原地。
  */
-export function buildGmSystem({ bookTitle, scene, holding, preset }) {
+export function buildGmSystem({ bookTitle, scene, status, holding, preset, role }) {
   const lines = [
     `你在主持一个文字小说游戏。这个故事来自《${bookTitle}》。`,
     '',
@@ -254,6 +373,18 @@ export function buildGmSystem({ bookTitle, scene, holding, preset }) {
     '3. 三个方向必须是**做得出来的具体动作**，不是「继续」「观察」这种空话。',
     '4. 三个都要有代价：选了这个就会失去那个。不要给一个明显更好的选项。',
     '',
+    '【每一轮最后再报一次状态】',
+    `正文和三个方向写完之后，另起一段写 \`${STATUS_MARK}\`，下面按「名目：内容」一行一条：`,
+    '   - 在哪：……',
+    '   - 身上：……',
+    '   - 心里：……',
+    '   - 谁还信我：……',
+    '规矩：',
+    `- 每次都要写**这个人此刻的整份状态**，不是这一轮的变化。最多 ${MAX_STATUS_ITEMS} 条。`,
+    '- 名目固定用上面那四个（在哪 / 身上 / 心里 / 谁还信我），内容要具体到能看出来：不要写「有点累」，写「左手抬不过肩」。',
+    '- 状态必须和刚才写的情节对得上。这一轮他挨了一刀，身上就不能还写「没事」。',
+    `- \`${STATUS_MARK}\` 这一块不会念给对方听，是给界面上的小窗看的；正文里该写什么还写什么，不要提「状态」这两个字。`,
+    '',
     '【绝对不做】',
     '- 不替玩家决定他说什么、做什么、想什么。',
     '- 不写「你可以选择」这种话，直接把三个方向列出来。',
@@ -261,8 +392,16 @@ export function buildGmSystem({ bookTitle, scene, holding, preset }) {
     '- 不写「（作为 AI）」这类跳出的话。',
     '- 不用「命运的齿轮」这种空话起头。',
   ]
+  const who = String(role ?? '').trim()
+  if (who !== '') {
+    lines.push('', '【玩家操控的是谁】', who, '', '写他身边发生的事，不要替他做决定；也不要把他写成另外一个人。')
+  }
   if (String(scene ?? '').trim() !== '') {
     lines.push('', `【${SCENE_TITLE}】`, String(scene).trim())
+  }
+  const now = tidyStatus(status)
+  if (now.length > 0) {
+    lines.push('', `【${STATUS_TITLE}】（上一轮结束时是这样，这一轮接着往下推，该变就变）`, ...now.map((s) => `- ${s}`))
   }
   if (Array.isArray(holding) && holding.length > 0) {
     lines.push('', `【${HOLD_TITLE}】`, ...holding.map((h) => `- ${h}`))
@@ -273,7 +412,7 @@ export function buildGmSystem({ bookTitle, scene, holding, preset }) {
 }
 
 /** 玩家说了一句话之后的这一轮。 */
-export function buildGmUser({ turns, move, fromChapter }) {
+export function buildGmUser({ turns, move, fromChapter, status }) {
   const lines = []
   const start = String(fromChapter ?? '').trim()
   if (start !== '') {
@@ -289,11 +428,17 @@ export function buildGmUser({ turns, move, fromChapter }) {
     }
     lines.push('')
   }
+  const now = tidyStatus(status)
+  if (now.length > 0) {
+    // 不复述整份状态（系统提示里已经有一份），只说一句「接着上一轮」。
+    // 两处都写全的话，模型会把同一件事看见两次，然后开始自我解释。
+    lines.push(`（上一轮结束时他${now[0].replace(/[：:].*$/, '')}那样，接着往下推。）`, '')
+  }
   const said = String(move ?? '').trim()
   if (said === '') {
-    lines.push('先开个头：把此刻的局面写出来，再给三个方向。')
+    lines.push(`先开个头：把此刻的局面写出来，再给三个方向，最后按 \`${STATUS_MARK}\` 报一次状态。`)
   } else {
-    lines.push(`我这一步：${said}`, '', '写清这一步之后发生了什么，再给三个方向。')
+    lines.push(`我这一步：${said}`, '', `写清这一步之后发生了什么，再给三个方向，最后按 \`${STATUS_MARK}\` 报一次状态。`)
   }
   return lines.filter((x) => x !== null && x !== undefined).join('\n')
 }
@@ -366,8 +511,9 @@ export function parseChoices(text) {
 
 export default {
   PLAY_DIR, MAX_TURNS, MAX_HISTORY_TURNS,
-  SCENE_TITLE, HOLD_TITLE, STORY_TITLE,
+  SCENE_TITLE, HOLD_TITLE, STORY_TITLE, STATUS_TITLE, STATUS_MARK, MAX_STATUS_ITEMS,
   playRelPath, newPlayId, renderPlayMarkdown, parsePlayText,
   readPlay, writePlay, deletePlay, listPlays,
+  splitStatusLine, tidyStatus, parseStateBlock,
   buildGmSystem, buildGmUser, buildPlayToChapterPrompt, parseChoices,
 }

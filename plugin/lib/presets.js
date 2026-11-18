@@ -306,10 +306,17 @@ export const BUILTIN = [
   },
 ]
 
-/** 按玩法筛预设。 */
+/**
+ * 按玩法筛预设。
+ *
+ * 内置的一律补上 `book: ''` / `world: ''`：这两个字段是「这份预设挂在哪本书、
+ * 哪个世界观上」，只对用户自己那份有意义。内置那份是随包发出去的模板，
+ * 挂到具体某本书上会在别人机器上变成一条断引用，所以恒为空。
+ * 补成空串而不是不写，是为了让调用方（界面、路由）不用到处判 undefined。
+ */
 export function forMode(mode) {
   const want = String(mode ?? '').trim()
-  return BUILTIN.filter((p) => p.mode === want).map((p) => ({ ...p, builtin: true }))
+  return BUILTIN.filter((p) => p.mode === want).map((p) => ({ ...p, builtin: true, book: '', world: '' }))
 }
 
 /** 找一个内置预设。 */
@@ -328,9 +335,19 @@ export function presetRelPath(id) {
  *
  * 用 Markdown 而不是 JSON：这是用户会手工改的东西，
  * 在 Finder 里双击就能看、改错一个字也不会整个文件废掉。
+ *
+ * `book` / `world` 是「这份预设挂在哪本书、哪个世界观上」，恒写成字符串
+ * （没绑就是空串）。不写的话读回来时就得判 undefined，两边都不干净；
+ * 空串在文件里也是一行 `book: ""`，用户手改时能看见有这么一个槽。
  */
 export function renderPresetMarkdown(data) {
-  const head = { lifecard: core.DATA_VERSION, kind: 'preset', ...data }
+  const head = {
+    lifecard: core.DATA_VERSION,
+    kind: 'preset',
+    ...data,
+    book: String(data?.book ?? ''),
+    world: String(data?.world ?? ''),
+  }
   const lines = ['---']
   for (const [key, value] of Object.entries(head)) {
     if (value === undefined || value === null) continue
@@ -341,14 +358,20 @@ export function renderPresetMarkdown(data) {
   return lines.join('\n')
 }
 
-/** 读一份自定义预设。 */
+/**
+ * 读一份自定义预设。
+ *
+ * `book` / `world` 在这里就补成空串：老预设文件里没有这两行（这个功能是后加的），
+ * 读回来是 undefined 会让界面上到处出现 undefined。缺省等于「没绑」，正好。
+ */
 export function parsePresetText(text) {
   const parsed = core.parseCard(String(text ?? ''))
   if (parsed.ok !== true) return { ok: false, error: '这份预设读不出来，格式不对' }
   const intro = (parsed.sections ?? []).find((s) => s.title === '_intro')
+  const data = parsed.data ?? {}
   return {
     ok: true,
-    data: parsed.data ?? {},
+    data: { ...data, book: String(data?.book ?? ''), world: String(data?.world ?? '') },
     prompt: String(intro?.body ?? '').trim(),
   }
 }
@@ -383,13 +406,74 @@ export async function listCustom(root) {
       prompt: got.prompt,
       path: rel,
       builtin: false,
+      // 这份预设挂在哪本书 / 哪个世界观上。空串 = 没挂（界面上那一排照常显示，
+      // 只是没有一个是亮的）。只存 id，不存书名：书可以改名，id 不变。
+      book: String(got.data?.book ?? ''),
+      world: String(got.data?.world ?? ''),
     })
   }
   return { ok: true, items }
 }
 
-/** 内置 + 自定义，按玩法分组。 */
-export async function listAll(root) {
+/**
+ * 扫一遍工作区里的世界书，给「用哪个世界观」那一排用。
+ *
+ * 为什么在这里现扫、不去 import store：store 会连带 import 一大串东西，
+ * 而这一排只需要「有哪些世界、各叫什么」。读 `worlds/<id>/world.md`
+ * 的第一行 frontmatter 就够了，而且读失败不能让整个预设列表跟着废掉——
+ * 预设能用而世界书坏了，用户该看到的是预设照常、那一排空着。
+ *
+ * @returns {Promise<Array<{ id: string, name: string }>>}
+ */
+export async function listWorlds(root) {
+  const dir = path.join(root, 'worlds')
+  let names
+  try {
+    names = await fs.readdir(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const out = []
+  for (const entry of names) {
+    if (!entry.isDirectory()) continue
+    let text
+    try {
+      text = await fs.readFile(path.join(dir, entry.name, 'world.md'), 'utf8')
+    } catch {
+      continue
+    }
+    const parsed = core.parseCard(text)
+    // 自己手写的 world.md 可能没那两行 frontmatter。这时不跳过它：
+    // 用户明明建了一本世界观，界面上却「一个都没有」，他会以为文件白建了。
+    // 退回第一个 `# 名字` 标题，还读不出来才跳过。
+    if (parsed.ok === true) {
+      out.push({
+        id: String(parsed.data?.id ?? entry.name),
+        name: String(parsed.data?.name ?? entry.name),
+      })
+      continue
+    }
+    const heading = text.split(/\r?\n/).map((s) => s.trim()).find((s) => s.startsWith('# '))
+    if (heading === undefined) continue
+    out.push({ id: entry.name, name: heading.slice(2).trim() || entry.name })
+  }
+  out.sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh'))
+  return out
+}
+
+/**
+ * 内置 + 自定义，按玩法分组；旁边再带上「能挂的书」和「能挂的世界观」。
+ *
+ * 为什么书要从外面传进来（`injected.books`）而不是在这里 import novel.js：
+ * novel.js 和 presets.js 都是「可以单独卸掉」的模块（见 modular-test），
+ * 让 presets 静态依赖 novel，卸掉 novel 时连预设也起不来。所以由调用方
+ * （lib/index.js，它本来就两个都拿着）把书传进来，这边只负责拼进返回值。
+ * 世界书不涉及这个顾虑（只是读文件，不 import 任何模块），就地扫。
+ *
+ * @param {string} root
+ * @param {{ books?: Array<object> }} [injected]
+ */
+export async function listAll(root, injected = {}) {
   const custom = await listCustom(root)
   if (custom.ok !== true) return custom
   const out = []
@@ -401,22 +485,36 @@ export async function listAll(root) {
       items: [...forMode(mode.id), ...custom.items.filter((p) => p.mode === mode.id)],
     })
   }
-  return { ok: true, groups: out }
+  // 书只留界面要用的四个字段：整本元信息（idea、updated_at…）在这一排按钮上用不着。
+  const books = (Array.isArray(injected?.books) ? injected.books : []).map((b) => ({
+    id: String(b?.id ?? ''),
+    title: String(b?.title ?? b?.id ?? ''),
+    chapters: Number(b?.chapters ?? 0),
+    words: Number(b?.words ?? 0),
+  }))
+  const worlds = await listWorlds(root)
+  return { ok: true, groups: out, books, worlds }
 }
 
 /** 拿一份预设（先找自定义，再找内置）。 */
 export async function resolve(root, id) {
   const want = String(id ?? '').trim()
-  if (want === '') return { ok: true, preset: null }
+  // 拿不到预设时给一句原因：调用方（书、会话）里记着的名字可能是旧的，
+  // 而「没有预设」和「读不出来」对用户是两回事 —— 前者他不用管，
+  // 后者他得去修文件。以前两种情况都只回 preset:null，界面只能一律沉默。
+  if (want === '') return { ok: true, preset: null, reason: '这条记录还没选过预设。' }
   const custom = await listCustom(root)
   if (custom.ok === true) {
     const hit = custom.items.find((p) => p.id === want)
     if (hit !== undefined) return { ok: true, preset: hit }
   }
   const builtin = findBuiltin(want)
-  if (builtin !== null) return { ok: true, preset: { ...builtin, builtin: true } }
+  if (builtin !== null) return { ok: true, preset: { ...builtin, builtin: true, book: '', world: '' } }
   // 找不到不报错：用户可能删了预设，但书或会话里还记着它。
-  return { ok: true, preset: null }
+  if (custom.ok !== true) {
+    return { ok: true, preset: null, reason: '你的预设列表读不出来，先按没有预设来。检查一下 presets 文件夹的权限。' }
+  }
+  return { ok: true, preset: null, reason: `没找到叫「${want}」的预设。可能是删掉了，或者名字改了。` }
 }
 
 /** 把一份内置预设复制成自己的，可以改。 */
@@ -444,7 +542,16 @@ export async function copyBuiltin(root, id, newId) {
   return { ok: true, id: target, path: rel }
 }
 
-/** 存一份自定义预设（新建或改）。 */
+/**
+ * 存一份自定义预设（新建，或者显式说要覆盖时改）。
+ *
+ * 以前这里不管有没有同名都直接 tmp + rename，也就是**静默覆盖**：
+ * 用户想建一份新的，手一滑打了个已经用过的名字，自己那份被换掉了，
+ * 界面上还显示「存好了」。所以默认不覆盖 —— 要改已有那一份，
+ * 调用方得明确说 `overwrite: true`。
+ *
+ * @param {{ id?: string, name?: string, mode?: string, desc?: string, prompt?: string, book?: string, world?: string, overwrite?: boolean }} input
+ */
 export async function saveCustom(root, input = {}) {
   const id = core.safeId(String(input.id ?? '').trim() === '' ? String(input.name ?? '').trim() : input.id)
   if (String(id).trim() === '') return { ok: false, error: '这份预设得有个名字' }
@@ -452,18 +559,55 @@ export async function saveCustom(root, input = {}) {
   const rel = presetRelPath(id)
   const abs = path.join(root, rel)
   await fs.mkdir(path.join(root, PRESET_DIR), { recursive: true })
+  // 覆盖保存时，没提 book/world 不能等于「解绑」：用户改提示词那一下不该把
+  // 之前挑好的书、世界观一起抹掉。所以覆盖前先把旧的读出来当缺省值。
+  // 显式传空串仍然是解绑——那是用户自己点的。
+  let keep = { book: '', world: '' }
+  if (input?.overwrite === true) {
+    const old = await fs.readFile(abs, 'utf8').then(parsePresetText).catch(() => null)
+    if (old !== null && old.ok === true) {
+      keep = { book: String(old.data?.book ?? ''), world: String(old.data?.world ?? '') }
+    }
+  }
   const text = renderPresetMarkdown({
     id,
     mode: String(input.mode ?? 'tavern'),
     name: String(input.name ?? id),
     desc: String(input.desc ?? ''),
     prompt: String(input.prompt ?? ''),
+    book: typeof input.book === 'string' ? input.book : keep.book,
+    world: typeof input.world === 'string' ? input.world : keep.world,
   })
+  if (input?.overwrite !== true) {
+    // 新建：和 copyBuiltin 一样用 'wx' —— 已存在就让内核挡回来，
+    // 不先 stat 再写（那中间有一段时间别人也能插进来）。
+    let handle
+    try {
+      handle = await fs.open(abs, 'wx')
+    } catch (error) {
+      if (error?.code === 'EEXIST') {
+        return { ok: false, error: `已经有一份叫「${id}」的预设了。换个名字，或者明确说要覆盖它再存一次` }
+      }
+      return { ok: false, error: '这份预设没能存下来，检查一下磁盘' }
+    }
+    try {
+      await handle.writeFile(text, 'utf8')
+    } catch {
+      // 半截预设比没有更糟：解析出来是空的提示词，用起来还不报错。
+      await fs.rm(abs, { force: true }).catch(() => {})
+      return { ok: false, error: '这份预设没能存下来，检查一下磁盘' }
+    } finally {
+      await handle.close()
+    }
+    return { ok: true, id, path: rel }
+  }
+  // 覆盖：走临时文件 + 改名，中途失败不会留下半份把旧的那份挤掉。
   const tmp = `${abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
   try {
     await fs.writeFile(tmp, text, 'utf8')
     await fs.rename(tmp, abs)
   } catch {
+    await fs.rm(tmp, { force: true }).catch(() => {})
     return { ok: false, error: '这份预设没能存下来，检查一下磁盘' }
   }
   return { ok: true, id, path: rel }
@@ -482,8 +626,43 @@ export async function deleteCustom(root, id) {
   return { ok: true }
 }
 
+/**
+ * 把一份预设挂到某本书 / 某个世界观上。
+ *
+ * 为什么单独开一条路而不是走 saveCustom：绑定这件事只改两个字段，
+ * 不该要求调用方把提示词整段再传一遍（传漏一个字就是把用户的预设改坏了）。
+ * 传空串就是解绑——「不挂」和「挂一本不存在的书」是两件事，两者都得能表达。
+ *
+ * @param {string} root
+ * @param {{ id?: string, book?: string, world?: string }} input
+ */
+export async function bindPreset(root, input = {}) {
+  const want = String(input?.id ?? '').trim()
+  if (want === '') return { ok: false, error: '没有说是哪一份预设' }
+  // 内置那份是随包的模板，改不了：它在别人的机器上也长这样。要挂就复制一份。
+  if (findBuiltin(want) !== null) return { ok: false, error: '内置的不能改，先复制一份' }
+  const custom = await listCustom(root)
+  if (custom.ok !== true) return custom
+  const hit = custom.items.find((p) => p.id === want)
+  if (hit === undefined) return { ok: false, error: '没找到这份预设，可能是删掉了' }
+  const saved = await saveCustom(root, {
+    id: hit.id,
+    mode: hit.mode,
+    name: hit.name,
+    desc: hit.desc,
+    prompt: hit.prompt,
+    book: String(input?.book ?? ''),
+    world: String(input?.world ?? ''),
+    overwrite: true,
+  })
+  if (saved?.ok !== true) {
+    return { ok: false, error: saved?.error ?? '没能改这份预设，检查一下磁盘' }
+  }
+  return { ok: true, id: hit.id, book: String(input?.book ?? ''), world: String(input?.world ?? '') }
+}
+
 export default {
   PRESET_DIR, MODES, BUILTIN,
   forMode, findBuiltin, presetRelPath, renderPresetMarkdown, parsePresetText,
-  listCustom, listAll, resolve, copyBuiltin, saveCustom, deleteCustom,
+  listCustom, listAll, listWorlds, resolve, copyBuiltin, saveCustom, deleteCustom, bindPreset,
 }

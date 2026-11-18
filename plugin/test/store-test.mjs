@@ -686,5 +686,211 @@ console.log('=== 14. 同一天再跑一次分析，不许覆盖上一轮 ===')
   await fs.rm(r18, { recursive: true, force: true })
 }
 
+// ── 15. 存储层加固（原子写 / 备份失败可见 / 同名卡不瞎挑）────────────
+const r15 = path.join(tmpdir(), 'lifecard-store-harden-' + Date.now())
+
+console.log('\n=== 15. 首次建工作区：原子写，不留半截文件 ===')
+{
+  const made = await store.openWorkspace(r15, { create: true })
+  t('建得起来', made.ok === true, made)
+  const cfgText = await fs.readFile(path.join(r15, 'lifecard.config.json'), 'utf8')
+  t('配置能解析成完整 JSON', (() => { try { return JSON.parse(cfgText).lifecard === '0.1' } catch { return false } })(), cfgText.slice(0, 80))
+  const leftovers = (await fs.readdir(r15)).filter((n) => n.includes('.tmp-'))
+  t('没留下临时文件', leftovers.length === 0, leftovers)
+  // 再打开一次不许把已有配置重刷成默认值
+  await store.writeConfig(r15, { user_name: '阿原' })
+  const again = await store.openWorkspace(r15, { create: true })
+  t('再打开一次成功', again.ok === true, again)
+  const kept = await store.readConfig(r15)
+  t('已有配置没被默认值盖掉', kept.user_name === '阿原', kept.user_name)
+}
+
+console.log('\n=== 16. 头像写失败时不留临时文件 ===')
+{
+  // assets/<id>.png 先占成一个非空目录：writeFile 到临时文件能成，rename 必然失败。
+  const dirAsPng = path.join(r15, 'assets', 'blocked.png')
+  await fs.mkdir(dirAsPng, { recursive: true })
+  await fs.writeFile(path.join(dirAsPng, 'keep.txt'), 'x', 'utf8')
+  const png1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8AAAwAB/AF/9C0AAAAASUVORK5CYII='
+  const bad = await store.writeAvatar(r15, 'blocked', png1)
+  t('写不进去时返回中文错误', bad.ok === false && /存进文件里|磁盘/.test(String(bad.error)), bad)
+  const leftovers = (await fs.readdir(path.join(r15, 'assets'))).filter((n) => n.includes('.tmp-'))
+  t('没留下 .tmp- 残骸', leftovers.length === 0, leftovers)
+  // 正常那张照样能存
+  const fine = await store.writeAvatar(r15, 'ok-one', png1)
+  t('正常的头像还是能存', fine.ok === true && fine.bytes > 0, fine)
+}
+
+console.log('\n=== 17. 材料覆盖：旧版留 .bak，新版在正文件里 ===')
+{
+  const r = path.join(r15, 'mat-cover')
+  await store.openWorkspace(r, { create: true })
+  const first = await store.appendMaterial(r, '外公回忆', '第一次：他在码头扛包。')
+  t('先写一版', first.ok === true, first)
+  const second = await store.appendMaterial(r, '外公回忆', '重新摘一遍：他一直住在外婆家。', { replace: true })
+  t('覆盖成功', second.ok === true, second)
+  t('覆盖没有报「备份没成」', second.backupFailed !== true, second)
+  const now = await fs.readFile(path.join(r, second.path), 'utf8')
+  t('正文件是新的那一版', now.includes('一直住在外婆家') && !now.includes('码头扛包'), now)
+  const mats = await fs.readdir(path.join(r, 'materials'))
+  const baks = mats.filter((n) => n.includes('.bak-'))
+  t('旧的那一版留下了备份', baks.length === 1, mats)
+  t('备份里是旧内容', baks.length === 1 ? (await fs.readFile(path.join(r, 'materials', baks[0]), 'utf8')).includes('码头扛包') : false)
+  const tmpLeft = mats.filter((n) => n.includes('.tmp-'))
+  t('没留下 .tmp- 残骸', tmpLeft.length === 0, mats)
+  // 覆盖一个还不存在的材料：不该因为「没有旧的」就出事
+  const fresh = await store.appendMaterial(r, '没写过的', '内容', { replace: true })
+  t('覆盖一个不存在的材料也成', fresh.ok === true, fresh)
+}
+
+console.log('\n=== 18. 材料并发追加不互相踩（排队写） ===')
+{
+  const r = path.join(r15, 'mat-race')
+  await store.openWorkspace(r, { create: true })
+  const lines = Array.from({ length: 12 }, (_, i) => `第 ${i} 条：内容都在。`)
+  await Promise.all(lines.map((line) => store.appendMaterial(r, '并发材料', line)))
+  const mats = await store.readMaterials(r)
+  const body = mats[Object.keys(mats)[0]] ?? ''
+  t('十二次并发追加一条不少', lines.every((line) => body.includes(line)), body)
+  t('也没有半截行', body.split('\n').filter((l) => l.trim() !== '').every((l) => l.endsWith('。')), body)
+}
+
+console.log('\n=== 19. 同名卡：不静默挑第一个 ===')
+{
+  const r = path.join(r15, 'dup-names')
+  await store.openWorkspace(r, { create: true })
+  const base = { lifecard: '0.1', kind: 'real', world: 'reality', name: '妈妈', relation: '母亲' }
+  await store.writeCard(r, 'people/mama-a.card.md', { ...base, id: 'mama-a' }, [])
+  await store.writeCard(r, 'people/mama-b.card.md', { ...base, id: 'mama-b' }, [])
+  const byId = await store.findCardByRelOrId(r, 'mama-a')
+  t('按 id 还是能定位到唯一那张', byId === 'people/mama-a.card.md', byId)
+  const byApath = await store.findCardByRelOrId(r, 'people/mama-b.card.md')
+  t('按路径也能定位', byApath === 'people/mama-b.card.md', byApath)
+  const byName = await store.findCardByRelOrId(r, '妈妈')
+  t('按名字有两张时返回 null，不再瞎挑一个', byName === null, byName)
+  const cands = await store.findCardCandidates(r, '妈妈')
+  t('歧义时候选都列出来', cands.ok === false && cands.by === 'name' && cands.candidates.length === 2, cands)
+  t('候选带 id / path / name', cands.candidates.every((c) => c.id !== undefined && c.path !== undefined && c.name === '妈妈'), cands.candidates)
+  const one = await store.findCardCandidates(r, 'mama-a')
+  t('唯一命中不算歧义', one.ok === true && one.by === 'id' && one.path === 'people/mama-a.card.md', one)
+  const miss = await store.findCardCandidates(r, '查无此人')
+  t('找不到时 ok 为 false、候选为空', miss.ok === false && miss.candidates.length === 0, miss)
+  const broken = await store.findCardByRelOrId(r, '../../etc/passwd.card.md')
+  t('越界路径还是返回 null', broken === null, broken)
+
+  // 只剩一张同名卡时又能唯一定位
+  await fs.rm(path.join(r, 'people/mama-b.card.md'), { force: true })
+  const back = await store.findCardByRelOrId(r, '妈妈')
+  t('只剩一张时按名字能定位', back === 'people/mama-a.card.md', back)
+}
+
+console.log('\n=== 20. 配置缓存：写完立刻读得到最新值 ===')
+{
+  const r = path.join(r15, 'cfg-cache')
+  await store.openWorkspace(r, { create: true })
+  const before = store.readConfigSync(r)
+  t('先读一次垫缓存', before.user_name !== '新名字', before.user_name)
+  await store.writeConfig(r, { user_name: '新名字' })
+  const after = store.readConfigSync(r)
+  t('写完同步读就是新值（不靠 mtime 碰运气）', after.user_name === '新名字', after.user_name)
+  await store.writeConfig(r, { user_name: '新名字' })
+  const again = store.readConfigSync(r)
+  t('连写两次一样的值也读得到', again.user_name === '新名字', again.user_name)
+  t('读成功时没有遗留错误', store.lastConfigReadError() === null, store.lastConfigReadError())
+}
+
+console.log('\n=== 21. 设置读坏了：还是给默认值，但留一句原因 ===')
+{
+  const r = path.join(r15, 'cfg-broken')
+  await store.openWorkspace(r, { create: true })
+  await fs.writeFile(path.join(r, 'lifecard.config.json'), '{ 这不是 JSON', 'utf8')
+  const got = store.readConfigSync(r)
+  t('照样返回一份配置，不抛异常', got !== null && got.lifecard === '0.1', got.lifecard)
+  const err = store.lastConfigReadError()
+  t('记下了读坏的原因', err !== null && typeof err.error === 'string' && err.error.length > 0, err)
+  t('原因是中文的、和设置文件有关', /设置/.test(String(err?.error)), err)
+  // 修好之后错误要被清掉
+  await fs.writeFile(path.join(r, 'lifecard.config.json'), JSON.stringify({ lifecard: '0.1', user_name: '好了' }), 'utf8')
+  const fixed = store.readConfigSync(r)
+  t('修好之后读到正常值', fixed.user_name === '好了', fixed.user_name)
+  t('错误标记也清掉了', store.lastConfigReadError() === null, store.lastConfigReadError())
+  // 从没配过的文件夹：也算 ENOENT，但原因要说清「还没存过」
+  const blank = path.join(r15, 'cfg-blank')
+  await fs.mkdir(blank, { recursive: true })
+  const blankCfg = store.readConfigSync(blank)
+  t('没配过的文件夹给默认值', blankCfg.lifecard === '0.1', blankCfg.lifecard)
+  t('没配过时说清是「还没存过」', /还没存过/.test(String(store.lastConfigReadError()?.error)), store.lastConfigReadError())
+}
+
+console.log('\n=== 22. 预设：重名默认不覆盖，resolve 给原因 ===')
+{
+  const presets = await import('../lib/presets.js')
+  const r = path.join(r15, 'presets-harden')
+  await store.openWorkspace(r, { create: true })
+  const made = await presets.saveCustom(r, { id: 'my-tone', mode: 'tavern', name: '我的演法', prompt: '话少一点。' })
+  t('先存一份', made.ok === true, made)
+  const clash = await presets.saveCustom(r, { id: 'my-tone', mode: 'tavern', name: '手滑重名', prompt: '别的东西。' })
+  t('同名再存被挡回来', clash.ok === false && /已经有一份/.test(String(clash.error)), clash)
+  const kept = await presets.resolve(r, 'my-tone')
+  t('原来那份没被换掉', kept.preset !== null && kept.preset.prompt.includes('话少一点'), kept.preset?.prompt)
+  const ov = await presets.saveCustom(r, { id: 'my-tone', mode: 'tavern', name: '我的演法', prompt: '话多一点。', overwrite: true })
+  t('明确说要覆盖才覆盖', ov.ok === true, ov)
+  const replaced = await presets.resolve(r, 'my-tone')
+  t('覆盖之后是新内容', replaced.preset !== null && replaced.preset.prompt.includes('话多一点'), replaced.preset?.prompt)
+  const gone = await presets.resolve(r, 'deleted-thing')
+  t('找不到预设时 still ok，但给一句原因', gone.ok === true && gone.preset === null && typeof gone.reason === 'string' && gone.reason.length > 0, gone)
+  t('原因里带着那个名字', String(gone.reason).includes('deleted-thing'), gone.reason)
+  const emptyOne = await presets.resolve(r, '')
+  t('空 id 也有原因', emptyOne.ok === true && emptyOne.preset === null && typeof emptyOne.reason === 'string', emptyOne)
+  const leftTmp = (await fs.readdir(path.join(r, 'presets'))).filter((n) => n.includes('.tmp-'))
+  t('没留下 .tmp- 残骸', leftTmp.length === 0, leftTmp)
+}
+
+console.log('\n=== 23. 备份失败要让上层知道，但不能因此整次失败 ===')
+{
+  const r = path.join(tmpdir(), 'lifecard-bakfail-' + Date.now())
+  await store.openWorkspace(r, { create: true })
+  const first = await store.appendMaterial(r, '备份试试', '旧的一版在里面。')
+  const abs = path.join(r, first.path)
+  const stamp = (d) => {
+    const pad = (n) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  }
+  // 把接下来几秒的 .bak 路径全占成目录：copyFile 必然失败，而同一个目录里
+  // 写临时文件照样能成 —— 正好把「备份失败」和「写失败」分开。
+  const now = Date.now()
+  for (const off of [0, 1000, 2000]) {
+    await fs.mkdir(`${abs}.bak-${stamp(new Date(now + off))}`, { recursive: true }).catch(() => {})
+  }
+  const second = await store.appendMaterial(r, '备份试试', '新的一版盖上去。', { replace: true })
+  t('备份失败时这次覆盖照样成功', second.ok === true, second)
+  t('并且明确回报 backupFailed', second.backupFailed === true, second)
+  const now2 = await fs.readFile(abs, 'utf8')
+  t('内容确实是新的那一版', now2.includes('新的一版盖上去') && !now2.includes('旧的一版在里面'), now2)
+  await fs.rm(r, { recursive: true, force: true })
+}
+
+console.log('\n=== 24. 写卡失败不留 .tmp- 残骸 ===')
+{
+  const r = path.join(tmpdir(), 'lifecard-writefail-' + Date.now())
+  await store.openWorkspace(r, { create: true })
+  const data = { lifecard: '0.1', id: 'mama', kind: 'real', world: 'reality', name: '妈妈' }
+  const first = await store.writeCard(r, 'people/mama.card.md', data, [])
+  t('先正常存一张', first.ok === true, first)
+  // 把 people/ 设成只读：临时文件根本写不进去，落盘必须失败，
+  // 而且不许在目录里留下 .tmp- 的残骸（它就是在这儿被一次次失败攒出来的）。
+  await fs.chmod(path.join(r, 'people'), 0o555)
+  const blocked = await store.writeCard(r, 'people/mama.card.md', { ...data, relation: '母亲' }, [])
+  await fs.chmod(path.join(r, 'people'), 0o755)
+  t('写不进去时返回中文错误', blocked.ok === false && /没能存进文件里/.test(String(blocked.error)), blocked)
+  const names = await fs.readdir(path.join(r, 'people'))
+  t('没留下 .tmp- 残骸', names.filter((n) => n.includes('.tmp-')).length === 0, names)
+  const still = await store.readCard(r, 'people/mama.card.md')
+  t('原来那张卡没被弄坏', still.ok === true && still.data.name === '妈妈', still.data?.name)
+  await fs.rm(r, { recursive: true, force: true })
+}
+
+await fs.rm(r15, { recursive: true, force: true })
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

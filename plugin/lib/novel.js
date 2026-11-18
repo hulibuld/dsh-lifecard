@@ -430,7 +430,7 @@ export function parseOutline(text) {
  * 四样都给，少一样它就会开始自己编：只给上一章，它不知道这本书要往哪走；
  * 只给设定，它不知道刚才发生了什么；不给大纲，它会一章一章拖成流水账。
  */
-export function buildChapterPrompt({ title, idea, genre, previousTail, currentBody, ask, worldEntries, cast, outline, chapterPlan }) {
+export function buildChapterPrompt({ title, idea, genre, previousTail, currentBody, ask, worldEntries, cast, outline, chapterPlan, choicesDirective, foreshadows }) {
   const lines = []
   lines.push(`你在帮一个人写小说。这本书叫《${title}》。`)
   if (genre !== '') lines.push(`题材：${genre}`)
@@ -439,6 +439,29 @@ export function buildChapterPrompt({ title, idea, genre, previousTail, currentBo
   const plan = String(chapterPlan ?? '').trim()
   if (plan !== '') {
     lines.push('', '【这一章要写的事】', plan)
+  }
+
+  // 伏笔：只给「哪条线、埋在第几章」。`notes` 一个字都不带进来——那里常常
+  // 直接写着谜底，模型看到了就会在正文里替读者点破。
+  const fsMust = Array.isArray(foreshadows?.must) ? foreshadows.must : []
+  const fsWarn = Array.isArray(foreshadows?.warn) ? foreshadows.warn : []
+  const chapterNo = (one) => Number(one?.planted_chapter) || 0
+  if (fsMust.length > 0) {
+    lines.push('', '【这一章该收的线】')
+    fsMust.forEach((one, i) => {
+      lines.push(`${i + 1}. ${String(one?.title ?? '').trim()}——埋在第 ${chapterNo(one)} 章，这一章该揭了`)
+    })
+  }
+  if (fsWarn.length > 0) {
+    lines.push('', '【埋太久的】')
+    for (const one of fsWarn) {
+      const gap = Number(one?.stale_by) > 0 ? Number(one.stale_by) : 0
+      const expected = Number(one?.expected_resolve) || 0
+      const tail = one?.overdue === true && expected > 0
+        ? `说好第 ${expected} 章揭，现在已经过了`
+        : `已经 ${gap} 章没动`
+      lines.push(`- ${String(one?.title ?? '').trim()}（第 ${chapterNo(one)} 章埋的，${tail}）——顺手往前推一点，或者这一章就交代了`)
+    }
   }
   const outlineText = String(outline ?? '').trim()
   if (outlineText !== '') {
@@ -480,6 +503,11 @@ export function buildChapterPrompt({ title, idea, genre, previousTail, currentBo
     '',
     ask === undefined || String(ask).trim() === '' ? '请写这一章，大约 800 到 1200 字。' : `这次想写的是：${String(ask).trim()}`,
   )
+  // 选项块只在这个人**主动要**的时候才要（见调用点对 `wantChoices` 的判断）：
+  // 正经写小说时末尾挂三个「接下来可以写」的浅选项，等于把作者往套路上推。
+  // 所以这里没给就不加，一个字都不留。
+  const askChoices = String(choicesDirective ?? '').trim()
+  if (askChoices !== '') lines.push('', '【这一章末尾要给方向】', askChoices)
   return lines.join('\n')
 }
 

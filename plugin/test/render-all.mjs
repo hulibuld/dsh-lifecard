@@ -301,6 +301,26 @@ function renderOne(name, Component, props, presets = {}) {
 // 6 activeCard / 7 proposal / 8 doctor / 9 interviewFor / 10 showMore
 const base = (view, extra = {}) => ({ 0: view, 1: STATE, 2: LISTING, 3: '', 4: null, 5: null, 6: null, 7: null, 8: null, 9: null, 10: false, ...extra })
 
+// ── 写小说门 + 空库：书架不能被「还什么都没有」挡掉 ────────────────
+// 以前 HomeView 的早返回只看卡 / 世界书 / 材料 / 撤掉的卡 / 建议，不看 books。
+// 于是「只有书、没有卡」的人回到这扇门，书架整块不渲染——建了书也看不见，
+// 表现就是「新建一本书点了没反应」。这条断言在改之前必须是红的。
+{
+  const EMPTY_LISTING = {
+    ok: true, workspace: '/tmp/x',
+    cards: [], withdrawn: [], worlds: [], systems: [], relations: [],
+    materials: [], errors: [], proposals: [], avatars: {},
+  }
+  const tree = renderRoot('写小说门（空库）', base('novel', { 2: EMPTY_LISTING }))
+  // 只能用 JSON.stringify：textOf 声明在文件第 448 行，比这儿晚一百多行，
+  // 顶层执行到此处时它还在暂时性死区里（踩过一次：整份文件 796 项归零）。
+  // 好处是 JSON 同时含 children 文本与 placeholder，三样都能查。
+  const raw = tree === null ? '' : JSON.stringify(expand(tree))
+  t('空库时写小说门照样摆出书架', raw.includes('我的书'), raw.slice(0, 200))
+  t('空库时给得出建书的入口', raw.includes('新建一本书'), raw.slice(0, 200))
+  t('书名在页面上填，不再靠弹窗', raw.includes('新书叫什么'), raw.slice(0, 200))
+}
+
 const homeTree = renderRoot('首页（有数据）', base('home'))
 {
   // 材料必须在首页有一栏。以前只在「更多工具」里报个数字，用户从记忆里
@@ -1772,6 +1792,55 @@ for (const [label, tree] of [
     globalThis.fetch = realFetch
   }
 
+  // 接着怎么接：后台 `tavern.say` 一直回 `choices`，界面从来没接过。
+  // 槽位 22 offered（排在 promptData=21 之后）。
+  {
+    let offeredChat = null
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        turns: [...CHAT.turns, { who: '我', text: '我路过，进来看看。' }, { who: '张三', text: '坐吧。' }],
+        choices: [{ label: '·', text: '拉开椅子坐下', hint: '她会说什么' }, { label: '·', text: '站在门口不动', hint: '' }],
+      }),
+    })
+    try {
+      const typed = renderOne('酒馆（TA 给了几个方向）', seen.get('TavernView'), { chat: CHAT, onChat: (c) => { offeredChat = c }, onBack: () => {} }, { 0: '我路过，进来看看。' })
+      clickByText(typed, '说这句')
+      await new Promise((r) => setTimeout(r, 30))
+      t('后台回的方向被界面接住了', Array.isArray(hookStore[20]) && hookStore[20].length === 2, JSON.stringify(hookStore[20]))
+      const OFFER = [{ label: '·', text: '拉开椅子坐下', hint: '她会说什么' }, { label: '·', text: '站在门口不动', hint: '' }]
+      const after = renderOne('酒馆（方向摆出来了）', seen.get('TavernView'), { chat: CHAT, onChat: () => {}, onBack: () => {} }, { 20: OFFER })
+      const aw = textOf(expand(after))
+      t('TA 给的方向摆到屏上了', aw.includes('拉开椅子坐下'), aw.slice(-400))
+      t('方向带解释的连着解释一起摆', aw.includes('她会说什么'), aw.slice(-400))
+      t('说清这是一排可以直接点的方向', aw.includes('可以这样接'), aw.slice(-400))
+      const pick = collectIn(expand(after), (n) => n.type === 'button' && textOf(n).includes('站在门口不动'))
+      t('每个方向都是一颗按钮', pick.length === 1, pick.length)
+      t('方向在输入框上面，不和「说这句」混成一片',
+        aw.indexOf('可以这样接') >= 0 && aw.indexOf('说这句') >= 0 && aw.indexOf('可以这样接') < aw.indexOf('说这句'), aw.slice(-300))
+      // 正在说话时把这排撤掉：留着的话，人能在同一轮里连点两条，
+      // 后台会连着写两轮，前一轮的话就白说了。
+      const whileBusy = renderOne('酒馆（正在说的时候）', seen.get('TavernView'), { chat: CHAT, onChat: () => {}, onBack: () => {} }, { 0: '我路过', 20: OFFER })
+      t('点过一条之后方向先撤掉', whileBusy !== null)
+      // 点一条 = 把这句话说出去，而不是填进输入框等人再按一次。
+      if (pick.length === 1) {
+        const posts2 = []
+        globalThis.fetch = async (url, init) => {
+          posts2.push({ url: String(url), body: init?.body === undefined ? '' : String(init.body) })
+          return { ok: true, json: async () => ({ ok: true, turns: CHAT.turns, choices: [] }) }
+        }
+        pick[0].props.onClick()
+        await new Promise((r) => setTimeout(r, 30))
+        t('点一条方向就直接说出去', posts2.some((x) => x.body.includes('站在门口不动')), posts2.map((x) => x.body).join(' | '))
+      }
+      t('后台没给方向时这一排不出现',
+        !textOf(expand(renderOne('酒馆（TA 没给方向）', seen.get('TavernView'), { chat: CHAT, onChat: () => {}, onBack: () => {} }))).includes('可以这样接'))
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  }
+
   // TA 没回话：我那句已经在文件里了，屏上要照实说
   let keptBack = null
   globalThis.fetch = async () => ({
@@ -1799,6 +1868,75 @@ for (const [label, tree] of [
   const bareText = textOf(expand(bare))
   t('没开场白时说清怎么开始', bareText.includes('先说'), bareText.slice(0, 200))
   t('没名字的时候用「TA」顶上', bareText.includes('TA'), bareText.slice(0, 120))
+
+  // 2026-11-08：酒馆里多两颗按钮——重来一次、从我说的那句另开一条世界线。
+  // 断言盯的不是「画出来了」，是两条容易做错的语义：没有可撤的那句时不许
+  // 让人点；另开一条只挂在「我」说的气泡上（从 TA 的话掰开等于没换）。
+  const allBtns = flatButtons(expand(tree))
+  const againBtn = allBtns.find((b) => textOf(b).includes('重来一次'))
+  t('屏上有「重来一次」', againBtn !== undefined, allBtns.length)
+  t('最后一句是我说的时，「重来一次」按不动',
+    againBtn !== undefined && againBtn.props.disabled === true,
+    againBtn === undefined ? '没找到按钮' : String(againBtn.props.disabled))
+  const branchBtns = allBtns.filter((b) => textOf(b).includes('从这句往下另开一条'))
+  t('「从这句往下另开一条」只挂在我说的那一句上', branchBtns.length === 1, branchBtns.length)
+
+  const branchPosts = []
+  const realFetchBranch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    branchPosts.push({ url: String(url), body: init?.body === undefined ? '' : String(init.body) })
+    return { ok: true, json: async () => ({ ok: true, id: 'chat-branched', card_name: '张三', turns: CHAT.turns.slice(0, 2), notes: [] }) }
+  }
+  try {
+    const bt = renderOne('酒馆（从这句往下另开一条）', seen.get('TavernView'), { chat: CHAT, onChat: () => {}, onBack: () => {} })
+    t('「从这句往下另开一条」点得动', clickByText(bt, '从这句往下另开一条') === true)
+    await new Promise((r) => setTimeout(r, 30))
+    t('点了之后真的去另开了', branchPosts.some((x) => x.url.includes('tavern.branch')), branchPosts.map((x) => x.url).join(' | '))
+    t('带上的是我说的那一句的位置', branchPosts.some((x) => /"at"\s*:\s*1\b/.test(x.body)), branchPosts.map((x) => x.body).join(' | '))
+    t('另开完把新的一场读了回来', branchPosts.some((x) => x.url.includes('tavern.get')), branchPosts.map((x) => x.url).join(' | '))
+  } finally {
+    globalThis.fetch = realFetchBranch
+  }
+
+  // 流式：一段一段读回来。假 fetch 造一条真 SSE 流，并且故意按 7 个字节一段切——
+  // 一个中文字占三字节，切碎之后必然出现「半个字」，正好考验解码器有没有带
+  // stream: true。漏掉它不会抛错，只会悄悄少字或出乱码。
+  const streamPost = []
+  const realFetchStream = globalThis.fetch
+  const enc = new TextEncoder()
+  const chatAfter = [...CHAT.turns, { who: '张三', text: '坐吧。茶在炉子上。' }]
+  const sse = [
+    { type: 'start' },
+    { type: 'delta', text: '坐吧。' },
+    { type: 'delta', text: '茶在炉子上。' },
+    { type: 'done', result: { ok: true, turns: chatAfter } },
+  ].map((f) => `data: ${JSON.stringify(f)}\n\n`).join('')
+  const sseBytes = enc.encode(sse)
+  let sseAt = 0
+  globalThis.fetch = async (url, init) => {
+    streamPost.push({ url: String(url), accept: String(init?.headers?.accept ?? '') })
+    return {
+      ok: true,
+      body: { getReader: () => ({ read: async () => {
+        if (sseAt >= sseBytes.length) return { done: true, value: undefined }
+        const slice = sseBytes.slice(sseAt, sseAt + 7)
+        sseAt += 7
+        return { done: false, value: slice }
+      } }) },
+      json: async () => ({ ok: false, error: '这一轮不该走整段读' }),
+    }
+  }
+  let streamedTurns = null
+  try {
+    const st = renderOne('酒馆（流式回话）', seen.get('TavernView'), { chat: CHAT, onChat: (c) => { streamedTurns = c }, onBack: () => {} }, { 0: '我路过，进来看看。' })
+    t('流式下「说这句」照样点得动', clickByText(st, '说这句') === true)
+    await new Promise((r) => setTimeout(r, 60))
+    t('明确要了事件流（不然只是碰巧显示对了）', streamPost.some((x) => x.accept.includes('text/event-stream')), streamPost.map((x) => x.accept).join(' | '))
+    t('按帧拼回来的整句落进了对话', (streamedTurns?.turns ?? []).length === 3, JSON.stringify(streamedTurns?.turns))
+    t('跨帧的那个中文字没被切坏', String((streamedTurns?.turns ?? [])[2]?.text ?? '') === '坐吧。茶在炉子上。', JSON.stringify((streamedTurns?.turns ?? [])[2]))
+  } finally {
+    globalThis.fetch = realFetchStream
+  }
 }
 
 // ── 酒馆：收个尾 ──────────────────────────────────────────────────
@@ -1892,8 +2030,8 @@ for (const [label, tree] of [
   const doors = expand(renderRoot('进门那一屏（三扇门都是大卡）', base('doors')))
   const doorText = textOf(doors)
   const doorJson = JSON.stringify(doors)
-  t('进门那一屏有三扇门（三句「推门进去」）', (doorText.match(/推门进去/g) ?? []).length === 3, [(doorText.match(/推门进去/g) ?? []).length, doorText.slice(0, 200)])
-  t('三扇门名字都在', ['真实人物记录', '写小说', '酒馆'].every((x) => doorText.includes(x)), doorText.slice(0, 200))
+  t('进门那一屏有五扇门（五句「推门进去」）', (doorText.match(/推门进去/g) ?? []).length === 5, [(doorText.match(/推门进去/g) ?? []).length, doorText.slice(0, 200)])
+  t('五扇门名字都在', ['真实人物记录', '写小说', '酒馆', '玩一段', '写日记'].every((x) => doorText.includes(x)), doorText.slice(0, 200))
   t('门卡是大卡片（圆角 16）', doorJson.includes('"borderRadius":16'), doorJson.slice(0, 200))
   // 门是竖着的：三扇并排、每扇各自撑到整高（不是三个横躺的卡片叠着）
   t('三扇门横向并排', doorJson.includes('"flexWrap":"wrap"') && doorJson.includes('"alignItems":"stretch"'), doorJson.slice(0, 200))
@@ -2187,6 +2325,41 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   const withMark = renderOne('改过剧本的章有标记', seen.get('BookView'), { bookId: 'demo', flash: () => {}, onBack: () => {} },
     { 0: BOOK, 1: { ok: true, chapters: 1, text: '', theme: '', ending: '' }, 2: 1, 3: '第一章写了一半', 16: [1] })
   t('改过剧本的那一章有标记', textOf(expand(withMark)).includes('有剧本'), textOf(expand(withMark)).slice(0, 400))
+}
+
+{
+  // 「末尾给三条路」：后台 `novel.chapter.draft` 一直支持 `wantChoices`，
+  // 界面从来没给过开关，于是小说这边等于没这个功能。
+  // 槽位：18 wantChoices / 19 draftChoices（排在 chapterBroken=17 之后）。
+  const BOOK = { ok: true, id: 'demo', data: { title: '长夜' }, chapters: [{ index: 1 }] }
+  const OUT = { ok: true, chapters: 1, text: '', theme: '', ending: '' }
+  const tree = renderOne('逐章写（有「末尾给三条路」开关）', seen.get('BookView'), { bookId: 'demo', flash: () => {}, onBack: () => {} },
+    { 0: BOOK, 1: OUT, 2: 1, 3: '' })
+  const words = textOf(expand(tree))
+  t('写作区有「末尾给三条路」开关', words.includes('末尾给三条路'), words.slice(0, 400))
+  const boxes = collectIn(expand(tree), (n) => n.props?.type === 'checkbox')
+  t('这个开关默认关着', boxes.length === 1 && boxes[0].props.checked === false, boxes.length)
+  // 默认关的理由：正经写的时候末尾挂三个浅选项，等于拿套路把作者往下推。
+  // 「不知道往哪写时才打开」这句在 title 上（摆成正文会把写作区撑长一行）。
+  const tip = collectIn(expand(tree), (n) => typeof n.props?.title === 'string' && n.props.title.includes('不知道往哪写'))
+  t('说清什么时候才该打开', tip.length === 1, tip.length)
+
+  const withChoices = renderOne('逐章写（这一稿给了方向）', seen.get('BookView'), { bookId: 'demo', flash: () => {}, onBack: () => {} },
+    { 0: BOOK, 1: OUT, 2: 1, 3: '', 4: '第一章写完了。',
+      19: [{ label: '·', text: '让他们在山道上撞见', hint: '' }, { label: '·', text: '先写林小雨那一晚', hint: '她还不知道' }] })
+  const cw = textOf(expand(withChoices))
+  t('这一稿给的方向摆出来了', cw.includes('山道上撞见'), cw.slice(0, 600))
+  t('方向带解释的连着解释一起摆', cw.includes('她还不知道'), cw.slice(0, 600))
+  t('说清点一条是填进上面的框', cw.includes('点一条填进上面的框'), cw.slice(0, 600))
+  const pickBtn = collectIn(expand(withChoices), (n) => n.type === 'button' && textOf(n).includes('先写林小雨那一晚'))
+  t('方向是能点的按钮', pickBtn.length === 1, pickBtn.length)
+  if (pickBtn.length === 1) {
+    pickBtn[0].props.onClick()
+    t('点一条就填进「这一章想强调什么」', String(hookStore[8] ?? '') === '先写林小雨那一晚', String(hookStore[8]))
+  }
+  t('没给方向时这一块不占地方',
+    !textOf(expand(renderOne('逐章写（这一稿没给方向）', seen.get('BookView'), { bookId: 'demo', flash: () => {}, onBack: () => {} },
+      { 0: BOOK, 1: OUT, 2: 1, 3: '', 4: '第一章写完了。' }))).includes('点一条填进上面的框'))
 }
 
 {
@@ -2539,7 +2712,8 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   const openedText = textOf(expand(opened))
   t('翻开某一天能看到那一节正文', openedText.includes('去看了牙'), openedText.slice(0, 400))
   t('那天打的分也看得见', openedText.includes('健康 6'), openedText.slice(0, 400))
-  t('翻看页有「回去」', openedText.includes('回去'), openedText.slice(0, 400))
+  // 按钮名要说清退到哪：这一页的上一层就是日记列表，写「回去」会被当成回首页。
+  t('翻看页有「回日记」', openedText.includes('回日记'), openedText.slice(0, 400))
 
   const emptyDay = renderOne('写日记（那天没写正文）', Diary, { onBack: () => {}, flash: () => {}, onStart: () => {}, busy: '' }, { 0: READY, 1: READY.dir, 2: false, 5: { date: '2026-10-29', data: { date: '2026-10-29' } } })
   t('那天没写正文就直说', textOf(expand(emptyDay)).includes('没有写正文'), textOf(expand(emptyDay)).slice(0, 300))
@@ -2748,6 +2922,63 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
   t('挑过卡才摆「给模型看哪几节」', pinned.includes('给模型看哪几节'), pinned.slice(0, 600))
   const unpinned = textOf(expand(renderOne('首页（没挑卡不摆入口）', Home, { ...homeProps, pinId: '' })))
   t('没挑卡时不摆这个入口', !unpinned.includes('给模型看哪几节'), unpinned.slice(0, 600))
+}
+
+{
+  // 思考那一段的两档。以前只有「开 / 关」：关了模型在思考里没有任何约束，
+  // 会回到「想着想着开始评论这段剧情」的老路；开着那一档又会让某些模型把
+  // 内心戏写进正文（回答里冒出「（心想：她大概是想走了）」）。
+  // 现在多一档「中性」，两组指令互斥，同一处切换。
+  const P = api.__TavernPrefs
+  t('思考档位那一屏导出了', typeof P === 'function')
+
+  const ROLE = { user_name: '阿宝', tavern_thinking: true, tavern_thinking_style: 'role' }
+  const NEUTRAL = { ...ROLE, tavern_thinking_style: 'neutral' }
+  const OFF = { ...ROLE, tavern_thinking: false }
+  const saved = []
+  const onSave = (patch) => saved.push(patch)
+
+  const roleTree = renderOne('演的两项（沉浸档）', P, { prefs: ROLE, onSave }, { 0: '阿宝' })
+  const roleWords = textOf(expand(roleTree))
+  t('两档都摆出来', roleWords.includes('沉浸') && roleWords.includes('中性'), roleWords.slice(0, 600))
+  t('说清现在用哪一档', roleWords.includes('用哪一档'), roleWords.slice(0, 600))
+  // 高亮走的是 className（`Btn` 把 `tone` 拼成 `lc-btn primary sm`），
+  // 不是 `props.tone`——`props.tone` 在 `Btn` 那一层，展开到 `button` 就没了。
+  const roleBtns = collectIn(expand(roleTree), (n) => n.type === 'button')
+  const roleOn = roleBtns.find((b) => textOf(b).includes('沉浸'))
+  const roleOff = roleBtns.find((b) => textOf(b).includes('中性'))
+  const lit = (b) => String(b?.props?.className ?? '').includes('primary')
+  t('沉浸档高亮着', lit(roleOn), String(roleOn?.props?.className))
+  t('中性档没高亮', !lit(roleOff), String(roleOff?.props?.className))
+
+  // 点「已经选中的那一档」不该再发一次存盘：那不是用户的意图，是一次白写的盘。
+  saved.length = 0
+  roleOn.props.onClick()
+  t('已经选中的那一档再点不写盘', saved.length === 0, JSON.stringify(saved))
+  roleOff.props.onClick()
+  t('点另一档就存下来', saved.length === 1 && saved[0].tavern_thinking_style === 'neutral', JSON.stringify(saved))
+
+  const neutralTree = renderOne('演的两项（中性档）', P, { prefs: NEUTRAL, onSave }, { 0: '阿宝' })
+  const nBtns = collectIn(expand(neutralTree), (n) => n.type === 'button')
+  t('中性档反过来高亮', lit(nBtns.find((b) => textOf(b).includes('中性'))), String(nBtns.find((b) => textOf(b).includes('中性'))?.props?.className))
+  saved.length = 0
+  nBtns.find((b) => textOf(b).includes('沉浸')).props.onClick()
+  t('从中间档切回沉浸也存', saved.length === 1 && saved[0].tavern_thinking_style === 'role', JSON.stringify(saved))
+
+  // 关掉整段时不该还摆两颗档位按钮：那时候没有「哪一档」可言，
+  // 摆出来用户会以为点了有用。
+  const offTree = renderOne('演的两项（整段关掉）', P, { prefs: OFF, onSave }, { 0: '阿宝' })
+  const offWords = textOf(expand(offTree))
+  t('关掉时不摆档位', !offWords.includes('用哪一档'), offWords.slice(0, 600))
+  t('关掉时说清会怎样', offWords.includes('跳出角色'), offWords.slice(0, 900))
+  saved.length = 0
+  clickByText(offTree, '打开')
+  t('关掉时那条按钮是「打开」', saved.length === 1 && saved[0].tavern_thinking === true, JSON.stringify(saved))
+
+  // 老配置里没有这一项（用户升级前存过盘）：按沉浸算，不能因为缺字段就一片空白。
+  const legacy = renderOne('演的两项（老配置没有档位）', P, { prefs: { user_name: '', tavern_thinking: true }, onSave }, { 0: '' })
+  const lBtns = collectIn(expand(legacy), (n) => n.type === 'button')
+  t('认不出档位时按沉浸算', lit(lBtns.find((b) => textOf(b).includes('沉浸'))), '')
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

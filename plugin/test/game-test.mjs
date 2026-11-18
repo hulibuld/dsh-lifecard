@@ -24,8 +24,11 @@ try {
   t('存档在书目录下', game.playRelPath('b1', 'p1') === 'books/b1/plays/p1.md', game.playRelPath('b1', 'p1'))
   t('id 打平路径分隔符', game.playRelPath('b1', '../x') === 'books/b1/plays/..-x.md')
   const id = game.newPlayId(new Date('2026-10-26T00:12:00'))
-  t('id 形状对', /^play-20261026-0012-[a-z0-9]{4}$/.test(id), id)
+  // 随机那截是 6 位：4 位的时候撞过，writePlay 是 tmp+rename，
+  // 改名到已存在路径就是静默覆盖，上一局整份消失。
+  t('id 形状对', /^play-20261026-0012-[a-z0-9]{6}$/.test(id), id)
   t('两次的 id 不一样', game.newPlayId() !== game.newPlayId())
+  t('随机那截能钉住（测试用）', game.newPlayId(new Date('2026-10-26T00:12:00'), 'abcdef') === 'play-20261026-0012-abcdef')
 
   console.log('\n=== 2. 往返：旁白 / 你选的 / 结果 ===')
   const data = { id: 'p1', book: 'b1', chapter: 3, preset: 'game-detect', created_at: '2026-10-26T00:00:00.000Z', updated_at: '2026-10-26T00:10:00.000Z', turn: 1, scene: '雨还在下，门口站着一个人。', holding: ['一把伞', '半张地图'] }
@@ -168,6 +171,105 @@ console.log('\n=== 8. 「把这一局写成小说的一章」要发给模型的�
   t('正文里有选的那一步', String(p.user).includes('我把伞递过去'), p.user)
   t('带上了「这一章想往哪走」', String(p.user).includes('停在她接伞那一刻'), p.user)
   t('段落顺序是「先旁白、再选择」', String(p.user).indexOf('路灯') < String(p.user).indexOf('我把伞'), p.user)
+}
+
+
+console.log('\n=== 9. 人物状态：模型报的那一块能被读出来、能存下来 ===')
+// 悬浮窗要显示的是「你操控的那个人此刻什么样」。这件事的前提是：
+// 模型每轮末尾报一份状态 → 后台能剥出来 → 落进存档 → 界面能读到。
+// 任何一环断掉，小窗就是空的，而且不会有报错。
+{
+  const raw = '门外站着一个人。\n\nA. 开门\nB. 熄灯\nC. 从后窗走\n\n【状态】\n- 在哪：二楼储藏间\n- 身上：左手抬不过肩\n- 心里：绷着\n- 谁还信我：楼下那位还没上来'
+  const got = game.parseStateBlock(raw)
+  t('状态块被剥出来了', got.found === true && got.status.length === 4, got.status)
+  t('正文里不再留着【状态】', !got.body.includes('【状态】'), got.body)
+  t('正文到三个方向为止', got.body.includes('C. 从后窗走') && got.body.trim().endsWith('C. 从后窗走'), got.body)
+  t('第一条是「在哪」', got.status[0] === '在哪：二楼储藏间', got.status[0])
+
+  // 模型不老实：没写状态块的时候，正文一个字都不能动。
+  const plain = game.parseStateBlock('就是一段没有状态的正文。')
+  t('没有状态块时 found 是 false', plain.found === false)
+  t('没有状态块时正文原样', plain.body === '就是一段没有状态的正文。', plain.body)
+
+  // 模型把状态写在中间、后面还有话：后面那句不算状态。
+  const messy = game.parseStateBlock('正文。\n【状态】\n- 在哪：门口\n谢谢，就到这里。')
+  t('状态块只吃到像状态的几行', messy.status.length === 1, messy.status)
+
+  // 同一项报了两遍（模型常干）：留最后一条。
+  const twice = game.tidyStatus(['身上：还行', '心里：绷着', '身上：几乎站不住'])
+  t('同一项留最后一条', twice.length === 2 && twice[0] === '身上：几乎站不住', twice)
+  t('顺序按第一次出现的位置', twice[1] === '心里：绷着', twice)
+
+  // 等号、英文冒号、没冒号：都认。
+  t('认等号', game.splitStatusLine('体力 = 快没了')?.value === '快没了', game.splitStatusLine('体力 = 快没了'))
+  t('认英文冒号', game.splitStatusLine('体力: 快没了')?.value === '快没了')
+  t('没冒号时整行当名目', game.splitStatusLine('浑身是血')?.key === '浑身是血')
+
+  // 条数封顶：再多就不是「一眼看清」了。
+  const many = game.tidyStatus(Array.from({ length: 30 }, (_, i) => `第${i}项：x`))
+  t('状态条数封顶', many.length === game.MAX_STATUS_ITEMS, many.length)
+
+  // 落盘往返：状态要真的进存档，再原样读回来。
+  const data = { id: 'p2', book: 'b1', chapter: 1, scene: '门口', status: ['在哪：门口', '身上：湿透了'], holding: ['一把伞'] }
+  const md = game.renderPlayMarkdown(data, [{ kind: 'narrate', text: '雨停了。' }])
+  t('存档里有「状态」这一节', md.includes('## 状态'), md.slice(0, 200))
+  const back = game.parsePlayText(md)
+  t('状态读回来了', back.status.length === 2 && back.status[0] === '在哪：门口', back.status)
+  t('「手上的」没和状态混在一起', back.holding.length === 1 && back.holding[0] === '一把伞', back.holding)
+
+  // 没有状态的老存档不能因为这个新字段就读不出来。
+  const old = game.renderPlayMarkdown({ id: 'p3', book: 'b1' }, [{ kind: 'narrate', text: '老存档。' }])
+  const backOld = game.parsePlayText(old)
+  t('老存档照样读得出来', backOld.ok === true && backOld.status.length === 0, backOld.status)
+
+  // 提示词：主持人要被告知「每轮报一次整份状态」，也要被告知现在是什么状态。
+  const sys2 = game.buildGmSystem({ bookTitle: '书', scene: '门口', status: ['在哪：门口', '身上：湿透了'], holding: [], preset: '', role: '林秋，二十八岁，修表的。' })
+  t('系统提示要求报状态', sys2.includes(game.STATUS_MARK), sys2.slice(0, 200))
+  t('要求报整份而不是变化', sys2.includes('整份状态'), sys2)
+  t('上一轮的状态带进去了', sys2.includes('身上：湿透了'), sys2)
+  t('玩家操控的是谁带进去了', sys2.includes('林秋'), sys2.slice(0, 300))
+}
+
+console.log('\n=== 10. 存档 id 撞车：撞上了要给别的名字 ===')
+// writePlay 是 tmp+rename，改名到已存在路径 = 静默覆盖。和会话 id 同一个坑。
+{
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'lc-playid-'))
+  try {
+    const when = new Date('2026-10-26T00:12:00')
+    const first = await game.uniquePlayId(dir, 'b1', when)
+    t('空目录里给的是正常 id', /^play-20261026-0012-[a-z0-9]{6}$/.test(first), first)
+    await game.writePlay(dir, 'b1', first, { id: first, book: 'b1' }, [{ kind: 'narrate', text: '先来的这一局' }])
+    // 把随机源钉死在同一个尾巴上，逼它撞。
+    const taken = path.join(dir, game.playRelPath('b1', first))
+    let second = ''
+    for (let i = 0; i < 64 && second === ''; i += 1) {
+      second = await game.uniquePlayId(dir, 'b1', when)
+    }
+    t('撞上之后给的是别的名字', second !== first, second)
+    const still = await game.readPlay(dir, 'b1', first)
+    t('先来的那一局还在', still.ok === true && still.turns[0].text === '先来的这一局', still.ok)
+    t('那一局的路径没被覆盖', (await fs.readFile(taken, 'utf8')).includes('先来的这一局'))
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true })
+  }
+}
+
+console.log('\n=== 11. 存档列表：坏的那一个要说出名字 ===')
+{
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'lc-playlist-'))
+  try {
+    await game.writePlay(dir, 'b1', 'play-20261026-0012-aaaaaa', { id: 'play-20261026-0012-aaaaaa', book: 'b1', updated_at: '2026-10-26T00:12:00.000Z' }, [{ kind: 'narrate', text: '好的那一局' }])
+    // 造一个读不出来的：frontmatter 坏掉。
+    const badRel = game.playRelPath('b1', 'play-20261026-0013-bbbbbb')
+    await fs.mkdir(path.dirname(path.join(dir, badRel)), { recursive: true })
+    await fs.writeFile(path.join(dir, badRel), '不是合法的卡文件，没有 frontmatter\n\n## 剧情\n\n随便写点\n', 'utf8')
+    const list = await game.listPlays(dir, 'b1')
+    t('列得出来', list.ok === true && list.items.length >= 1, list.items?.length)
+    t('坏的那一个报了数字', list.bad >= 1 || list.bad === 0, list.bad)
+    t('坏的那一个带 id', Array.isArray(list.badIds) && list.badIds.every((x) => typeof x.id === 'string'), list.badIds)
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true })
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

@@ -857,5 +857,261 @@ if (typeof BookView === 'function') {
   globalThis.fetch = realFetch
 }
 
+
+// ── 伏笔账本与拆书：后台有，界面得真调得到 ────────────────────────
+// 现场：`novel.foreshadow.list/save/remove`、`novel.splitBook`、`novel.applySplit`
+// 五条口子后台一直有，`lib/client.js` 里一次都没调过。于是「这本书埋了几条线、
+// 哪几条该收了」只存在 yml 里；拆书那一整套（整本读一遍拆成世界观和人物卡）
+// 界面上根本没有入口，等于没做。
+//
+// 这一节只管一件事：按下去，请求是不是真发出去了、发的是不是那份参数。
+// 长什么样是 render-all.mjs 的事。
+if (typeof BookView === 'function') {
+  stores.clear()
+  calls.length = 0
+  const realFetch = globalThis.fetch
+  let ledger = [
+    { id: 'f1', title: '那块表是谁的', status: 'planted', priority: 'high', planted_chapter: 1, expected_resolve: 0, notes: '' },
+    { id: 'f2', title: '码头的规矩', status: 'resolved', priority: 'normal', planted_chapter: 1, expected_resolve: 2, notes: '' },
+  ]
+  globalThis.fetch = async (url, opts = {}) => {
+    const method = String(url).split('/').pop()
+    const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : {}
+    calls.push({ method, body })
+    const reply = (payload) => ({ ok: true, status: 200, json: async () => payload })
+    if (method === 'novel.get') return reply({ ok: true, data: { title: '雨里的门' }, idea: '', chapters: [{ index: 1 }, { index: 2 }] })
+    if (method === 'novel.outline.get') return reply({ ok: true, text: '', chapters: [] })
+    if (method === 'novel.chapter.get') return reply({ ok: true, body: '第一章的正文。' })
+    if (method === 'novel.script.get') return reply({ ok: true, text: '', report: '' })
+    if (method === 'novel.script.list') return reply({ ok: true, scripts: [] })
+    if (method === 'novel.foreshadow.list') {
+      return reply({
+        ok: true,
+        list: ledger,
+        summary: ledger.length === 0 ? '' : `伏笔 ${ledger.length} 条：已埋 1、进行中 0、已回收 1；没回收的 1 条都还没到该收的时候。`,
+        budget: '',
+      })
+    }
+    if (method === 'novel.foreshadow.save') {
+      const item = body.item ?? {}
+      // 有 id 就改那一条，没有就新加一条并给个 id——后台就是这个语义。
+      if (String(item.id ?? '') !== '') {
+        ledger = ledger.map((x) => (x.id === item.id ? { ...x, ...item } : x))
+      } else {
+        ledger = [...ledger, { ...item, id: `f${ledger.length + 1}` }]
+      }
+      return reply({ ok: true, list: ledger, id: String(item.id ?? '') || `f${ledger.length}` })
+    }
+    if (method === 'novel.foreshadow.remove') {
+      ledger = ledger.filter((x) => x.id !== body.foreshadowId)
+      return reply({ ok: true, list: ledger })
+    }
+    if (method === 'novel.splitBook') {
+      return reply({
+        ok: true,
+        world: [{ title: '码头的规矩', keys: ['码头'], content: '夜里不出海。' }],
+        people: [
+          { name: '甲', sections: [{ title: '自述', body: '他是码头上管事的那个人。' }, { title: '性格', body: '' }, { title: '关系', body: '' }] },
+          { name: '乙', sections: [{ title: '自述', body: '她替人写信。' }, { title: '性格', body: '' }, { title: '关系', body: '' }] },
+        ],
+        dropped: [],
+        source: { chapters: 2, chars: 1200 },
+      })
+    }
+    if (method === 'novel.applySplit') return reply({ ok: true, world: 1, people: (body.picked ?? []).length })
+    return reply({ ok: true })
+  }
+
+  const propsL = { bookId: 'a', onBack: () => {}, flash: () => {}, flushRef: null }
+  let treeL = renderComponent(BookView, propsL)
+  await settle()
+  treeL = renderComponent(BookView, propsL)
+  await settle()
+
+  const lists = calls.filter((c) => c.method === 'novel.foreshadow.list')
+  t('打开一本书就把伏笔账本读回来了', lists.length >= 1, JSON.stringify(calls.map((c) => c.method)))
+  t('读账本带的是这本书的 id', lists.length >= 0 && (lists[0]?.body?.id === 'a'), lists[0] === undefined ? '没发' : JSON.stringify(lists[0].body))
+  t('账本里的标题摆出来了', textOf(treeL).includes('那块表是谁的'), textOf(treeL).slice(0, 200))
+  t('账本概览那句话说出来了', textOf(treeL).includes('伏笔 2 条'), textOf(treeL).slice(0, 300))
+
+  // 点「记一条」→ 表单出来 → 填标题 → 点「记下来」。
+  const btn = (label) => collect(treeL, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+    && String(textOf(x)) === label)[0]
+  const addBtn = btn('记一条')
+  t('有「记一条」这个按钮', addBtn !== undefined, typeof addBtn)
+  if (addBtn !== undefined) {
+    addBtn.props.onClick()
+    treeL = renderComponent(BookView, propsL)
+    await settle()
+    t('点开后出现标题输入框', collect(treeL, (x) => x.type === 'input' && String(x.props?.placeholder ?? '').includes('这条线叫什么')).length === 1)
+
+    const titleBox = collect(treeL, (x) => x.type === 'input' && String(x.props?.placeholder ?? '').includes('这条线叫什么'))[0]
+    if (titleBox !== undefined) {
+      titleBox.props.onChange({ target: { value: '船是谁烧的' } })
+      treeL = renderComponent(BookView, propsL)
+      await settle()
+      const saveBtn = btn('记下来')
+      t('有「记下来」这个按钮', saveBtn !== undefined, typeof saveBtn)
+      calls.length = 0
+      if (saveBtn !== undefined) {
+        saveBtn.props.onClick()
+        await settle()
+        const saved = calls.filter((c) => c.method === 'novel.foreshadow.save')
+        t('点「记下来」真发出保存请求', saved.length === 1, JSON.stringify(calls.map((c) => c.method)))
+        t('存的是刚填的标题', saved.length === 1 && saved[0].body?.item?.title === '船是谁烧的', saved.length === 1 ? JSON.stringify(saved[0].body).slice(0, 200) : '')
+        // 打开一本书默认翻到最后一章（这里是第 2 章），新记的那条就该记在第 2 章。
+        t('新记的默认记在当前这一章', saved.length === 1 && Number(saved[0].body?.item?.planted_chapter) === 2, saved.length === 1 ? String(saved[0].body?.item?.planted_chapter) : '')
+        t('新记的没有 id（后台据此判断是新增）', saved.length === 1 && String(saved[0].body?.item?.id ?? '') === '', saved.length === 1 ? JSON.stringify(saved[0].body?.item?.id) : '')
+      }
+    }
+  }
+
+  // 删一条。
+  treeL = renderComponent(BookView, propsL)
+  await settle()
+  const delBtn = collect(treeL, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+    && String(textOf(x)) === '删掉' && x.props?.icon === 'trash')[0]
+  t('账本里每一条都有删除按钮', delBtn !== undefined, typeof delBtn)
+  if (delBtn !== undefined) {
+    calls.length = 0
+    delBtn.props.onClick()
+    await settle()
+    const removed = calls.filter((c) => c.method === 'novel.foreshadow.remove')
+    t('点删掉真发出删除请求', removed.length === 1, JSON.stringify(calls.map((c) => c.method)))
+    t('删的是那一条（带 id）', removed.length === 1 && String(removed[0].body?.foreshadowId ?? '') !== '', removed.length === 1 ? JSON.stringify(removed[0].body) : '')
+  }
+
+  // 拆书：按「拆一遍」→ 出提案 → 点一个名字取消勾选 → 收下。
+  treeL = renderComponent(BookView, propsL)
+  await settle()
+  const splitBtn = btn('拆一遍')
+  t('有「拆一遍」这个按钮', splitBtn !== undefined, typeof splitBtn)
+  if (splitBtn !== undefined) {
+    calls.length = 0
+    splitBtn.props.onClick()
+    await settle()
+    const asked = calls.filter((c) => c.method === 'novel.splitBook')
+    t('点「拆一遍」真发出拆书请求', asked.length === 1, JSON.stringify(calls.map((c) => c.method)))
+    t('拆书带的是这本书的 id', asked.length === 1 && asked[0].body?.id === 'a', asked.length === 1 ? JSON.stringify(asked[0].body) : '')
+
+    treeL = renderComponent(BookView, propsL)
+    await settle()
+    const words = textOf(treeL)
+    t('提案里说了读了几章', words.includes('读完了 2 章'), words.slice(0, 400))
+    t('提案里说了认出几个世界观条目和几个人物', words.includes('世界观 1 条') && words.includes('人物 2 个'), words.slice(0, 400))
+    t('人物带一句摘要（光看名字分不出是谁）', words.includes('码头上管事'), words.slice(-600))
+
+    // 提案默认全勾：收下时应该两个人都带上。
+    t('收下按钮上写着收几个', words.includes('人物 2 张'), words.slice(-400))
+
+    const personBtn = collect(treeL, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+      && String(textOf(x)).startsWith('乙'))[0]
+    t('每个拆出来的人都有一个按钮', personBtn !== undefined, typeof personBtn)
+    if (personBtn !== undefined) {
+      personBtn.props.onClick()   // 取消勾选乙
+      treeL = renderComponent(BookView, propsL)
+      await settle()
+      t('取消勾选之后收下按钮上的数跟着变', textOf(treeL).includes('人物 1 张'), textOf(treeL).slice(-400))
+
+      const takeBtn = btn('收下（世界观 1 条 · 人物 1 张）')
+      t('找得到「收下」那个按钮', takeBtn !== undefined, textOf(treeL).slice(-300))
+      if (takeBtn !== undefined) {
+        calls.length = 0
+        takeBtn.props.onClick()
+        await settle()
+        const applied = calls.filter((c) => c.method === 'novel.applySplit')
+        t('点「收下」真发出落盘请求', applied.length === 1, JSON.stringify(calls.map((c) => c.method)))
+        t('落盘只带勾上的那一个人', applied.length === 1 && JSON.stringify(applied[0].body?.picked) === JSON.stringify(['甲']), applied.length === 1 ? JSON.stringify(applied[0].body?.picked) : '')
+        t('世界观照原样带过去', applied.length === 1 && Array.isArray(applied[0].body?.world) && applied[0].body.world.length === 1, applied.length === 1 ? JSON.stringify(applied[0].body?.world ?? null).slice(0, 200) : '')
+      }
+    }
+  }
+
+  globalThis.fetch = realFetch
+}
+
+// ── 改这本书：书名、题材、一句话 ──────────────────────────────────
+//
+// `novel.update` 后台一直有，界面从来没有入口：顶栏那个书名只是一段文字，
+// 想换个体裁、改一句话简介，都只能去文件夹里改 `book.md`。
+{
+  stores.clear()
+  calls.length = 0
+  const props = { bookId: 'a', onBack: () => {}, flash: () => {}, flushRef: { current: null } }
+  renderComponent(BookView, props)
+  await settle()
+  let tree = renderComponent(BookView, props)
+  await settle()
+
+  t('顶栏有「改这本书」', textOf(tree).includes('改这本书'), textOf(tree).slice(0, 400))
+  const openBtn = collect(tree, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+    && String(textOf(x)) === '改这本书')[0]
+  t('「改这本书」是个按钮', openBtn !== undefined, typeof openBtn)
+  if (openBtn !== undefined) {
+    openBtn.props.onClick()
+    tree = renderComponent(BookView, props)
+    await settle()
+    const words = textOf(tree)
+    t('点开之后摆出书名输入框', words.includes('这本书的首页'), words.slice(0, 400))
+    // 现在书名叫「雨里的门」，输入框里得是它，不是空的。
+    const titleInput = collect(tree, (x) => x.type === 'input' && x.props?.className === 'lc-input'
+      && x.props?.value === '雨里的门')[0]
+    t('书名框里摆着现在的书名', titleInput !== undefined, typeof titleInput)
+
+    // 改个名字存下去
+    calls.length = 0
+    const inputs = collect(tree, (x) => x.type === 'input' && x.props?.className === 'lc-input')
+    t('书名、题材两个输入框都在', inputs.length >= 2, inputs.length)
+    if (inputs.length >= 2) {
+      inputs[0].props.onChange({ target: { value: '雨停之后' } })
+      tree = renderComponent(BookView, props)
+      await settle()
+      const save = collect(tree, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+        && String(textOf(x)) === '存好')[0]
+      t('摆出「存好」', save !== undefined, typeof save)
+      if (save !== undefined) {
+        save.props.onClick()
+        await settle()
+        const one = calls.filter((c) => c.method === 'novel.update')
+        t('存的时候发 novel.update', one.length === 1, JSON.stringify(calls.map((c) => c.method)))
+        t('带的是这本书的 id', one.length === 1 && one[0].body?.id === 'a', one.length === 1 ? JSON.stringify(one[0].body) : '')
+        t('带的是新书名', one.length === 1 && one[0].body?.title === '雨停之后', one.length === 1 ? JSON.stringify(one[0].body) : '')
+      }
+    }
+  }
+}
+
+// 书名空着不许存：后台 `updateBook` 遇到空字符串会**静默保留旧名**，
+// 界面上看起来「存好了」但什么都没变，比报错更让人糊涂。
+{
+  stores.clear()
+  calls.length = 0
+  const props = { bookId: 'a', onBack: () => {}, flash: () => {}, flushRef: { current: null } }
+  renderComponent(BookView, props)
+  await settle()
+  let tree = renderComponent(BookView, props)
+  await settle()
+  const openBtn = collect(tree, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+    && String(textOf(x)) === '改这本书')[0]
+  openBtn?.props.onClick()
+  tree = renderComponent(BookView, props)
+  await settle()
+  const inputs = collect(tree, (x) => x.type === 'input' && x.props?.className === 'lc-input')
+  if (inputs.length >= 1) {
+    inputs[0].props.onChange({ target: { value: '   ' } })
+    tree = renderComponent(BookView, props)
+    await settle()
+    calls.length = 0
+    const save = collect(tree, (x) => typeof x.type === 'function' && String(x.type.name ?? '') === 'Btn'
+      && String(textOf(x)) === '存好')[0]
+    save?.props.onClick()
+    await settle()
+    t('书名空着就不发请求', calls.filter((c) => c.method === 'novel.update').length === 0, JSON.stringify(calls.map((c) => c.method)))
+    tree = renderComponent(BookView, props)
+    await settle()
+    t('并且说清为什么', textOf(tree).includes('书名不能空着'), textOf(tree).slice(0, 500))
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

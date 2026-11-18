@@ -622,6 +622,34 @@ export function sectionBody(sections, title) {
 }
 
 /**
+ * 这张卡是不是「提示词型」：自述很长，而且没有性格/开场白/对话示例。
+ *
+ * 这种卡（网上流传的破限卡、规范卡）整份就是给模型的硬性指令，没有人物细节；
+ * 它的正确用法是原样当规则读，而不是当成人物描述塞在演法说明后面。
+ *
+ * **判据只能有一处。** 以前 `lib/index.js` 的 `cardIsPromptStyle` 与
+ * `lib/tavern.js` 的 `personaFromCard` 各写了一份，后者多一个
+ * `truncated === false`。同一张卡在「酒馆门里说话」（走 tavern 的判据）
+ * 与「宿主会话装配系统提示」（走 index 的判据）会被判成不同类型，于是
+ * 走两条不同的提示词形状——用户看到的是「同一张卡，换个地方就不灵」。
+ *
+ * @param {Array<{title: string, body: string}>} sections 卡的小节
+ * @param {object} [options]
+ * @param {number} [options.minChars] 自述至少多少字才算（默认 4000）
+ * @returns {boolean}
+ */
+export function cardIsPromptStyle(sections, options = {}) {
+  const min = Number.isFinite(options?.minChars) === true ? options.minChars : 4000
+  const self = sectionBody(sections, '自述')
+  const selfLen = self.trim().length
+  if (selfLen < min) return false
+  // 有任何一节人物细节，它就是一张正常的人物卡，不是一堆硬规则。
+  const DETAIL_TITLES = ['性格', '开场白', '对话示例', '外貌']
+  const detailed = DETAIL_TITLES.some((title) => sectionBody(sections, title).trim() !== '')
+  return !detailed
+}
+
+/**
  * 把「世界书条目」小节读回成一组对象。
  *
  * 世界书落盘时正文长这样（`plugin/lib/index.js` 的 importWorldInfo 写的）：

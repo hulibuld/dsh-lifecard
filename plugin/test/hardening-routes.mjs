@@ -1032,10 +1032,16 @@ console.log('\n=== 22b. 三扇门能收起来、也能装回来 ===')
   t('也能装回来', back.ok === true && !back.hidden_doors.includes('tavern'), JSON.stringify(back))
   const bad = await table['door.set']({ id: 'nope', hidden: true })
   t('不认识的门直接拒绝', bad.ok === false && String(bad.error).includes('哪扇门'), JSON.stringify(bad))
+  // 五扇门（真实人物记录 / 写小说 / 酒馆 / 玩一段 / 写日记）全收起来才该拦。
+  // 以前这里只收了 novel+tavern+real 三扇就断言被拦——门加了之后，那句判据
+  // 必须跟着改成「按门牌数量」，不能还写死三扇。
   await table['door.set']({ id: 'novel', hidden: true })
   await table['door.set']({ id: 'tavern', hidden: true })
-  const two = await table['door.set']({ id: 'real', hidden: true })
-  t('三扇门全收起来会被拦住', two.ok === false && String(two.error).includes('至少留一扇'), JSON.stringify(two))
+  await table['door.set']({ id: 'game', hidden: true })
+  const four = await table['door.set']({ id: 'diary', hidden: true })
+  t('还剩一扇时不拦（收四扇都行）', four.ok === true && four.hidden_doors.length === 4, JSON.stringify(four.hidden_doors))
+  const all = await table['door.set']({ id: 'real', hidden: true })
+  t('五扇门全收起来会被拦住', all.ok === false && String(all.error).includes('至少留一扇'), JSON.stringify(all))
   await table['door.set']({ id: 'tavern', hidden: false })
   const again = await table['door.set']({ id: 'novel', hidden: true })
   t('收两次不会重复记', again.ok === true && again.hidden_doors.filter((x) => x === 'novel').length === 1, JSON.stringify(again.hidden_doors))
@@ -1479,6 +1485,10 @@ console.log('\n=== 27. 后台替用户开新对话（session.open）===')
   const table2 = api.buildApi({ get: (name) => (name === 'sessionController' ? controller : undefined) }, async () => ws, {})
   const ok = await table2['session.open']({ preset: 'lc-tavern', text: '/lifecard-interview\n帮我建一张新的人物卡' })
   t('建会话时把预设带过去', made.length === 1 && made[0]?.agentPreset === 'lc-tavern', made)
+  // 会话要开在用户这个资料夹里。SessionCreateRequest 收的字段是 cwd（或 workspaceId），
+  // 写成 workspace 会被宿主静默忽略：会话照开，位置照旧，还不报错。
+  // 这条断言专门守这个字段名——上一行守 agentPreset，查不到 cwd。
+  t('会话开在用户这个资料夹里', made.length === 1 && made[0]?.cwd === ws, made)
   t('建好之后把第一句发出去', sent.length === 1 && String(sent[0]?.content?.[0]?.text ?? '').includes('/lifecard-interview'), sent)
   t('发消息是队列模式', sent[0]?.mode === 'queue', sent[0])
   t('回执里带着会话号', ok.ok === true && ok.sessionId === 'sess-9', ok)

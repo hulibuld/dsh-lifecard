@@ -487,7 +487,7 @@ console.log('\n=== 13. 门能收起来，也能装回来 ===')
   // 三扇门都在的时候：每扇门上都藏着一个「收起来」的按钮（鼠标放上去才露）
   const full = renderRoot(base('doors'))
   const hides = findNodes(full, (n) => typeof n.props?.['data-door-hide'] === 'string')
-  t('三扇门各有一个收起来的按钮', hides.length === 3, hides.map((n) => n.props['data-door-hide']))
+  t('每扇门各有一个收起来的按钮', hides.length === 5, hides.map((n) => n.props['data-door-hide']))
   t('没有收起来的门就没有灰门', findNodes(full, (n) => typeof n.props?.['data-door-dead'] === 'string').length === 0, '')
 
   // 收掉酒馆之后：酒馆那块不摆了，改摆一块灰黑的门
@@ -537,7 +537,7 @@ console.log('\n=== 13. 门能收起来，也能装回来 ===')
   const doorsScreen = renderRoot(base('doors'))
   const hides = findNodes(doorsScreen, (n) => n.type === 'button' && n.props?.['data-door-hide'] !== undefined)
   // 叉容易被读成「关闭」，所以按钮里不再有「×」这两个字，只剩一个图标。
-  t('收起按钮不再写成「×」', hides.length === 3 && !hides.some((b) => textOf(b).includes('×')), hides.map((b) => textOf(b)))
+  t('收起按钮不再写成「×」', hides.length === 5 && !hides.some((b) => textOf(b).includes('×')), hides.map((b) => textOf(b)))
   t('收起按钮的提示写的是「收起来」', hides.every((b) => String(b.props?.title ?? '').includes('收起来')), hides.map((b) => b.props?.title))
 
   // 收起来的那扇门：灰黑，放上去能装回来，并且列清里面有什么（分模块，装回来方便）
@@ -1024,6 +1024,119 @@ const WITH_MATS = { ...LISTING, materials: [{ path: 'materials/a.md', name: 'a' 
   const away = findNodes(again.dom, (n) => n.type === 'button' && textOf(n).includes('去列表里删掉它'))
   t('旁边给一个能点过去的去处', away.length === 1, textOf(again.dom).slice(0, 400))
   t('那句话说清是哪一张卡', textOf(again.dom).includes('「林小雨」那张空卡还在列表里'), textOf(again.dom).slice(0, 400))
+  calls.restore()
+}
+
+console.log('\n=== 18. 玩法引擎：界面上挑得到、换得动、结局看得见、剧本开得了 ===')
+{
+  // 十一套玩法后台一直都有，界面一次没调过 —— 用户在真机上永远只玩到那个
+  // 通用主持人。这一组盯的就是「挑得到、换得动」。
+  const ENGINE_LIST = [
+    { id: 'detect', name: '查一件事', desc: '线索藏在具体的物和话里', presetId: 'game-detect' },
+    { id: 'survive', name: '撑下去', desc: '时间、体力、一件有限物资，每选必消耗', presetId: 'game-survive' },
+  ]
+  const calls = withFetch((url) => {
+    if (url.includes('game.engines')) return { ok: true, engines: ENGINE_LIST }
+    if (url.includes('game.start')) return { ok: true, id: 'p9', turns: [], choices: [], status: [], chapter: 0, engine: 'detect' }
+    if (url.includes('game.get')) return { ok: true, id: 'p9', engine: 'detect', turns: [{ kind: 'narrate', text: '雨还在下。' }], choices: [], status: [], scene: '', holding: [], chapter: 0 }
+    if (url.includes('game.engine.set')) return { ok: true, engine: 'survive' }
+    if (url.includes('game.say')) return { ok: true, turns: [{ kind: 'narrate', text: '你推开门。' }], choices: [], status: [], ending: 'lose', endingReason: '体力归零了' }
+    return { ok: true }
+  })
+
+  // ① 开局屏：引擎按钮都在，点一下就选中
+  const start = renderChild('GameView', { bookId: 'b1', onBack() {}, flash() {} }, { 0: null, 14: ENGINE_LIST })
+  const words = textOf(start.dom)
+  t('开局屏摆出了玩法引擎', words.includes('查一件事') && words.includes('撑下去'), words.slice(0, 500))
+  t('挑之前告诉人「不挑也行」', words.includes('不挑也行'), words.slice(0, 500))
+  t('点了引擎就选中', (() => {
+    clickButtonWith(start.dom, '查一件事')
+    return start.store[15] === 'detect'
+  })(), String(start.store[15]))
+  t('再点同一个就取消', (() => {
+    const again = renderChild('GameView', { bookId: 'b1', onBack() {}, flash() {} }, { 0: null, 14: ENGINE_LIST, 15: 'detect' })
+    clickButtonWith(again.dom, '查一件事')
+    return again.store[15] === ''
+  })())
+  t('挑中之后把玩法说明摆出来', (() => {
+    const again = renderChild('GameView', { bookId: 'b1', onBack() {}, flash() {} }, { 0: null, 14: ENGINE_LIST, 15: 'detect' })
+    return textOf(again.dom).includes('线索藏在具体的物和话里')
+  })())
+
+  // ② 开局时把引擎带上：以前 game.start 只收 book/chapter/preset/role/quest
+  {
+    const picked = renderChild('GameView', { bookId: 'b1', onBack() {}, flash() {} }, { 0: null, 14: ENGINE_LIST, 15: 'detect' })
+    clickButtonWith(picked.dom, '进这一段')
+    await tick()
+    const sent = calls.filter((c) => c.url.includes('game.start')).map((c) => JSON.parse(c.body))
+    t('开局请求里带上了引擎', sent.length >= 1 && sent[sent.length - 1].engine === 'detect', JSON.stringify(sent))
+  }
+
+  // ③ 游玩屏：引擎徽标 + 换玩法
+  const inPlay = renderChild('GameView', { bookId: 'b1', onBack() {}, flash() {} }, {
+    0: { id: 'p9', turns: [{ kind: 'narrate', text: '雨还在下。' }], choices: [], scene: '', status: [], holding: [], chapter: 0, engine: 'detect' },
+    14: ENGINE_LIST,
+  })
+  const playWords = textOf(inPlay.dom)
+  t('游玩屏说清这一局按哪个玩法走', playWords.includes('查一件事'), playWords.slice(0, 600))
+  t('游玩屏能换玩法', playWords.includes('通用主持人'), playWords.slice(0, 600))
+  {
+    const before = calls.filter((c) => c.url.includes('game.engine.set')).length
+    clickButtonWith(inPlay.dom, '撑下去')
+    await tick()
+    const after = calls.filter((c) => c.url.includes('game.engine.set'))
+    t('点「撑下去」就发换玩法的请求', after.length === before + 1, JSON.stringify(after.map((c) => JSON.parse(c.body))))
+    t('换玩法带的是这一局的 id', after.length >= 1 && JSON.parse(after[after.length - 1].body).id === 'p9', JSON.stringify(after.map((c) => c.body)))
+  }
+
+  // ④ 结局横幅：判出输赢要看得见，但不拦人
+  {
+    const withEnding = renderChild('GameView', { bookId: 'b1', onBack() {}, flash() {} }, {
+      0: { id: 'p9', turns: [{ kind: 'narrate', text: '雨还在下。' }], choices: [], scene: '', status: [], holding: [], chapter: 0, engine: 'detect' },
+      14: ENGINE_LIST,
+      16: { kind: 'lose', why: '体力归零了' },
+    })
+    const w = textOf(withEnding.dom)
+    t('输了要说出来', w.includes('这一局输了'), w.slice(0, 600))
+    t('还要说清为什么', w.includes('体力归零了'), w.slice(0, 600))
+    t('并且明说还能接着走', w.includes('接着走也行'), w.slice(0, 600))
+    const win = renderChild('GameView', { bookId: 'b1', onBack() {}, flash() {} }, {
+      0: { id: 'p9', turns: [], choices: [], scene: '', status: [], holding: [], chapter: 0, engine: 'detect' },
+      14: ENGINE_LIST,
+      16: { kind: 'win', why: '指认对了' },
+    })
+    t('赢了也说出来', textOf(win.dom).includes('这一局赢了'), textOf(win.dom).slice(0, 400))
+    t('判完不禁用输入框', findNodes(win.dom, (n) => n.type === 'input' && n.props?.placeholder === '或者自己写一句这一步怎么做').every((n) => n.props.disabled !== true))
+  }
+
+  // ⑤ 剧本这一节：打得开、有导出
+  {
+    const closed = renderChild('GameView', { bookId: 'b1', onBack() {}, flash() {} }, {
+      0: { id: 'p9', turns: [], choices: [], scene: '', status: [], holding: [], chapter: 0, engine: 'detect' },
+      14: ENGINE_LIST,
+    })
+    t('收着时就告诉人剧本能干什么', textOf(closed.dom).includes('这一局的剧本'), textOf(closed.dom).slice(0, 800))
+    t('有一个「打开剧本」的按钮', findNodes(closed.dom, (n) => n.type === 'button' && textOf(n).includes('打开剧本')).length === 1)
+    const opened = renderChild('GameView', { bookId: 'b1', onBack() {}, flash() {} }, {
+      0: { id: 'p9', turns: [], choices: [], scene: '', status: [], holding: [], chapter: 0, engine: 'detect' },
+      14: ENGINE_LIST,
+      17: true,
+      18: '## 开场\n雨还在下。\n- 敲门 -> 门后',
+    })
+    const ow = textOf(opened.dom)
+    t('展开后有能改的文本框', findNodes(opened.dom, (n) => n.type === 'textarea').length === 1, ow.slice(0, 600))
+    t('展开后能存', findNodes(opened.dom, (n) => n.type === 'button' && textOf(n).includes('存好这份剧本')).length === 1)
+    t('展开后能导成 ink', findNodes(opened.dom, (n) => n.type === 'button' && textOf(n).includes('导成 ink')).length === 1)
+    t('展开后能导成能玩的网页', findNodes(opened.dom, (n) => n.type === 'button' && textOf(n).includes('导成能玩的网页')).length === 1)
+    t('剧本没写内容时导出按钮是灰的',
+      findNodes(opened.dom, (n) => n.type === 'button' && textOf(n).includes('导成 ink')).every((n) => n.props.disabled === true) === false)
+    const empty = renderChild('GameView', { bookId: 'b1', onBack() {}, flash() {} }, {
+      0: { id: 'p9', turns: [], choices: [], scene: '', status: [], holding: [], chapter: 0, engine: 'detect' },
+      14: ENGINE_LIST, 17: true, 18: '   ',
+    })
+    t('剧本空着时导出按钮点不动',
+      findNodes(empty.dom, (n) => n.type === 'button' && textOf(n).includes('导成 ink')).every((n) => n.props.disabled === true))
+  }
   calls.restore()
 }
 

@@ -157,6 +157,15 @@ try {
     const filled = diary.recentBlock([{ date: '2026-10-30' }], { '2026-10-30': '拆了信。' })
     t('写过就把那天的内容带出来', filled.includes('2026-10-30') && filled.includes('拆了信。'), filled)
 
+    // 前几天只给一句提要，不搬整篇。以前贴的是 diaryBlock 的完整正文，
+    // 写过一个月日记的人光这一段就能到几千字，而且每天重搬一次。
+    const longBody = `【今天最值得讲的一件事】${'开会。'.repeat(60)}尾巴那一句不该出现。`
+    const long = diary.recentBlock([{ date: '2026-11-01' }], { '2026-11-01': longBody })
+    t('前几天的日记只给提要', long.includes('…') && !long.includes('尾巴那一句不该出现'), long)
+    t('提要压得住长度', long.length < 140, String(long.length))
+    // 只留正文、丢掉日期，「接上前几天」就失效了——那条断言不能省。
+    t('提要仍带日期', long.includes('【2026-11-01】'), long)
+
     const digest = diary.buildDigestPrompt({ date: '2026-10-31', text: '【今天最值得讲的一件事】\n开会。' })
     t('整理提示词说不许推测', digest.system.includes('不要推'), digest.system)
     t('整理提示词要原话做依据', digest.system.includes('原话'), '')

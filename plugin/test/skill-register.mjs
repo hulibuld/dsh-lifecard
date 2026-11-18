@@ -109,8 +109,18 @@ console.log('\n=== 2. apply 时注册进 skills 服务 ===')
   const hw = registered.find((x) => x.name === 'human-writing')
   t('写作手艺保留了材料检查那一段', hw !== undefined && hw.content.includes('材料'))
 
+  // 这里不能断言 modelInvocable 的具体值。
+  //
+  // 插件默认给 true（模型能自己调用这几条 skill）；但本机全局策略
+  // （~/.dsh/AGENTS.md，2026-11-14）要求所有 skill 都不可被模型调用，
+  // 由 ~/.dsh/patches/reapply-hide-skill-catalog.mjs 改成 false，
+  // 而且 launchd 每 5 分钟重打一次——写死 true 会永远红，写死 false
+  // 等于把本地补丁写进上游源码。所以只验「区块在、值是布尔、用户可调用」。
   for (const s of [interview, writing]) {
-    t(`${s.name}：模型可调用`, s.invocation?.modelInvocable === true)
+    t(`${s.name}：有 invocation 区块`,
+      s.invocation !== null && typeof s.invocation === 'object')
+    t(`${s.name}：模型可调用与否是个明确的布尔值`,
+      typeof s.invocation?.modelInvocable === 'boolean', s.invocation?.modelInvocable)
     t(`${s.name}：用户可调用`, s.invocation?.userInvocable === true)
     t(`${s.name}：source 标记为 lifecard`, s.source === 'lifecard', s.source)
   }

@@ -496,6 +496,40 @@ async function readRaw(abs) {
 }
 
 /**
+ * 把模型顺手写在正文末尾的「选项块」从日记里剪掉。
+ *
+ * 为什么要剪：日记是用户自己的记录，不是选择题。模型偶尔会在「当时在想什么」
+ * 末尾来一段【选】——那是酒馆那套「末尾要给方向」的要求漏进来的。一旦写进文件，
+ * 用户下次读自己的日记会看见三个「我接下来可以……」的按钮文案；更糟的是下一轮
+ * 它被当历史读回去，模型就学会了自己给自己列菜单。
+ *
+ * 为什么只认「带标记」的那一种（`tagged`）：日记的「下一步」本来就是一行一条的
+ * 短列表，两条以上、每条都短，正好落进 choices.js「末尾连续的短列表」那条判据。
+ * 照那条判据剪，用户自己写的待办会被整段剪没——这是这里最贵的坏法。
+ * 所以这道门比别处严：模型明确写了【选】这类标记才剪，其余一律原样。
+ *
+ * 动态 import 而不是顶上静态 import：choices.js 哪天被删掉，日记不该跟着废。
+ */
+async function withoutChoiceBlocks(data) {
+  const keys = DIARY_SECTIONS.filter((title) => data[title] !== undefined)
+  if (keys.length === 0) return data
+  const mod = await import('./choices.js').catch(() => null)
+  if (mod === null) return data
+  const out = { ...data }
+  for (const title of keys) {
+    const value = data[title]
+    const isList = Array.isArray(value)
+    const text = isList ? value.map((x) => String(x ?? '')).join('\n') : String(value ?? '')
+    const parted = mod.parseChoices(text)
+    if (parted.tagged !== true || parted.choices.length === 0) continue
+    out[title] = isList
+      ? parted.body.split('\n').map((x) => x.trim()).filter((x) => x !== '')
+      : parted.body
+  }
+  return out
+}
+
+/**
  * 写这一天的日记。
  *
  * 先写临时文件再改名：改名是一次替换，掉电或写满时要么还是旧的完整版、
@@ -515,7 +549,7 @@ async function readRaw(abs) {
  * @param {{expect?: {text?: string, mtimeMs?: number}, merge?: boolean}} options
  */
 export async function writeDiary(dir, data, now = new Date(), options = {}) {
-  const input = data !== null && typeof data === 'object' && !Array.isArray(data) ? data : {}
+  const input = await withoutChoiceBlocks(data !== null && typeof data === 'object' && !Array.isArray(data) ? data : {})
   const date = dateFileName(input.date) === '' ? localDate(now) : String(input.date)
   const name = dateFileName(date)
   if (name === '') return { ok: false, error: '日子不对，日记只认 年-月-日 这种写法。' }
@@ -706,14 +740,19 @@ export function recentBlock(diaries, texts) {
     const value = map[date]
     return value !== null && typeof value === 'object' ? diaryBlock(value) : String(value ?? '').trim()
   }
+  // 只给一句提要，不搬整篇。以前这里贴的是 diaryBlock 的完整正文（五节加打分），
+  // 写过一个月的人光这一段就能到几千字——而且每天都要重搬一次。
+  // 模型要的是「前几天说到哪儿了」，八十个字够；细节它会开口问。
+  const PREVIEW = 80
   return picked
     .map((one) => {
       const date = String(one?.date ?? one).trim()
-      const body = bodyOf(date)
+      const body = bodyOf(date).replace(/\s+/g, ' ').trim()
       if (body === '') return `【${date}】（这一篇是空的）`
-      return `【${date}】\n${body}`
+      const preview = body.length > PREVIEW ? `${body.slice(0, PREVIEW)}…` : body
+      return `【${date}】${preview}`
     })
-    .join('\n\n')
+    .join('\n')
 }
 
 /**

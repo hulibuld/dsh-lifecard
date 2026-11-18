@@ -4,12 +4,18 @@ const files = ['test/roundtrip.mjs', 'test/codec-test.mjs', 'test/store-test.mjs
   'test/persona-test.mjs',
   'test/persona-pick-test.mjs',
   'test/interview-test.mjs', 'test/json-extract.mjs', 'test/prompt.test.mjs', 'test/client-smoke.mjs', 'test/skill-register.mjs', 'test/routes-test.mjs', 'test/hardening-routes.mjs', 'test/hardening-data.mjs', 'test/render-all.mjs', 'test/draft-flush-test.mjs', 'test/editor-add-test.mjs', 'test/novel-test.mjs', 'test/prose-test.mjs', 'test/doors-test.mjs', 'test/interview-session-test.mjs', 'test/presets-test.mjs', 'test/game-test.mjs', 'test/modular-test.mjs', 'test/career-test.mjs', 'test/relations-test.mjs', 'test/resume-test.mjs',
-  'test/diary-test.mjs', 'test/wording-test.mjs', 'test/cold-start.mjs', 'test/script-test.mjs', 'test/book-switch-test.mjs']
+  'test/diary-test.mjs', 'test/auto-diary-test.mjs', 'test/wording-test.mjs', 'test/cold-start.mjs', 'test/script-test.mjs', 'test/book-switch-test.mjs', 'test/doctor-preset-test.mjs', 'test/preset-manage-test.mjs', 'test/jobs-wire-test.mjs', 'test/career-plan-test.mjs', 'test/interview-peek-test.mjs',
+  'test/cardtext-test.mjs', 'test/worldpick-test.mjs', 'test/prompts-test.mjs', 'test/choices-test.mjs', 'test/cast-test.mjs', 'test/foreshadow-test.mjs', 'test/preset-install-test.mjs', 'test/story-test.mjs', 'test/intent-test.mjs']
 
 let failed = 0
 let total = 0
 for (const f of files) {
-  const r = spawnSync(process.execPath, [f], { encoding: 'utf8' })
+  // 有一条测试会拿假 ctx 调 apply()，而 apply 里的启动自查是按**真实**
+  // DSH_HOME 算的。跑单测不该往开发机的 profile 里写预设，统一关掉。
+  const r = spawnSync(process.execPath, [f], {
+    encoding: 'utf8',
+    env: { ...process.env, DSH_LIFECARD_SKIP_PRESET_INSTALL: '1' },
+  })
   const out = (r.stdout ?? '') + (r.stderr ?? '')
   const m = /(\d+) passed, (\d+) failed/.exec(out)
   if (m !== null) total += Number(m[1])

@@ -39,13 +39,21 @@
     "lib/jobs-store.js",
     "lib/jobs-interview.js",
     "lib/tavern.js",
+    "lib/cardtext.js",
+    "lib/preset-install.js",
     "lib/novel.js",
     "lib/career.js",
     "lib/resume.js",
     "lib/presets.js",
     "lib/game.js",
     "lifecard-tools.js",
-    "skills/**/*"
+    "skills/**/*",
+    "lib/auto-diary.js",
+    "lib/cast.js",
+    "lib/choices.js",
+    "lib/foreshadow.js",
+    "lib/story.js",
+    "lib/intent.js"
   ],
   "dsh": {
     "bundle": {

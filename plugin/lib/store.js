@@ -86,6 +86,16 @@ export function defaultConfig() {
     // 日记放在哪儿。**不在这个工作区里**：用户第一次点「写日记」时自己挑一个文件夹，
     // 之后每天那篇就落在那里。空串＝还没挑，界面会先问一句。
     diary_dir: '',
+    // 演的时候「我」叫什么。卡上的 `{{user}}` 换成这个名字。
+    // 空串＝还没说过，注入时用「你」——这比留一个花括号占位符强得多。
+    user_name: '',
+  // 酒馆里要不要让模型在「想」的时候也用这个人第一人称（默认开）。
+  // 关掉只有一个理由：某些小模型被这样要求之后，会把内心戏写进回答里。
+  // 不用它做别的事——设成 false 只是不加那一段。
+  tavern_thinking: true,
+    // 思考那一段用哪一档：`role`（沉浸，默认）或 `neutral`（中性，不写内心独白）。
+    // 只在 `tavern_thinking` 为真时有意义——关掉那一段就没有档位可言。
+    tavern_thinking_style: 'role',
     // 界面上被收起来的门（用户自己删的）。随时能装回来，数据一点没动。
     hidden_doors: [],
     created_at: new Date().toISOString(),
@@ -115,10 +125,29 @@ export async function openWorkspace(root, options = {}) {
   if (options.create === true) {
     for (const dir of SKELETON) await fs.mkdir(path.join(abs, dir), { recursive: true })
     const configPath = path.join(abs, CONFIG_NAME)
+    let hasConfig = true
     try {
       await fs.access(configPath)
     } catch {
-      await fs.writeFile(configPath, JSON.stringify(defaultConfig(), null, 2) + '\n', 'utf8')
+      hasConfig = false
+    }
+    if (!hasConfig) {
+      // 首次建工作区也要走「临时文件 + 改名」。以前这里直接 writeFile：
+      // 第一次选文件夹时写一半断电（或同步盘还在同步），留下的就是半截 JSON，
+      // 而半截 JSON 会让下一次启动走「设置文件坏了」那条路——用户刚建好的
+      // 文件夹，一进去就被告知设置是坏的。
+      const tmp = `${configPath}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+      try {
+        await fs.writeFile(tmp, JSON.stringify(defaultConfig(), null, 2) + '\n', 'utf8')
+        await fs.rename(tmp, configPath)
+      } catch (error) {
+        await fs.rm(tmp, { force: true }).catch(() => {})
+        // 建工作区失败的文案要说人话：用户看到的是「选个文件夹」，不是「EPERM」。
+        const why = error?.code === 'EACCES' || error?.code === 'EPERM'
+          ? '这个文件夹没有写的权限。换一个文件夹，或者到系统设置里给它开一下权限。'
+          : '这个文件夹里建不起设置文件，可能是磁盘满了。换个位置或者清点空间再试一次。'
+        return { ok: false, root: abs, exists: true, error: why }
+      }
     }
   }
   return { ok: true, root: abs, exists: true }
@@ -189,18 +218,42 @@ export async function readConfigState(root) {
  */
 const configSyncCache = new Map()
 
+/**
+ * 上一次同步读配置为什么退回了默认值。
+ *
+ * `readConfigSync` 的签名不能变（同步、在组装提示词的热路径上被调），
+ * 所以它只能继续「读不出来就给默认值」，不能抛。但「悄悄用默认值」这件事
+ * 必须留痕：用户的勾选看起来全丢了，而界面上没有任何一处能问「为什么」。
+ * 这里把原因记在模块里，`lastConfigReadError()` 供别人自查。
+ *
+ * 形状：`{ error: '中文一句话', code?: string }`；读成功时清成 null。
+ */
+let configReadError = null
+
+/** 读「上一次同步读配置出的什么事」。没出过事返回 null。 */
+export function lastConfigReadError() {
+  return configReadError
+}
+
 export function readConfigSync(root) {
   const abs = path.join(root, CONFIG_NAME)
   let text
   try {
     const stat = statSync(abs)
     const hit = configSyncCache.get(abs)
-    if (hit !== undefined && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) return hit.config
+    if (hit !== undefined && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) {
+      configReadError = null
+      return hit.config
+    }
     text = readFileSync(abs, 'utf8')
-  } catch {
+  } catch (error) {
     // 读不出来（没配过、没权限、同步盘没挂上）一律当默认值。
     // 这条路只决定「给模型看什么」，绝不能因为设置读不出来就把这一轮卡死。
     configSyncCache.delete(abs)
+    configReadError = error?.code === 'ENOENT'
+      // 还没配过是正常状态，不是坏消息：新文件夹本来就什么都没有。
+      ? { error: '这个文件夹还没存过设置，先用默认值。', code: 'ENOENT' }
+      : { error: '设置读不出来，这一轮先按默认值来。检查一下文件权限，或者同步盘是不是没挂上。', code: error?.code }
     return defaultConfig()
   }
   try {
@@ -212,8 +265,12 @@ export function readConfigSync(root) {
     } catch {
       /* 写的时候刚好被换掉，这一次不缓存就是了 */
     }
+    configReadError = null
     return config
   } catch {
+    // 文件读到了但解析不了：这是真出事，而且比「读不到」更该说一声，
+    // 因为文件是在的、还能被下一次写覆盖掉。
+    configReadError = { error: '设置文件的内容坏了，这一轮先按默认值来。文件没动过，可以先备份一份再改。', code: 'EBADJSON' }
     return defaultConfig()
   }
 }
@@ -250,10 +307,14 @@ async function writeConfigNow(root, patch, abs) {
     await fs.rm(tmp, { force: true }).catch(() => {})
     return { ok: false, config: state.config, error: '设置没能写进磁盘。检查一下那个文件夹是不是满了、有没有写的权限。' }
   }
-  // 这里**不**手动去清 configSyncCache。清过一次，变异验证说清不掉：把这一行删掉，
-// 测试照样全绿——因为上面那次 rename 总会把修改时间换掉，缓存本来就命不中。
-// 留一条没人能验证的守卫，等于在骗下一个读代码的人。键是「修改时间 + 大小」，
-// 而每一次写都是新建临时文件再改名，修改时间必然前进，这一条够用。
+  // 写完立刻把同步读的那份缓存扔掉。
+  //
+  // 以前这里不扔，理由是「rename 总会换掉修改时间，缓存自然命不中」。
+  // 那个理由只在**同一个文件系统、同一个时钟粒度**下成立：mtime 的精度
+  // 视文件系统而定（有的只到秒），同一秒内写完再读，修改时间和大小
+  // 可能一模一样 —— 缓存照样命中，用户勾完之后下一句还是老设置。
+  // 靠副作用不如靠自己：这次写的键是确定的，就删掉这个键。
+  configSyncCache.delete(abs)
   return { ok: true, config: next }
 }
 
@@ -1026,11 +1087,15 @@ async function writeCardNow(root, relPath, abs, data, sections, options = {}) {
   // 写一半掉电（或宿主把进程杀掉），留下的就是半张卡 —— parseCard 读不出来，
   // 下次打开是「这个文件读不出来」。卡是全库最要紧的那份数据，
   // 别的存档层（tavern/novel/game/presets/career）早就都改了，只有它漏着。
+  const tmp = `${abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
   try {
-    const tmp = `${abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
     await fs.writeFile(tmp, text, 'utf8')
     await fs.rename(tmp, abs)
   } catch {
+    // 失败时把临时文件清掉。不清的话，每失败一次就在书架旁边留一个
+    // `xxx.card.md.tmp-1234-ab12cd`：listAll 会按 isBackupName 跳过它，
+    // 用户看不见，但它会一直躺在那儿，谁也不知道能删。
+    await fs.rm(tmp, { force: true }).catch(() => {})
     return { ok: false, path: relPath, error: '这一版没能存进文件里。检查一下磁盘是不是满了，再试一次。' }
   }
   return { ok: true, path: relPath, text, validation }
@@ -1583,21 +1648,63 @@ export async function appendMaterial(root, name, content, options = {}) {
   // 但有些材料是「重新摘一遍」而不是「再补一条」——比如从记忆里重新提取
   // 某个人。那种情况必须覆盖，否则同一个人每点一次就多一份重复的旧摘录，
   // 而 AI 读的时候会把两份都当真，同一个事实被引用两次。
+  //
+  // 整个落盘过程都排在这个文件的队尾：两个人（或者两次点击）同时往同一份
+  // 材料里写，后进的那次必须看到前一次写完的全文 —— 不排队的话，两次
+  // appendFile 会交错，材料里就会出现半句话。
+  let backupFailed = false
+  let failed = false
   if (options?.replace === true) {
-    // 材料是全库唯一**没有快照**的存档层（删了就真没了）。覆盖之前先留一份
-    // `.bak-<时间>`，至少用户自己手改过的那一版还能找回来。
-    const had = await fs.stat(abs).then((s) => s.isFile()).catch(() => false)
-    if (had) {
-      const bak = `${abs}.bak-${freeLocalStamp()}`
-      await fs.copyFile(abs, bak).catch(() => {})
-    }
-    const tmp = `${abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
-    await fs.writeFile(tmp, body, 'utf8')
-    await fs.rename(tmp, abs)
+    await withWriteLock(abs, async () => {
+      // 材料是全库唯一**没有快照**的存档层（删了就真没了）。覆盖之前先留一份
+      // `.bak-<时间>`，至少用户自己手改过的那一版还能找回来。
+      const had = await fs.stat(abs).then((s) => s.isFile()).catch(() => false)
+      if (had) {
+        const bak = `${abs}.bak-${freeLocalStamp()}`
+        try {
+          await fs.copyFile(abs, bak)
+        } catch {
+          // 备份失败不能让整次覆盖失败：用户点的是「重新摘一遍」，
+          // 备份是**额外的**保险，不是他要的结果。挡住这次写的话，
+          // 他只会看到「存不进去」，而且下次点还是存不进去。
+          // 所以放过这次写，但把「备份没成」带到返回值里，
+          // 让上层能提醒他「这一版已经盖掉、旧的那份没留住」。
+          backupFailed = true
+        }
+      }
+      const tmp = `${abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+      try {
+        await fs.writeFile(tmp, body, 'utf8')
+        await fs.rename(tmp, abs)
+      } catch {
+        await fs.rm(tmp, { force: true }).catch(() => {})
+        failed = true
+      }
+    })
+    if (failed) return { ok: false, path: rel, error: '这条材料没能存进去。检查一下磁盘是不是满了，再试一次。' }
   } else {
-    await fs.appendFile(abs, body, 'utf8')
+    await withWriteLock(abs, async () => {
+      try {
+        await fs.appendFile(abs, body, 'utf8')
+        // 追加之后 fsync 一下：append 的内容可能还在页缓存里，
+        // 这时候断电（笔记本合盖、宿主把进程杀掉）会留下一条半截材料，
+        // 而全文 hash 是墓碑的依据，半截的 hash 谁也匹配不上。
+        const handle = await fs.open(abs, 'r+')
+        try {
+          await handle.sync()
+        } finally {
+          await handle.close()
+        }
+      } catch {
+        failed = true
+      }
+    })
+    if (failed) return { ok: false, path: rel, error: '这条材料没能存进去。检查一下磁盘是不是满了，再试一次。' }
   }
   const full = await fs.readFile(abs, 'utf8')
+  if (backupFailed === true) {
+    return { ok: true, path: rel, sha256: sha256(full), backupFailed: true }
+  }
   return { ok: true, path: rel, sha256: sha256(full) }
 }
 
@@ -1715,7 +1822,18 @@ export async function writeAvatar(root, cardId, base64, options = {}) {
   const rel = avatarRelPath(id)
   const abs = path.join(root, rel)
   await fs.mkdir(path.dirname(abs), { recursive: true })
-  await fs.writeFile(abs, buf)
+  // 头像也走「临时文件 + 改名」。这里是直接 writeFile 截断写的最后一处：
+  // 图写到一半掉电，留下的就是一个只有前几 KB 的 PNG —— 文件头还在，
+  // 但解出来是坏的，而 readAvatar 只判断「文件存不存在」，界面于是
+  // 拿到一张解不开的图，还以为是自己的浏览器出了问题。
+  const tmp = `${abs}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+  try {
+    await fs.writeFile(tmp, buf)
+    await fs.rename(tmp, abs)
+  } catch {
+    await fs.rm(tmp, { force: true }).catch(() => {})
+    return { ok: false, error: '这张头像没能存进文件里。检查一下磁盘是不是满了，再试一次' }
+  }
   return { ok: true, path: rel, bytes: buf.length }
 }
 
@@ -2371,22 +2489,68 @@ function applyItem(data, sections, item) {
   return 'ok'
 }
 
-/** 按 id 或相对路径找卡。 */
-export async function findCardByRelOrId(root, relOrId) {
-  if (relOrId.endsWith('.card.md')) {
+/**
+ * 按 id / 名字 / 相对路径查卡，返回**所有**命中的候选。
+ *
+ * 为什么要有这个函数：`listAll` 的顺序来自目录遍历（readdir 不保证稳定），
+ * 而卡的名字不唯一 —— 用户完全可以有两张都叫「妈妈」的卡（不同世界、
+ * 或者就是复制了一份忘了删）。点名说要「妈妈」的时候，用 `.find()` 抓
+ * 第一个，等于让「这一场演谁」由文件名排序决定：今天演这张，重启一次
+ * 换一张，而界面上显示的还是同一个名字，没人看得出换人了。
+ *
+ * 匹配的先后：先认路径/id（这两个是唯一键），再认名字。
+ * 名字的命中多于一张时不算「找到了」，算歧义 —— 让上层去问用户选哪一张。
+ *
+ * @returns {Promise<{ok: boolean, by: 'path'|'id'|'name'|null, path: string|null, candidates: Array<{id: string, path: string, name: string}>}>}
+ */
+export async function findCardCandidates(root, relOrId) {
+  const want = String(relOrId ?? '').trim()
+  const none = { ok: false, by: null, path: null, candidates: [] }
+  if (want === '') return none
+  if (want.endsWith('.card.md')) {
     // 路径来自外部时可能带 ../ 或绝对路径，先确认它没跑出工作区
-    const at = await resolveIn(root, relOrId)
-    if (!at.ok) return null
+    const at = await resolveIn(root, want)
+    if (!at.ok) return none
     try {
       await fs.access(at.abs)
-      return relOrId
     } catch {
-      return null
+      return none
+    }
+    const all = await listAll(root)
+    const hit = all.cards.find((c) => c.id === want || c.path === want)
+    return {
+      ok: true,
+      by: 'path',
+      path: hit?.path ?? want,
+      candidates: [{ id: hit?.id ?? want, path: hit?.path ?? want, name: hit?.name ?? '' }],
     }
   }
   const all = await listAll(root)
-  const hit = all.cards.find((c) => c.id === relOrId || c.name === relOrId)
-  return hit === undefined ? null : hit.path
+  // ① 先按 id 认。id 是唯一键，命中就是不歧义的。
+  const byId = all.cards.find((c) => c.id === want)
+  if (byId !== undefined) {
+    return { ok: true, by: 'id', path: byId.path, candidates: [{ id: byId.id, path: byId.path, name: byId.name }] }
+  }
+  // ② 再按名字认。可能命中好几张。
+  const byName = all.cards.filter((c) => c.name === want)
+  const candidates = byName.map((c) => ({ id: c.id, path: c.path, name: c.name }))
+  if (candidates.length === 1) return { ok: true, by: 'name', path: candidates[0].path, candidates }
+  if (candidates.length > 1) return { ok: false, by: 'name', path: null, candidates }
+  return none
+}
+
+/**
+ * 按 id 或相对路径找卡。
+ *
+ * 返回类型保持 `string | null`（调用方很多，改形状会一起崩），但语义收紧：
+ * 名字命中多张时返回 null，**不再**随手挑第一张。
+ *
+ * 所以「点名一张同名卡」的调用方要用 `findCardCandidates` 拿候选，
+ * 让用户选；这个函数只回答「能不能唯一定位到一张卡」。
+ */
+export async function findCardByRelOrId(root, relOrId) {
+  const found = await findCardCandidates(root, relOrId)
+  return found.ok === true ? found.path : null
 }
 
 // ── 健康检查 ──────────────────────────────────────────────────────
@@ -2477,6 +2641,7 @@ export default {
   openWorkspace,
   readConfig,
   readConfigSync,
+  lastConfigReadError,
   writeConfig,
   readConcept,
   writeConcept,
@@ -2524,5 +2689,6 @@ export default {
   listProposals,
   applyProposal,
   findCardByRelOrId,
+  findCardCandidates,
   doctor,
 }

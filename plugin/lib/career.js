@@ -250,6 +250,9 @@ export function renderPlanMarkdown(data) {
     lifecard: core.DATA_VERSION,
     kind: PLAN_KIND,
     horizon: String(d.horizon ?? '').trim(),
+    // 「想到哪儿去」也得存下来。以前它只在 career.path 的返回值里过一遍手，
+    // 界面读完就丢，下次进来那个输入框是空的——用户以为自己没填过。
+    goal: String(d.goal ?? '').trim(),
     updated_at: updated === '' ? localDate() : updated,
   }
   return renderDoc(head, d, PLAN_SECTIONS, PLAN_LIST_SECTIONS)
@@ -261,7 +264,7 @@ export function parsePlanText(text) {
     kind: PLAN_KIND,
     sections: PLAN_SECTIONS,
     listSections: PLAN_LIST_SECTIONS,
-    keep: ['horizon', 'updated_at'],
+    keep: ['horizon', 'goal', 'updated_at'],
     error: '这份规划读不出来，格式不对',
     wrongKind: '这个文件不是规划，是别的文件。',
   })
@@ -297,8 +300,36 @@ function profileBlock(profile) {
   return lines.join('\n').trimEnd()
 }
 
+/**
+ * 写简历的几种口气。
+ *
+ * 三档都只是「怎么说」，不是「说什么」——所以它加在 system 里、紧挨着
+ * 事实规则，绝不替换任何一条「不许编造」。档位再多就挑花眼，而且彼此
+ * 的差别会小到模型分辨不出来，那还不如只给一档。
+ */
+export const RESUME_STYLES = {
+  plain: '平实：句子短，只说他做了什么、做出什么。',
+  compact: '精简：全篇压到一页以内，每条经历一行，删掉所有修饰语。',
+  warm: '温和：语气可以稍暖，但一个形容词都不许替掉事实。',
+}
+
+/**
+ * 取出某一档风格的提示行。
+ *
+ * 默认档不产生任何行：老调用拿到的提示词和以前逐字相同，测试账一项不动。
+ * 不认识的档也返回空——抛错会让调用方多写一次 try，悄悄降级成某一档
+ * 又会让人以为自己选的那档生效了。两种都比「什么都不加」更坏。
+ */
+export function resumeStyleLines(style) {
+  const key = String(style ?? '').trim()
+  if (key === '' || key === 'plain') return []
+  const one = RESUME_STYLES[key]
+  if (one === undefined) return []
+  return [`- 这一版的口气：${one}`]
+}
+
 /** 写简历的那两段话。只准写发生过的事。 */
-export function buildResumePrompt({ profile, target } = {}) {
+export function buildResumePrompt({ profile, target, style } = {}) {
   const want = String(target ?? '').trim()
   const system = [
     '你在帮一个大学生写简历。',
@@ -314,6 +345,7 @@ export function buildResumePrompt({ profile, target } = {}) {
     '',
     '输出直接用 Markdown，按「教育背景」「课程与成绩」「做过的事」「会用的工具」「想去的方向」分段。',
     '哪一段没有内容就整段不写，不要写「暂无」。',
+    ...resumeStyleLines(style),
     '不要解释你是怎么写的，不要问我问题，直接给简历。',
   ].join('\n')
 

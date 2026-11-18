@@ -205,6 +205,13 @@ try {
     t('user 带上目标', prompt.user.includes('杭州某地质研究所'), '')
     t('没填目标时也说清楚', career.buildResumePrompt({ profile: profileData }).user.includes('他没填'), '')
     t('没填材料时不崩', career.buildResumePrompt({}).system.length > 0, '')
+    // 风格只改「怎么说」，不改「说什么」。四条分别咬：默认档不产生行、
+    // 指定档真的加了一行、未知档既不抛错也不悄悄降级、以及最要紧的——
+    // 风格行不能把「不许编造」那条规则挤掉。
+    t('默认档不往 system 里多加一行', career.buildResumePrompt({ profile: profileData, target: '某厂 内容运营', style: 'plain' }).system === prompt.system, '')
+    t('精简档会往 system 里加一条口气', career.buildResumePrompt({ profile: profileData, style: 'compact' }).system.includes('一页以内'), '')
+    t('不认识的档什么都不加，也不抛错', career.buildResumePrompt({ profile: profileData, style: '不存在的档' }).system === prompt.system, '')
+    t('风格行不替掉「不许编造」', career.buildResumePrompt({ profile: profileData, style: 'warm' }).system.includes('不许编造'), '')
   }
 
   console.log('\n=== 12. 做规划的提示词 ===')
