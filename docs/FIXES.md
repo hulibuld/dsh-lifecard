@@ -10,6 +10,8 @@
 
 | 修复版本 | 修复日期 | 现象 | 原因 | 修复方式 | 提交 |
 | --- | --- | --- | --- | --- | --- |
+| 0.5.3 | 2026-11-20 | 开着酒馆预设、在普通对话框里聊，它演着演着在思考里退回助手视角，然后回一句「这只是设定」 | 「想事情也用这个人第一人称」那一段只挂在 `tavern.say`（酒馆界面里一问一答）那条路拼的提示词上。用户挂着酒馆预设直接在普通对话框说话的会话走 `system-prompt/assemble` 钩子，一直拿不到这一段 | `composePromptSections` 新增 `thinking` 选项，钩子在酒馆门里按设置取 `tavern.thinkingBlock` 拼进 `lifecard:thinking`；取不到模块就整段留空，不让这一轮挂掉 | COMMIT_A |
+| 0.5.3 | 2026-11-20 | 现实门（「这个人是我认识的谁」）挑的卡时灵时不灵；同一个预设 id 在不同地方判出不同的门 | 判门有三处各写一份 `includes('lc-*')`：`modeForAgent`、`modeFromPresetId`、`modeFromPresetRegistry`。补门时只改了其中一处，`lc-real` 在另两处依旧回空 | 三处全部收敛到 `modeFromPresetId` 一处判断，并补上 `lc-real → real` | COMMIT_A |
 | 0.5.2 | 2026-11-20 | 演到一半它忽然跳出来说自己是助手，怎么重开都不管用；盘上的预设比插件自带那版长 499 字符 | `mergePersonaPrefix` 逐行对齐时，认不出「是插件旧版写的」的行一律当用户手写内容保护起来，而认得出的清单 `OLD_PERSONA_LINES` 只有 4 条短语，0.5.0 之前那 6 行旧规矩（「演的是一个人物，不是你自己」「演到底」「不跳出角色」等）一条都不在里面，于是每升一版都被保留一次，永远和现行设计对着说 | 把 `OLD_PERSONA_LINES` 换成 `OLD_PERSONA_EXACT`——一份从 git 历史推出来的整行精确表（每个历史版本的 `prefix: |` 块减去当前版本），整行相等才丢；用户手写行一字不动。真机 `lc-tavern` 清掉 6 行、`planInstall` 从「不用动」变成真的更新 | ce597ee |
 | 0.5.2 | 2026-11-20 | 「导入」里只有拖文件和一个文字框，想把书架上已经在读的书搬进来给自己写东西用，没有入口 | 只接了导入角色卡与贴一段文字两条路，读书那套（dsh-reading）的书架没接 | 后端新增 `reading.status` / `reading.books` / `reading.pull` / `reading.importBooks` 四条路由（`lib/reading.js`），「导入」加第三栏「一本书」：看书架上有什么、搬进材料库、也能直接把 epub/pdf 传进书架 | ce597ee |
 | 0.5.2 | 2026-11-20 | `package.json` 的 `files` 漏了 `lib/reading.js`，发布出去的包里没有这个文件 | 新增模块时忘了同步 `files` 白名单 | 补上，并逐项与 `ls lib/` 对账（缺 0、多 0） | ce597ee |

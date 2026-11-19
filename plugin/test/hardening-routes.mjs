@@ -1507,6 +1507,45 @@ console.log('\n=== 27. 后台替用户开新对话（session.open）===')
   t('这台机器没有会话服务时如实说', missing.ok === false && String(missing.error).includes('复制'), missing)
 }
 
+// 开会话那一刻是唯一确定知道「这个会话是哪扇门」的时刻。判门本来靠提示词正文里
+// 的门牌句，但正文会被用户改预设、被别的插件重排，判不出来时卡就静默不注入。
+// 这一段守的就是「那一刻的事实有没有留下来」。
+{
+  const doorWs = await fs.mkdtemp(path.join(os.tmpdir(), 'lc-doormap-'))
+  await store.openWorkspace(doorWs, { create: true })
+  const sentSeq = []
+  const controller = {
+    create: async (req) => {
+      sentSeq.push(req?.agentPreset ?? '')
+      return { sessionId: 'sess-' + sentSeq.length, agentPreset: req?.agentPreset ?? 'standard' }
+    },
+    prompt: async () => {},
+  }
+  const table3 = api.buildApi({ get: (name) => (name === 'sessionController' ? controller : undefined) }, async () => doorWs, {})
+  await table3['session.open']({ preset: 'lc-tavern' })
+  await table3['session.open']({ preset: 'lc-novel' })
+  // 现实门也记：它的卡挂在 real 上，只是 default_cards 里不一定钉了卡。
+  await table3['session.open']({ preset: 'lc-real' })
+  // universal 这类不带 lc- 前缀的预设没有门，不该往表里写。
+  await table3['session.open']({ preset: 'standard' })
+  const cfg = JSON.parse(await fs.readFile(path.join(doorWs, 'lifecard.config.json'), 'utf8'))
+  const map = cfg.door_sessions ?? {}
+  t('三种门都记下来了', map['sess-1'] === 'tavern' && map['sess-2'] === 'novel' && map['sess-3'] === 'real', map)
+  t('没有门的预设不记', Object.keys(map).length === 3, map)
+
+  // 判门要读得回来，而且在宿主重启之后还在（所以写进配置文件，不是内存）。
+  t('按会话 id 读得出是哪扇门', api.doorOfSession(doorWs, 'sess-1') === 'tavern' && api.doorOfSession(doorWs, 'sess-2') === 'novel', api.doorOfSession(doorWs, 'sess-1'))
+  t('没记过的会话读出来是空', api.doorOfSession(doorWs, 'sess-404') === '' && api.doorOfSession(doorWs, '') === '', api.doorOfSession(doorWs, 'sess-404'))
+
+  // 写歪了不能崩、也不能被认。手改配置文件是常事。
+  await fs.writeFile(path.join(doorWs, 'lifecard.config.json'), JSON.stringify({ door_sessions: { 'sess-1': '皇帝' } }), 'utf8')
+  t('表里写歪的值不认', api.doorOfSession(doorWs, 'sess-1') === '', api.doorOfSession(doorWs, 'sess-1'))
+  await fs.writeFile(path.join(doorWs, 'lifecard.config.json'), JSON.stringify({ door_sessions: '不是对象' }), 'utf8')
+  t('表整个写坏了也不崩', api.doorOfSession(doorWs, 'sess-1') === '', api.doorOfSession(doorWs, 'sess-1'))
+
+  await fs.rm(doorWs, { recursive: true, force: true })
+}
+
 console.log('\n=== 从卡里读简历：只摘不写，摘的每条都要对得上原话 ===')
 {
   // 这一步最容易做错的两件事：

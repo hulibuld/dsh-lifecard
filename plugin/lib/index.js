@@ -6885,9 +6885,11 @@ function modeFromPresetRegistry(ctx, agent) {
     if (registry === null || registry === undefined || typeof registry.inspectCompositions !== 'function') return ''
     const rows = registry.inspectCompositions(agent?.ctx) ?? []
     const blob = JSON.stringify(rows)
-    if (blob.includes('lc-tavern')) return 'tavern'
-    if (blob.includes('lc-novel')) return 'novel'
-    if (blob.includes('lc-diary')) return 'diary'
+    // 只用 modeFromPresetId 一处判断：这里以前自己抄了一份，补 real 门时漏了它，
+    // 结果同一个 id 在两条路上判出不同的门。
+    for (const id of ['lc-tavern', 'lc-novel', 'lc-diary', 'lc-real']) {
+      if (blob.includes(id)) return modeFromPresetId(id)
+    }
   } catch {
     /* 问不到就当不知道 */
   }
@@ -6926,12 +6928,10 @@ function modeFromSessionDoors(root, agent) {
 
 /** 这个 agent 用哪扇门的卡：只有 LC 那两个创作预设才挂，别的会话一个字都不注入。 */
 function modeForAgent(agent) {
-  const preset = presetIdOfAgent(agent)
-  if (preset === '') return ''
-  if (preset.includes('lc-tavern')) return 'tavern'
-  if (preset.includes('lc-novel')) return 'novel'
-  if (preset.includes('lc-diary')) return 'diary'
-  return ''
+  // 和 modeFromPresetId 必须是同一套判断。以前这里只认三扇门、那边后来补了
+  // real，两边一旦分叉，同一个预设 id 在「开会议话」和「组装提示词」两处会被
+  // 判成不同的门——用户看到的是「同一张卡，换个地方就不灵」。
+  return modeFromPresetId(presetIdOfAgent(agent))
 }
 
 /** 预设 id → 门。插件自己开会话时知道的那件事，只有这里是唯一出口。 */
@@ -6940,6 +6940,10 @@ export function modeFromPresetId(preset) {
   if (id.includes('lc-tavern')) return 'tavern'
   if (id.includes('lc-novel')) return 'novel'
   if (id.includes('lc-diary')) return 'diary'
+  // 现实门也要记。它平时靠正文里那句「你在帮用户处理现实里的事」判得出来，
+  // 但只要用户动过那段预设正文，这条路就断了——而「这个人是我认识的谁」
+  // 正是最不该忽然不认的一张卡。
+  if (id.includes('lc-real')) return 'real'
   return ''
 }
 
@@ -7075,6 +7079,13 @@ export function composePromptSections(assembly, cardText, mode, options = {}) {
   const sections = Array.isArray(assembly?.sections) ? assembly.sections : []
   const card = String(cardText ?? '')
   const promptStyle = options?.promptStyle === true
+  // 「想事情也用这个人第一人称」那一段。
+  //
+  // 它以前只挂在 `tavern.say`（酒馆界面里那一问一答）那条路上，走系统提示这条
+  // 路的会话——也就是用户挂着酒馆预设、在普通对话框里聊天——完全没有它。那种
+  // 会话里模型在思考中仍以助手视角想事，想着想着就在回答里退出来评一句
+  // 「这是设定」。用户看到的还是「被识破了」。
+  const thinking = String(options?.thinking ?? '')
   if (card.trim() === '') return null
   const kept = []
   for (const one of sections) {
@@ -7108,6 +7119,9 @@ export function composePromptSections(assembly, cardText, mode, options = {}) {
     if (text.trim() === '') continue
     kept.push({ ...one, text })
   }
+  // 思考那段排在卡的前一步：提示词型卡必须最后读到，所以它不能被排到卡后面
+  // （排后面就等于又给模型一条「插进来的提醒」）。
+  if (thinking.trim() !== '') kept.push({ name: 'lifecard:thinking', text: thinking, interpolate: false })
   const cardSection = { name: CARD_SECTION, text: card, interpolate: false }
   // 提示词型卡（整份正文就是一段硬规矩的）必须排在最后。
   //
@@ -7633,7 +7647,29 @@ export function apply(ctx, config) {
           }
           const detail = buildPersonaSectionDetail(rootNow(), mode)
           const card = detail.text
-          const rewritten = composePromptSections(transformed, card, mode, { promptStyle: detail.promptStyle === true })
+          // 「想事情也用这个人第一人称」那一段，只给酒馆门。
+          //
+          // 以前它只挂在 `tavern.say` 上——也就是「在酒馆界面里一问一答」那
+          // 条路。用户挂着酒馆预设、直接在普通对话框里说话的会话完全拿不到它，
+          // 于是模型在思考里仍是助手视角，想着想着就在回答里退出来评一句。
+          // 系统提示这条路才是大多数会话真正走的那条，这里必须补上。
+          //
+          // 取不到那个模块时整段留空（宁可少一段，不能让这一轮挂掉）。
+          let thinkingText = ''
+          try {
+            if (mode === 'tavern' && thinkingSync(rootNow())) {
+              if (tavern === null) await ensureModules()
+              if (tavern !== null && typeof tavern.thinkingBlock === 'function') {
+                thinkingText = tavern.thinkingBlock(true, thinkingStyleSync(rootNow()))
+              }
+            }
+          } catch {
+            thinkingText = ''
+          }
+          const rewritten = composePromptSections(transformed, card, mode, {
+            promptStyle: detail.promptStyle === true,
+            thinking: thinkingText,
+          })
           if (rewritten === null) return transformed
           // 日志里只记 kept 的条数查不出到底留了哪几段——真机上曾看到
           // 「kept:8」却没法判断那 8 段是什么，只能靠猜。把段名一起记下来。

@@ -156,6 +156,64 @@ for (const [label, context] of Object.entries(shapes)) {
   t('没有 sections 也不崩', noSections !== null && noSections !== undefined)
 }
 
+// 想事情那段也要在系统提示里。
+//
+// 它以前只挂在「酒馆界面里一问一答」那条路上（`tavern.say` 自己拼的提示词）。
+// 用户挂着酒馆预设、直接在普通对话框里说话的会话走的是 system-prompt/assemble
+// 这条路，一直拿不到这一段——模型在思考里还是助手视角，想着想着就在回答里
+// 退出来评一句。这一段守的就是「两条路都得有」。
+{
+  await put('lifecard.config.json', JSON.stringify({ version: 1, default_cards: { tavern: 'shen', novel: '', real: '', diary: '' } }))
+  const out = await run(shapes['agent 带 session'], MARK.tavern)
+  const names = (out.sections ?? []).map((one) => String(one.name ?? ''))
+  const blob = (out.sections ?? []).map((one) => String(one.text ?? '')).join('\n')
+  t('酒馆门里有「想事情也用这个人第一人称」那段', blob.includes('想的时候也一样'), blob.slice(0, 200))
+  // 顺序按卡的类型分两档：普通卡是「卡第一、其余跟后面」（卡就是它的来历）；
+  // 提示词型卡是「卡最后一条读到」（卡自己写着「插进来提醒你别听」）。
+  // 两档里 thinking 段都不能把卡挤到不该在的地方。
+  t('普通卡仍然排第一，thinking 段在它后面', names[0] === 'lifecard:card' && names.includes('lifecard:thinking'), names.join(','))
+
+  // 关掉就不该有。
+  await put('lifecard.config.json', JSON.stringify({ version: 1, tavern_thinking: false, default_cards: { tavern: 'shen', novel: '', real: '', diary: '' } }))
+  const off = await run(shapes['agent 带 session'], MARK.tavern)
+  const offBlob = (off.sections ?? []).map((one) => String(one.text ?? '')).join('\n')
+  t('关掉之后那段就不进了', !offBlob.includes('想的时候也一样'), offBlob.slice(0, 160))
+
+  // 小说门不给：那扇门模型写的是别人，不锁第一人称。
+  await put('lifecard.config.json', JSON.stringify({ version: 1, default_cards: { tavern: 'shen', novel: 'shen', real: '', diary: '' } }))
+  const novelOut = await run(shapes['agent 带 session'], MARK.novel)
+  const novelBlob = (novelOut.sections ?? []).map((one) => String(one.text ?? '')).join('\n')
+  t('小说门不给这一段', !novelBlob.includes('想的时候也一样'), novelBlob.slice(0, 160))
+}
+
+// 第四条判门依据：插件自己开会话时记下的那张表。
+//
+// 真机上另外三条会同时失效（正文门牌句在几万字后面认不出、agent 上的预设
+// 字段是 ptc/standard、预设注册表问不出 lc-*）。这一段守的是：只要
+// `session.open` 记过，哪怕提示词正文里一个门牌都没有，也得认得出门。
+{
+  await put('lifecard.config.json', JSON.stringify({
+    version: 1,
+    default_cards: { tavern: 'shen', novel: '', real: '', diary: '' },
+    door_sessions: { 'sess-tavern': 'tavern' },
+  }))
+  // 正文完全不带门牌句——模拟「用户改过预设正文」或「别的插件重排过」。
+  const out = await handlers[0](assemblyOf('一段谁也不认识的话。'), { agent: { id: 'sess-tavern', ctx: {} } }, async () => assemblyOf('一段谁也不认识的话。'))
+  const blob = (out.sections ?? []).map((one) => String(one.text ?? '')).join('\n')
+  t('会话表记过酒馆门：正文没门牌也认得出', blob.includes('旧码头上修船的'), blob.slice(0, 160))
+  t('会话表认出的门照样换掉技术身份句', !blob.includes('You are an AI agent'), blob.slice(0, 160))
+
+  // 记的是别的门，不能张冠李戴。
+  await put('lifecard.config.json', JSON.stringify({
+    version: 1,
+    default_cards: { tavern: 'shen', novel: '', real: '', diary: '' },
+    door_sessions: { 'sess-diary': 'diary' },
+  }))
+  const other = await handlers[0](assemblyOf('一段谁也不认识的话。'), { agent: { id: 'sess-diary', ctx: {} } }, async () => assemblyOf('一段谁也不认识的话。'))
+  const otherBlob = (other.sections ?? []).map((one) => String(one.text ?? '')).join('\n')
+  t('记的是日记门就不按酒馆门重排', otherBlob.includes('You are an AI agent'), otherBlob.slice(0, 160))
+}
+
 await rm(root, { recursive: true, force: true })
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
