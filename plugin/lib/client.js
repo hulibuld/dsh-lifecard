@@ -9454,6 +9454,7 @@ function ImportView({ busy, onImport, onAnalyze, listing }) {
     h('div', { className: 'lc-row' },
       h(Btn, { tone: tab === 'card' ? 'primary' : undefined, size: 'sm', icon: 'card', onClick: () => setTab('card') }, '角色卡 / 世界书'),
       h(Btn, { tone: tab === 'text' ? 'primary' : undefined, size: 'sm', icon: 'book', onClick: () => setTab('text') }, '一段文字'),
+      h(Btn, { tone: tab === 'book' ? 'primary' : undefined, size: 'sm', icon: 'list', onClick: () => setTab('book') }, '一本书'),
     ),
 
     // 两边都常驻，只把不在前面的那一边藏起来。
@@ -9489,7 +9490,183 @@ function ImportView({ busy, onImport, onAnalyze, listing }) {
       h('div', { className: 'lc-meta' }, '访谈稿、聊天记录、日记、你写的散文——什么都可以。存进来之后，可以让 AI 读出里面的信息。'),
       h(TextImport, { onAnalyze }),
     ),
+    // 书这一栏和上面两栏一样常驻，只把不在前面的藏起来：用户在书架那一栏
+    // 点「读进来」等着的时候，不该因为切一下 tab 就把那个列表整个卸载掉，
+    // 切回来要重新跑一遍十几秒的 shelf.list。
+    h('div', { className: 'lc-stack', style: tab === 'book' ? undefined : { display: 'none' } },
+      h(BooksPanel, { onAnalyze }),
+    ),
   )
+}
+
+// ── 书（从「读书」那个插件里搬正文过来）──────────────────────────
+//
+// 为什么放在「添加」这一页而不是自己开一扇门：对用户来说，一本书进来之后
+// 和贴进来的一段文字是同一件东西——都是「材料」。它不该多一扇门。
+//
+// 为什么这里要显示「连没连上」：这条路要跨插件要东西，连不上时用户看到的
+// 必须是「那个读电子书的插件没开」，而不是一个转不停的圈或者一句「失败」。
+// 他据此才知道该去开哪个东西。
+function BooksPanel({ onAnalyze }) {
+  const [status, setStatus] = useState(null)
+  const [books, setBooks] = useState([])
+  const [busy, setBusy] = useState('')
+  const [msg, setMsg] = useState(null)
+  const [drag, setDrag] = useState(false)
+  const inputRef = useRef(null)
+
+  const load = useCallback(async () => {
+    setBusy('load')
+    setMsg(null)
+    try {
+      const st = await call('reading.status', {})
+      if (st.ok !== true) { setMsg({ tone: 'err', text: st.error ?? '没连上读书那部分。' }); return }
+      setStatus(st)
+      if (st.connected === true) {
+        const list = await call('reading.books', {})
+        setBooks(list.ok === true && Array.isArray(list.books) ? list.books : [])
+        if (list.ok !== true) setMsg({ tone: 'err', text: list.error ?? '书架读不出来。' })
+      } else {
+        setBooks([])
+      }
+    } catch (e) {
+      setMsg({ tone: 'err', text: humanizeError(e) })
+    } finally { setBusy('') }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const pull = async (book) => {
+    setBusy(`pull:${book.hash}`)
+    setMsg(null)
+    try {
+      const r = await call('reading.pull', { hash: book.hash, title: book.title, author: book.author })
+      if (r.ok !== true) { setMsg({ tone: 'err', text: r.error ?? '这本书没读进来。' }); return }
+      // 说清「读进来多少」：一本书常常要截断（默认取前八万字），
+      // 不说的的话用户会以为整本都在，之后问它后半本的内容就问不出来。
+      const tail = r.truncated === true ? `，只取了前面 ${r.chars} 字（整本 ${r.total} 节）` : ''
+      setMsg({ tone: 'ok', text: `《${r.about}》读进来了：${r.chapters} 节${tail}。`, path: r.path, about: r.about })
+    } catch (e) { setMsg({ tone: 'err', text: humanizeError(e) }) } finally { setBusy('') }
+  }
+
+  const upload = async (fileList) => {
+    const all = Array.from(fileList ?? [])
+    if (all.length === 0) return
+    setBusy('upload')
+    setMsg(null)
+    try {
+      const files = []
+      for (const file of all) files.push({ name: file.name, base64: await readFileAsBase64(file) })
+      const r = await call('reading.importBooks', { files })
+      if (r.ok !== true) { setMsg({ tone: 'err', text: r.error ?? '没能放进书架。' }); return }
+      const bad = (r.results ?? []).filter((one) => one.ok !== true)
+      flashNote(setMsg, r.imported, bad)
+      await load()
+    } catch (e) { setMsg({ tone: 'err', text: humanizeError(e) }) } finally { setBusy('') }
+  }
+
+  const mb = status?.library?.bytes !== undefined && status.library.bytes > 0
+    ? `${(status.library.bytes / 1024 / 1024).toFixed(1)} MB`
+    : ''
+
+  // 连不上时给的是「去开哪个东西」，不是一句「失败」。
+  if (status !== null && status.connected !== true) {
+    return h('div', { className: 'lc-stack' },
+      h(Note, { tone: 'warn', icon: 'warning' },
+        h('div', null,
+          h('div', null, status.offline === true ? '没找到读电子书的那个插件。' : '读电子书那部分现在没响应。'),
+          h('div', { className: 'lc-meta', style: { marginTop: 4 } }, status.offline === true
+            ? '它叫 dsh-reading，装好之后这一栏会自动出现你的书架。不想装也没关系——切到「一段文字」，把书的正文直接贴进来一样能用。'
+            : '可能是软件刚启动还没准备好。等几秒点「重试」；一直这样就把软件重开一次。'),
+        ),
+      ),
+      h('div', { className: 'lc-row' },
+        h(Btn, { size: 'sm', icon: 'history', onClick: load, disabled: busy !== '' }, busy === 'load' ? '正在看…' : '重试'),
+      ),
+      msg === null ? null : h(Note, { tone: 'err', icon: 'warning' }, msg.text),
+    )
+  }
+
+  return h('div', { className: 'lc-stack' },
+    // 连接状态摆在这里，不是藏在设置里：这一步要跨插件，用户有权知道
+    // 它现在通不通、书库在哪、有多少本。
+    h('div', { className: 'lc-row', style: { justifyContent: 'space-between' } },
+      h('div', { className: 'lc-meta' },
+        status === null || status.connected !== true
+          ? (busy === 'load' ? '正在看书架…' : '书架还没读出来。')
+          : `书架上 ${books.length} 本${mb === '' ? '' : `，占 ${mb}`}。读进来会存成材料，和贴进来的文字一样能用来分析、访谈。`,
+      ),
+      h(Btn, { size: 'sm', icon: 'history', onClick: load, disabled: busy !== '' }, busy === 'load' ? '正在看…' : '刷新'),
+    ),
+
+    busy === 'load' && books.length === 0
+      ? h('div', { className: 'lc-row' }, h(Spinner), h('span', { className: 'lc-meta' }, '正在列书架…'))
+      : null,
+
+    books.length === 0 && status?.connected === true && busy === ''
+      ? h('div', { className: 'lc-meta' }, '书架还是空的。下面能把本地的电子书放进去。')
+      : null,
+
+    books.map((book) => h('div', {
+      key: book.hash,
+      className: 'lc-row',
+      style: { justifyContent: 'space-between', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid var(--lc-line)' },
+    },
+      h('div', { className: 'lc-grow', style: { minWidth: 0 } },
+        h('div', { style: { fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, book.title),
+        h('div', { className: 'lc-meta' },
+          [book.author, book.percent > 0 ? `读到 ${Math.round(book.percent * 100)}%` : '还没开始读'].filter((x) => String(x ?? '') !== '').join(' · '),
+        ),
+      ),
+      h(Btn, {
+        size: 'sm', icon: 'import', disabled: busy !== '',
+        onClick: () => pull(book),
+      }, busy === `pull:${book.hash}` ? '正在搬…' : '读进来'),
+    )),
+
+    h('div', {
+      className: 'lc-empty',
+      style: {
+        border: `2px dashed ${drag ? 'var(--lc-import)' : 'var(--lc-line-strong)'}`,
+        borderRadius: 'var(--lc-radius)',
+        background: drag ? 'var(--lc-import-soft)' : 'transparent',
+        transition: 'all .15s', cursor: 'pointer', padding: '14px',
+      },
+      onClick: () => inputRef.current?.click(),
+      onDragOver: (e) => { e.preventDefault(); setDrag(true) },
+      onDragLeave: () => setDrag(false),
+      onDrop: (e) => { e.preventDefault(); setDrag(false); upload(e.dataTransfer?.files) },
+    },
+      h('div', { className: 'lc-meta' }, drag ? '松手就行' : '手上有电子书？拖到这里，它会进上面的书架。'),
+      h('input', {
+        ref: inputRef, type: 'file', multiple: true, accept: '.epub,.pdf,.mobi,.azw3,.txt',
+        style: { display: 'none' }, onChange: (e) => upload(e.target.files),
+      }),
+    ),
+
+    busy === 'upload' ? h('div', { className: 'lc-row' }, h(Spinner), h('span', { className: 'lc-meta' }, '正在放进去。厚一点的书要几十秒，别关页面。')) : null,
+
+    msg === null ? null : h(Note, { tone: msg.tone === 'ok' ? undefined : 'err', icon: msg.tone === 'ok' ? 'check' : 'warning' },
+      h('div', null,
+        h('div', null, msg.text),
+        msg.tone === 'ok' && msg.path !== undefined
+          ? h('div', { style: { marginTop: 8 } }, h(Btn, {
+              tone: 'analyze', size: 'sm', icon: 'spark',
+              onClick: () => onAnalyze?.({ name: msg.about, path: msg.path, kind: 'fictional' }),
+            }, '让 AI 读一读'))
+          : null,
+      ),
+    ),
+  )
+}
+
+/** 批量放进书架之后的一句话。成功几个、哪几个没成。 */
+function flashNote(setMsg, imported, bad) {
+  if (bad.length === 0) {
+    setMsg({ tone: 'ok', text: `放进去 ${imported} 本。上面已经列出来了。` })
+    return
+  }
+  setMsg({ tone: 'err', text: `放进去 ${imported} 本，${bad.length} 本没成：${bad.map((one) => `${one.name}（${one.error}）`).join('；')}` })
 }
 
 /** 贴文本 / 选文件 → 存成材料。 */

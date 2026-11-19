@@ -1674,6 +1674,56 @@ for (const [label, tree] of [
   t('停在角色卡那一栏时它是藏着的', hidden(dom) === true)
 }
 {
+  // 「一本书」那一栏：连没连上、书架空不空、搬进来说了什么，三种状态都要能画出来。
+  // 这一栏和别处不一样——书在另一个插件里，所以「连不上」必须是常态之一，
+  // 不能因为拿不到数据就把整块渲染掉。
+  const tree = renderOne('添加（一本书那一栏）', seen.get('ImportView'), { busy: '', onImport: () => {}, onAnalyze: () => {}, listing: LISTING }, { 1: 'book' })
+  t('「一本书」那一栏画得出来', tree !== null)
+
+  const Panel = seen.get('BooksPanel')
+  t('书架那一栏是个独立组件', typeof Panel === 'function')
+
+  // 槽：0 status / 1 books / 2 busy / 3 msg / 4 drag / 5 inputRef
+  const OFFLINE = { ok: true, connected: false, offline: true, reason: '这台机器上没找到「读书」那个插件。', library: { path: '/tmp/lc-lib', exists: false, bookDirs: 0, bytes: 0 }, books: 0, materials: 0 }
+  const off = renderOne('书架（没装读书插件）', Panel, { onAnalyze: () => {} }, { 0: OFFLINE })
+  const offText = JSON.stringify(expand(off))
+  t('没装时说出那个插件叫什么', offText.includes('dsh-reading'), offText.slice(0, 300))
+  t('没装时给一条不装也能走的路', offText.includes('一段文字'), offText.slice(0, 300))
+  t('没装时没有假装书架是空的', offText.includes('书架还是空的') === false, offText.slice(0, 300))
+
+  const ON = { ok: true, connected: true, offline: false, deviceId: 'mac-x', library: { path: '/tmp/lc-lib', exists: true, bookDirs: 2, bytes: 3 * 1024 * 1024 }, books: 2, materials: 0 }
+  const BOOKS = [
+    { hash: 'a1', title: '海上', author: '某人', format: 'epub', percent: 0.42, cover: '', updatedAt: '' },
+    { hash: 'b2', title: '雾', author: '', format: 'txt', percent: 0, cover: '', updatedAt: '' },
+  ]
+  const on = renderOne('书架（连着，有两本）', Panel, { onAnalyze: () => {} }, { 0: ON, 1: BOOKS })
+  const onText = JSON.stringify(expand(on))
+  t('连着时报出有几本', onText.includes('书架上 2 本'), onText.slice(0, 400))
+  t('连着时报出占了多大', onText.includes('3.0 MB'), onText.slice(0, 400))
+  t('读完的书写出读到百分之多少', onText.includes('读到 42%'), onText.slice(0, 400))
+  t('没开始读的书说还没开始', onText.includes('还没开始读'), onText.slice(0, 400))
+  t('每本书都有一个「读进来」', (onText.match(/读进来/g) ?? []).length >= 2, onText.slice(0, 400))
+
+  // 空书架：得给一句「怎么放书进去」，不能只摆一个空列表。
+  const empty = renderOne('书架（空的）', Panel, { onAnalyze: () => {} }, { 0: { ...ON, books: 0 }, 1: [] })
+  const emptyText = JSON.stringify(expand(empty))
+  t('空书架时告诉用户能把电子书放进去', emptyText.includes('书架还是空的'), emptyText.slice(0, 300))
+  t('空书架时也给得出放书的地方', emptyText.includes('拖到这里'), emptyText.slice(0, 300))
+
+  // 搬完一本书：说清读进来多少字，并且接着能「让 AI 读一读」。
+  let asked = null
+  const done = renderOne('书架（刚搬完一本）', Panel, { onAnalyze: (x) => { asked = x } }, {
+    0: ON, 1: BOOKS, 2: '',
+    3: { tone: 'ok', text: '《海上》读进来了：12 节。', path: 'materials/书-海上.md', about: '海上' },
+  })
+  const doneText = JSON.stringify(expand(done))
+  t('搬完时说清读进来多少', doneText.includes('读进来了'), doneText.slice(0, 400))
+  const link = flatButtons(expand(done)).find((b) => textOf(b).includes('让 AI 读一读'))
+  t('搬完接着能「让 AI 读一读」', link !== undefined)
+  if (link !== undefined) link.props.onClick()
+  t('点下去带的是刚搬进来那份材料', asked !== null && asked.path === 'materials/书-海上.md', JSON.stringify(asked))
+}
+{
   // 模拟面试：后台回「开不了」（不是网络抛错，是后台自己的 ok:false）时，
   // 按钮不能永远卡在「正在开始…」——这一页没有第二个入口，用户只能退出去重进。
   // 以前只有 catch 里复位 busy，这条 ok:false 的出口直接 return 了。

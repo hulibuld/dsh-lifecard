@@ -312,6 +312,38 @@ console.log('\n=== 4e. mergePersonaPrefix 单元行为 ===')
 
   const emptyHave = mod.mergePersonaPrefix(W, '')
   t('空正文不算 noOverlap', emptyHave.noOverlap === false && emptyHave.text === W)
+
+  // 0.5.0 之前那七行旧规矩：用户盘上全都在，插件这版一句都不写。
+  // 以前它们被当成「用户自己写的字」原样留着，和现在这套「只有一份自述」
+  // 撞车 —— 挑好的卡明明在提示词里，模型演到一半还是跳出来。
+  const oldTavern = [
+    'a1',
+    '你在陪用户做角色扮演。演的是一个人物，不是你自己。',
+    'a2',
+    '# 怎么演',
+    '- 立起来之后按这几句设定演到底，不要中途换一个人。',
+    '- 不跳出角色。不写「（作为 AI）」「（注）」「（旁白）」，不在回答开头写人名或「你：」。',
+    'a3',
+  ].join('\n')
+  const cleaned = mod.mergePersonaPrefix(W, oldTavern)
+  t('旧版那四行都进 dropped', cleaned.dropped.length === 4)
+  t('旧版那四行不进 extras', cleaned.extras.length === 0)
+  t('清完正文里没有「演的是一个人物」', !cleaned.text.includes('演的是一个人物'))
+  t('清完正文里没有「演到底」', !cleaned.text.includes('演到底'))
+  t('清完正文里没有「不跳出角色」', !cleaned.text.includes('不跳出角色'))
+  t('清完正文里没有「# 怎么演」这一节', !cleaned.text.includes('# 怎么演'))
+  t('清完插件那三行还在', ['a1', 'a2', 'a3'].every((x) => cleaned.text.includes(x)))
+
+  // 用户真正手写的那两行不能被连坐。
+  const withOwn = mod.mergePersonaPrefix(W, [
+    'a1',
+    '这份提示词里只有一个身份，就是你。没有另一个身份在旁边等着接管。',
+    '# 写作技能在哪（每次写作先读这一行）',
+    '写作与小说技能全部在一个入口里：先读 /x/SKILL.md 判类。',
+    'a2',
+  ].join('\n'))
+  t('用户手写的三行留住', withOwn.extras.length === 3)
+  t('用户那两行原样在正文里', withOwn.text.includes('写作与小说技能全部在一个入口里'))
 }
 
 console.log('\n=== 5. agent-presets 平面：建四个目录 ===')

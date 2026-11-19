@@ -37,6 +37,12 @@ import * as diary from './diary.js'
 // 它自己只依赖 node:fs / os / zlib，不带重依赖，随包加载没有代价。
 import * as autoDiary from './auto-diary.js'
 import * as resumeCoach from './resume.js'
+// 读书那部分的桥（lib/reading.js）。
+//
+// 和 tavern/novel 那些不一样，这个是静态 import：它只依赖 node:内建，
+// 而且「有没有装 dsh-reading」是运行时才发现的事（对面根本没装也要能如实说），
+// 不能靠「import 失败」来表达——那两种情况在用户眼里是不一样的。
+import * as reading from './reading.js'
 
 import * as score from './score.js'
 import * as memory from './memory.js'
@@ -893,6 +899,21 @@ function buildApi(ctx, workspace, config, options) {
    * 也一眼看得出哪些文件是一组的。
    */
   const scriptRelPath = (bookId, playId) => `${game.playRelPath(bookId, playId).replace(/\.md$/, '')}.script.md`
+
+  /**
+   * 读书那个插件（dsh-reading）挂在哪。
+   *
+   * 它不向 cordis 提供 service，只能按 HTTP 打它的 `/api/dsh-reading/*`。
+   * 两边跑在同一个进程、同一个端口上，所以「自己是哪个端口」就是答案：
+   * 优先用这次请求带进来的 Host（桌面版换端口是常事，环境变量会过期），
+   * 拿不到才退回 DSH_WEB_URL。
+   */
+  const readingOrigin = (context) => {
+    const fromReq = String(context?.origin ?? '').trim()
+    if (fromReq !== '') return fromReq
+    const fromEnv = String(process.env.DSH_WEB_URL ?? '').trim()
+    return fromEnv.replace(/\/+$/, '')
+  }
 
   /**
    * 读一局的剧本节点。
@@ -1922,6 +1943,166 @@ function buildApi(ctx, workspace, config, options) {
       const name = String(body?.name ?? path.basename(abs, path.extname(abs)))
       const saved = await store.appendMaterial(ws, name, text.trim())
       return { ok: true, ...saved, about, chars: text.trim().length, source: abs }
+    },
+
+    // ── 书（跟 dsh-reading 对接）────────────────────────────────────
+    //
+    // 「导入一本书」在用户眼里就是把书拿进来读一读。落地方式是：问 dsh-reading
+    // 要正文，存成一份普通的材料。之后它和贴进来的一段文字走完全相同的链路
+    //（分析、访谈、拆书），不需要再为「书」开一条。
+    //
+    // 为什么不直接读它的库文件：书在它那边是解析过的（PDF 拆成 XHTML、
+    // mobi 拆成 spine，图片换成它自己的 asset 路由）。照着文件硬读等于把它
+    // 内部的排版规则实现第二遍，它一改版就全错。走它自己的路由，格式那边永远对。
+    //
+    // 它不向宿主提供 service（`inject` 只有 webServer），所以只能走 HTTP。
+    // 好在本机回环、同端口，不受浏览器跨域限制。
+
+    /**
+     * 书在哪、连没连上、有几本、占多大。
+     *
+     * 单独一条而不是塞进 `state.get`：后者每次开界面都跑一遍 `store.doctor`，
+     * 已经不轻；再叠一次跨插件请求（还要扫一遍书库目录）会让首屏跟着一个
+     * 可能根本不存在的邻居一起变慢。
+     */
+    'reading.status': async (body, context) => {
+      const ws = await root(body)
+      const origin = readingOrigin(context)
+      // 用 device.info 探活而不是 shelf.list：后者要扫整个书库，
+      // 一本 PDF 转出来的书有上千个小文件，做成「开界面就查一次」会明显发涩。
+      const alive = await reading.callReading(origin, 'device.info', {}, { timeoutMs: 6000 })
+      const library = await reading.libraryFootprint().catch(() => null)
+      if (alive.ok !== true) {
+        // 连不上和「没装」在用户眼里是两件事：前者等一会儿或重开，
+        // 后者要去装。offline 带回去让界面决定说哪句。
+        return { ok: true, connected: false, offline: alive.offline === true, reason: alive.error, library, books: 0 }
+      }
+      const landed = await reading.callReading(origin, 'shelf.list', {}, { timeoutMs: 20000 })
+      const books = landed.ok === true && Array.isArray(landed.value?.books) ? landed.value.books.length : 0
+      let materials = 0
+      try {
+        materials = Object.keys(await store.readMaterials(ws)).length
+      } catch {
+        materials = 0
+      }
+      return {
+        ok: true,
+        connected: true,
+        offline: false,
+        deviceId: String(alive.value?.deviceId ?? ''),
+        library,
+        books,
+        materials,
+        // 连上了但书架列不出来，和「没连上」不是一件事：前者重开读书就好。
+        shelfError: landed.ok === true ? '' : (landed.error ?? '书架读不出来。'),
+      }
+    },
+
+    /**
+     * 书架上有哪些书。
+     *
+     * 只挑界面用得到的那几列：`shelf.list` 一本书二十来个字段，全转一遍既没必要，
+     * 也容易把它的内部结构漏到界面上（那些字段名以后它随时可能改）。
+     */
+    'reading.books': async (body, context) => {
+      const origin = readingOrigin(context)
+      const shelf = await reading.callReading(origin, 'shelf.list', {}, { timeoutMs: 20000 })
+      if (shelf.ok !== true) return { ok: false, offline: shelf.offline === true, error: shelf.error ?? '书架读不出来。' }
+      const raw = Array.isArray(shelf.value?.books) ? shelf.value.books : []
+      return {
+        ok: true,
+        books: raw.map((one) => ({
+          hash: String(one?.bookHash ?? ''),
+          title: String(one?.title ?? '').trim() || '没名字的书',
+          author: String(one?.author ?? '').trim(),
+          format: String(one?.sourceFormat ?? ''),
+          // 读到几成。列表上用来标「没开始 / 读到一半 / 读完了」。
+          percent: Number.isFinite(one?.percent) ? one.percent : 0,
+          // 封面是它自己的相对地址，浏览器直接当 <img> 用。
+          // PDF 转的常常没有封面，留空，界面上摆首字。
+          cover: typeof one?.coverUrl === 'string' ? one.coverUrl : '',
+          updatedAt: String(one?.updatedAt ?? ''),
+        })).filter((one) => one.hash !== ''),
+      }
+    },
+
+    /**
+     * 把一本书的正文抄成一份材料。
+     *
+     * 抄一份而不是「以后要用再去读」：材料是我们自己的存档，用户在读书那边
+     * 删了这本书，已经读进来的内容不该跟着消失。
+     */
+    'reading.pull': async (body, context) => {
+      const ws = await root(body)
+      const origin = readingOrigin(context)
+      const hash = String(body?.hash ?? body?.bookHash ?? '').trim()
+      if (hash === '') return { ok: false, error: '没说是哪一本书。' }
+      const spine = await reading.callReading(origin, 'book.spine', { bookHash: hash }, { timeoutMs: 20000 })
+      if (spine.ok !== true) {
+        return { ok: false, offline: spine.offline === true, error: spine.error ?? '这本书的目录读不出来。' }
+      }
+      const list = Array.isArray(spine.value?.spine) ? spine.value.spine : []
+      if (list.length === 0) return { ok: false, error: '这本书里没有章节目录，读不出正文。' }
+      // 书名和作者从书架上补：界面上点进来时只传了 hash，
+      // 材料标题总得有个像样的名字，不然一堆「书-xxxxxxxx」分不清。
+      let known = null
+      const shelf = await reading.callReading(origin, 'shelf.list', {}, { timeoutMs: 20000 })
+      if (shelf.ok === true && Array.isArray(shelf.value?.books)) {
+        known = shelf.value.books.find((one) => String(one?.bookHash ?? '') === hash) ?? null
+      }
+      const title = String(body?.title ?? known?.title ?? '').trim()
+      const author = String(body?.author ?? known?.author ?? '').trim()
+      const pulled = await reading.bookToMaterial(origin, { bookHash: hash, title, author, spine: list }, {
+        maxChars: reading.MATERIAL_CHAR_CAP,
+      })
+      if (pulled.ok !== true) return { ok: false, offline: pulled.offline === true, error: pulled.error }
+      const about = title === '' ? '一本书' : title
+      const name = core.safeId(`书-${about}`).slice(0, 80)
+      // replace:true —— 同一本书再导一次是「重新抄一遍」，不是「再存一份」。
+      // 追加的话 AI 读材料时会把同一本书的两份都当真，同一个事实被引两次。
+      const saved = await store.appendMaterial(ws, name, pulled.text, { replace: body?.replace !== false })
+      if (saved?.ok !== true) return { ok: false, error: saved?.error ?? '这本书没能存下来，检查一下磁盘空间再试。' }
+      return {
+        ok: true,
+        ...saved,
+        about,
+        title,
+        author,
+        chars: pulled.text.length,
+        chapters: pulled.chapters,
+        total: pulled.total,
+        truncated: pulled.truncated === true,
+      }
+    },
+
+    /**
+     * 往 dsh-reading 里放一本书（用户手上有电子书，想先扔进书架再读过来）。
+     *
+     * body.files 和 import.cards 一样是 `[{name, base64}]`：界面上是同一个
+     * 拖拽区，不该因为落到不同插件就写两套上传代码。
+     */
+    'reading.importBooks': async (body, context) => {
+      const files = Array.isArray(body?.files) ? body.files : []
+      if (files.length === 0) return { ok: false, error: '没有选文件。' }
+      const origin = readingOrigin(context)
+      const results = []
+      for (const file of files) {
+        const fileName = String(file?.name ?? 'book')
+        const base64 = String(file?.base64 ?? '')
+        if (base64 === '') {
+          results.push({ name: fileName, ok: false, error: '这个文件是空的。' })
+          continue
+        }
+        // 一本书的导入可能是 PDF 转 XHTML，慢（一本几百页的要几十秒），
+        // 超时给足。界面上那一块有 spinner，不会看着像死了。
+        const sent = await reading.callReading(origin, 'shelf.import', { filename: fileName, dataBase64: base64 }, { timeoutMs: 180000 })
+        if (sent.ok !== true) {
+          results.push({ name: fileName, ok: false, offline: sent.offline === true, error: sent.error })
+          continue
+        }
+        results.push({ name: fileName, ok: true, hash: String(sent.value?.bookHash ?? ''), title: String(sent.value?.title ?? fileName) })
+      }
+      return { ok: true, results, imported: results.filter((one) => one.ok).length, failed: results.filter((one) => !one.ok).length }
     },
 
     /** 导出成 PNG（双 chunk 同源）。 */
@@ -7564,7 +7745,17 @@ export function apply(ctx, config) {
             res.end()
             return
           }
-          const result = await handler(body)
+          // 第二个参数是「这次请求是从哪个地址进来的」。目前只有读书那几条要用：
+          // 它要回头请求同一个端口上另一个插件的路由，得先知道自己是哪个端口。
+          // 从 Host 头现算，不写死也不敢读环境变量——桌面版换端口是常事。
+          const selfOrigin = (() => {
+            const host = String(req.headers?.host ?? '').trim()
+            if (host === '') return ''
+            // Host 头是请求方给的，能带任意字符。只认「主机名:端口」这一种形状，
+            // 免得把一个奇形怪状的 Host 原样拼进 URL 再发出去。
+            return /^[A-Za-z0-9.\-]+(:\d{1,5})?$/.test(host) || /^\[[0-9a-fA-F:]+\](:\d{1,5})?$/.test(host) ? `http://${host}` : ''
+          })()
+          const result = await handler(body, { origin: selfOrigin })
           writeJson(res, 200, result)
         } catch (error) {
           // 兜底 catch 也不能把 EISDIR 这类英文原样漏到界面上。
