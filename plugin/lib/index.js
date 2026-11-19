@@ -7389,12 +7389,9 @@ export function apply(ctx, config) {
         try {
           const agent = agentOfAssembly(context)
           if (agent === null || agent === undefined) return transformed
-          // 判门顺序：先看这段提示词正文里有没有某扇门独有的那句话（最稳，
-          // 每轮都成立），再退到 agent 上的预设字段，最后才是预设注册表。
-          // 真机上只有第一条能拿到东西——后两条实测都回空。
           // 判门顺序：①这段提示词正文里有没有某扇门独有的那句话（最稳，
-          // 每轮都成立，不依赖宿主任何字段）②agent 上的预设字段
-          // ③预设注册表。真机上只有①拿得到东西——后两条实测都回空。
+          // 每轮都成立，不依赖宿主任何字段）②插件自己开会话时记下的那扇门
+          // ③agent 上的预设字段 ④预设注册表。真机上③④拿不到东西。
           let mode = ''
           let source = ''
           try {
