@@ -89,7 +89,7 @@ const DOORS = ['real', 'tavern', 'novel', 'diary']
  * 「玩一段」有自己的屏和存档，但它不挂卡，所以不在 `DOORS` 里；反过来
  * `DOORS` 的每一项都得有门牌，不然卡能被挑到一扇看不见的门上。
  */
-const DOOR_SWITCHES = ['real', 'novel', 'tavern', 'game', 'diary']
+const DOOR_SWITCHES = ['real', 'novel', 'diary', 'game', 'tavern']
 /**
  * 按需把四个模块加载进来。已经加载过的不会重复加载。
  * @returns {Promise<Record<string, boolean>>} 每个模块现在在不在
@@ -1247,6 +1247,23 @@ function buildApi(ctx, workspace, config, options) {
           const requestId = randomUUID()
           await controller.prompt({ sessionId: id, mode: 'queue', content: [{ type: 'text', text }], requestId }, signal)
           sent = true
+        }
+        // 记下「这个会话是哪扇门开的」。判门本来靠提示词正文里的门牌句，
+        // 但正文会被用户改预设、被别的插件重排，判不出来时卡就静默不注入。
+        // 开会话这一刻是唯一确定知道答案的时刻，忘了就没人记得了。
+        const door = modeFromPresetId(preset)
+        if (door !== '') {
+          try {
+            const cfg = await store.readConfigState(ws)
+            const map = cfg.config?.door_sessions !== null && typeof cfg.config?.door_sessions === 'object' ? cfg.config.door_sessions : {}
+            // 只留最近 200 条：这张表只是「哪扇门开的」，旧的会话不会再组装了，
+            // 但也不能让它无上限地长。
+            const keys = Object.keys(map)
+            const trimmed = keys.length >= 200 ? Object.fromEntries(keys.slice(-150).map((k) => [k, map[k]])) : map
+            await store.writeConfig(ws, { door_sessions: { ...trimmed, [id]: door } })
+          } catch {
+            /* 记不下来不影响这一句：正文判门那条路还在 */
+          }
         }
         return { ok: true, sessionId: id, agentPreset: String(created?.agentPreset ?? ''), sent }
       } catch (error) {
@@ -6545,6 +6562,19 @@ function shapeOfAgent(agent) {
 }
 
 /** 人物卡注入的诊断日志。写文件而不是 console：宿主把插件的 stdout 丢进 /dev/null。 */
+/**
+ * `no-door` 每个 agent 只记第一次。
+ *
+ * 真机上每个技术会话**每一轮**都会记一条 no-door，每条都带着整份提示词的
+ * 长度和开头。日志过 200KB 只留尾部 60KB，于是一边是几十条一样的
+ * 「这个会话不是任何一扇门」，另一边真正要查的酒馆门记录被挤出了窗口——
+ * 排查时看到的就是「日志里怎么一条酒馆门都没有」。
+ *
+ * 同一个 agent 的 no-door 记一次足够说明它属于哪一类；真进了门会走
+ * `assemble` 那条记录，不受这里影响。
+ */
+const noDoorSeen = new Set()
+
 function notePersona(step, detail) {
   try {
     const file = path.join(os.tmpdir(), 'lifecard-persona.log')
@@ -6578,6 +6608,88 @@ function presetIdOfAgent(agent) {
 }
 
 /**
+ * 从「已经装配好的这段提示词正文」里认出这是哪扇门。
+ *
+ * 为什么只能这么做：DSH 顶部的预设是在会话建好之后才定下来的，agent 上
+ * 那些 agentPreset 字段实测永远是 standard / ptc（真机日志连着十几条都是
+ * 这个值）。inspectCompositions 的返回形状没有公开文档，序列化之后嗅
+ * 'lc-tavern' 也只是碰运气——它取决于宿主内部怎么描述那次组装。
+ *
+ * 但有一件事是确定的：四份预设各自带一段 persona prefix，正文不一样，
+ * 而且这几段话在**装配完成的提示词里一定读得到**。它们就是门牌：
+ *   - 「你在陪用户做角色扮演」= 酒馆
+ *   - 「你在帮用户写小说」    = 小说
+ *   - 「你在帮用户处理现实里的事：简历、升学与求职的方向」= 现实
+ *   - 「你在陪用户写今天这一篇日记」= 日记
+ *
+ * 这几个句子是插件自己写在 presets.js / profile 里的，不依赖宿主实现，
+ * 用户就算把预设改名、换顺序、复制一份新的，只要 prefix 还在，门就认得出来。
+ * 顺序按「越长越具体」排：日记那句包含「陪用户」，排在酒馆之前更稳；
+ * 现实那句带「简历」，小说那句带「写小说」，互不重叠。
+ */
+const DOOR_MARKERS = [
+  ['diary', ['你在陪用户写今天这一篇日记']],
+  ['real', ['你在帮用户处理现实里的事', '处理现实里的事：简历']],
+  ['novel', ['你在帮用户写小说']],
+  // 酒馆门的门牌换过一次：旧预设写的是「你在陪用户做角色扮演。演的是
+  // 一个人物，不是你自己。」——那句话本身就是「你是演员」的自我暗示，
+  // 模型读到就站在扮演者的位置上，卡成了手里的材料。现在改成第一人称
+  // 的自述。两句都要认：用户盘上可能还留着旧预设没更新。
+  ['tavern', ['这份提示词里只有一个身份', '你在陪用户做角色扮演']],
+]
+
+/**
+ * 在一段文本里找门牌。找不到就回 ''。
+ *
+ * 宁可认不出来也不要认错：认错门的后果是「酒馆里塞了小说的写法和一份
+ * 不该出现的卡」，比「没挂上卡」严重得多——用户点一下重开就恢复了，
+ * 而被写坏的那一轮他得自己发现。
+ */
+export function modeFromPromptText(text) {
+  const blob = String(text ?? '')
+  if (blob === '') return ''
+  for (const [mode, needles] of DOOR_MARKERS) {
+    for (const needle of needles) {
+      if (blob.includes(needle)) return mode
+    }
+  }
+  return ''
+}
+
+/**
+ * 一个段落真正的正文。
+ *
+ * 段落正文允许是字符串，也允许是**函数**（`attachCardToAgent` 自己就是这么挂的，
+ * 好让每轮重算）。这里以前只认字符串，于是带函数的段落一律当成空串：
+ * 判门找不到门牌，`composePromptSections` 还会把它当空段整条丢掉——
+ * 真机上「门时灵时不灵」「卡明明挂着却不生效」都有它一份。
+ */
+function sectionText(one) {
+  const raw = one?.text
+  if (typeof raw === 'string') return raw
+  if (typeof raw === 'function') {
+    try {
+      const got = raw({})
+      return typeof got === 'string' ? got : ''
+    } catch {
+      return ''
+    }
+  }
+  return ''
+}
+
+/** 把装配好的 sections 拼成一段纯文本，用来找门牌。 */
+function promptTextOf(assembly) {
+  const sections = Array.isArray(assembly?.sections) ? assembly.sections : []
+  const parts = []
+  for (const one of sections) {
+    const text = sectionText(one)
+    if (text !== '') parts.push(text)
+  }
+  return parts.join('\n')
+}
+
+/**
  * 从预设注册表里问「这个会话当初是按哪一份预设装的」。
  *
  * 为什么需要这条：DSH 顶部的预设是在会话建好之后才定下来的，
@@ -6601,6 +6713,36 @@ function modeFromPresetRegistry(ctx, agent) {
   return ''
 }
 
+/**
+ * 这个会话是哪扇门——按「我们自己开会话时记下的」认。
+ *
+ * 真机上另外三条依据会**同时**失效：提示词正文里的门牌句在 4 万字后面
+ * （`modeFromPromptText` 认不出）、agent 上的预设字段是 `ptc`、
+ * 预设注册表问不出来。可「这个会话是用 lc-tavern 开的」这件事在
+ * `session.open` 那一刻是百分百确定的，只是当时没记。现在记了。
+ *
+ * 只读一次配置（`readConfigSync` 有 mtime+size 缓存，热路径安全）。
+ */
+function modeFromSessionDoors(root, agent) {
+  try {
+    const ids = [
+      typeof agent?.id === 'string' ? agent.id : '',
+      String(agent?.session?.id ?? ''),
+      String(agent?.sessionId ?? ''),
+    ]
+    const map = store.readConfigSync(root)?.session_doors
+    if (map === null || typeof map !== 'object') return ''
+    for (const id of ids) {
+      if (id === '') continue
+      const mode = String(map[id] ?? '')
+      if (mode === 'tavern' || mode === 'novel' || mode === 'diary' || mode === 'real') return mode
+    }
+  } catch {
+    /* 读不出来就按没有记录办 */
+  }
+  return ''
+}
+
 /** 这个 agent 用哪扇门的卡：只有 LC 那两个创作预设才挂，别的会话一个字都不注入。 */
 function modeForAgent(agent) {
   const preset = presetIdOfAgent(agent)
@@ -6609,6 +6751,40 @@ function modeForAgent(agent) {
   if (preset.includes('lc-novel')) return 'novel'
   if (preset.includes('lc-diary')) return 'diary'
   return ''
+}
+
+/** 预设 id → 门。插件自己开会话时知道的那件事，只有这里是唯一出口。 */
+export function modeFromPresetId(preset) {
+  const id = String(preset ?? '')
+  if (id.includes('lc-tavern')) return 'tavern'
+  if (id.includes('lc-novel')) return 'novel'
+  if (id.includes('lc-diary')) return 'diary'
+  return ''
+}
+
+/**
+ * 这个会话是插件自己开的吗？是的话它属于哪扇门。
+ *
+ * 真机上 `modeForAgent` 那条路永远是空：宿主给 agent 的 `agentPreset`
+ * 是 `standard` / `ptc`，预设注册表也问不出 `lc-tavern`。判门实际上只剩
+ * 「提示词正文里有没有门牌句」一条。而插件在 `session.open` 开会话那一刻
+ * **自己就知道要开哪扇门**——这个事实以前没记，正文一旦判不出来，卡就
+ * 静默不注入，用户看到的是「它忽然不是那个人了」。
+ *
+ * 表存在配置里（`door_sessions`），所以宿主的会话恢复了、插件重启了都还在。
+ * 读的是同步缓存那条路，因为它在每次组装提示词的热路径上。
+ */
+export function doorOfSession(root, agentId) {
+  const id = String(agentId ?? '')
+  if (id === '') return ''
+  try {
+    const map = store.readConfigSync(root)?.door_sessions
+    if (map === null || typeof map !== 'object') return ''
+    const one = String(map[id] ?? '')
+    return one === 'tavern' || one === 'novel' || one === 'diary' || one === 'real' ? one : ''
+  } catch {
+    return ''
+  }
 }
 
 /** 子代理不挂人设：它不该以为自己是那个人。 */
@@ -6630,9 +6806,23 @@ const CARD_SECTION = 'lifecard:card'
  * 才认，避免把「没有会话的组装」也算成某个人的。
  */
 function agentOfAssembly(context) {
-  if (context?.agent?.session !== null && context?.agent?.session !== undefined) return context.agent
-  if (context?.scope?.session !== null && context?.scope?.session !== undefined) return context.scope
-  return undefined
+  // 以前这里要求 `context.agent.session` 非空才认，拿不到就返回 undefined，
+  // 钩子第一句就 return transformed——**卡永远进不去，而且一声不响**。
+  // 真机上 context 的形状并不保证带 session（日志里那批 no-door 全是别的
+  // 路径记的，assemble 这条一次都没打通过）。判据放宽成：只要是个带 ctx 的
+  // 对象就当成 agent 用；判门和挂段落到最后都要走 agent.ctx，没有 ctx 的
+  // 才真没法干活。
+  const candidates = [context?.agent, context?.scope, context?.session, context]
+  for (const one of candidates) {
+    if (one === null || one === undefined) continue
+    if (typeof one !== 'object') continue
+    if (one.ctx !== null && one.ctx !== undefined) return one
+  }
+  // 一个带 ctx 的都没有：仍然返回一个对象（而不是 undefined），让上层照常
+  // 走判门与日志——判门读的是段落正文，不需要 ctx；只有挂段落才需要。
+  // 这样「认不出门」至少会留下一条带段名的证据。
+  const fallback = context?.agent ?? context?.scope ?? context?.session ?? null
+  return typeof fallback === 'object' ? fallback : undefined
 }
 
 /**
@@ -6733,7 +6923,7 @@ export function composePromptSections(assembly, cardText, mode, options = {}) {
       // 以及工具说明（不留它，模型调不了工具）。其余一律不进提示词。
       if (name !== 'deployment:persona-suffix' && !name.startsWith('lifecard') && !name.startsWith('tool:')) continue
     }
-    const text = typeof one.text === 'string' ? one.text : ''
+    const text = sectionText(one)
     if (text.trim() === '') continue
     kept.push({ ...one, text })
   }
@@ -6802,11 +6992,14 @@ export function attachCardToAgent(agent, options = {}) {
           })(),
           text: () => {
             try {
-              const mode = modeForAgent(agent) || modeFromPresetRegistry(pluginCtx, agent)
+              // 判门顺序和 assemble 钩子一致：先认不出门就先记一笔，别猜。
+              // 这里同样先试预设字段——段落正文这一层拿不到整份提示词，
+              // 认正文的重活归 assemble 钩子干。
+              const mode = doorOfSession(rootNow(), agentId) || modeForAgent(agent) || modeFromPresetRegistry(pluginCtx, agent)
               if (mode === '') {
                 if (!reported) {
                   reported = true
-                  notePersona('no-door', { agent: agentId, ...shapeOfAgent(agent) })
+                  notePersona('no-door', { agent: agentId, where: 'section', ...shapeOfAgent(agent) })
                 }
                 return ''
               }
@@ -7196,20 +7389,77 @@ export function apply(ctx, config) {
         try {
           const agent = agentOfAssembly(context)
           if (agent === null || agent === undefined) return transformed
+          // 判门顺序：先看这段提示词正文里有没有某扇门独有的那句话（最稳，
+          // 每轮都成立），再退到 agent 上的预设字段，最后才是预设注册表。
+          // 真机上只有第一条能拿到东西——后两条实测都回空。
+          // 判门顺序：①这段提示词正文里有没有某扇门独有的那句话（最稳，
+          // 每轮都成立，不依赖宿主任何字段）②agent 上的预设字段
+          // ③预设注册表。真机上只有①拿得到东西——后两条实测都回空。
           let mode = ''
+          let source = ''
           try {
-            mode = modeForAgent(agent) || modeFromPresetRegistry(ctx, agent)
+            mode = modeFromPromptText(promptTextOf(transformed))
+            if (mode !== '') source = 'text'
           } catch {
             mode = ''
           }
-          if (mode === '') return transformed
+          // 正文判不出来时，先问「这个会话是不是插件自己开的」——那一刻它
+          // 自己就知道要开哪扇门，只是以前没把这件事记下来。真机上宿主给
+          // agent 的预设字段永远是 standard / ptc，注册表也问不出 lc-*，
+          // 所以这一步实际上比下面两条都可靠。
+          if (mode === '') {
+            try {
+              mode = doorOfSession(rootNow(), agent?.id)
+              if (mode !== '') source = 'session'
+            } catch {
+              mode = ''
+            }
+          }
+          if (mode === '') {
+            try {
+              mode = modeForAgent(agent) || modeFromPresetRegistry(ctx, agent)
+              if (mode !== '') source = 'preset'
+            } catch {
+              mode = ''
+            }
+          }
+          // 现实门不注入：那扇门的 preset 自己写着「用 lifecard_cards /
+          // lifecard_default 去取」，卡是查出来的材料，不是身份。
+          if (mode === '' || mode === 'real') {
+            if (mode === '') {
+              // 认不出门要留证据。真机上「门时灵时不灵」查了很久就是因为
+              // 没人知道那一刻提示词里到底有什么；这里只记长度、开头一小段
+              // 和几扇门各自命中没有，不够成泄漏正文。
+              try {
+                const text = promptTextOf(transformed)
+                const key = 'assemble:' + String(agent?.id ?? '')
+                if (noDoorSeen.has(key)) return transformed
+                // 集合会跟着会话数长；几百个之后整批忘掉，让后来的会话重新
+                // 记一次。忘了只是多一行日志，不影响判门。
+                if (noDoorSeen.size > 400) noDoorSeen.clear()
+                noDoorSeen.add(key)
+                notePersona('no-door', {
+                  agent: String(agent?.id ?? ''),
+                  where: 'assemble',
+                  chars: text.length,
+                  head: text.slice(0, 160),
+                  sections: (transformed?.sections ?? []).map((one) => String(one?.name ?? '?') + ':' + promptTextOf({ sections: [one] }).length).join(','),
+                  marks: DOOR_MARKERS.map(([name, needles]) => name + ':' + (needles.some((one) => text.includes(one)) ? 1 : 0)).join(','),
+                  ...shapeOfAgent(agent),
+                })
+              } catch {
+                /* 记不下来不影响这一轮 */
+              }
+            }
+            return transformed
+          }
           const detail = buildPersonaSectionDetail(rootNow(), mode)
           const card = detail.text
           const rewritten = composePromptSections(transformed, card, mode, { promptStyle: detail.promptStyle === true })
           if (rewritten === null) return transformed
           // 日志里只记 kept 的条数查不出到底留了哪几段——真机上曾看到
           // 「kept:8」却没法判断那 8 段是什么，只能靠猜。把段名一起记下来。
-          if (mode === 'tavern') notePersona('assemble', { agent: String(agent?.id ?? ''), mode, card: card.length, kept: rewritten.length, names: rewritten.map((one) => String(one?.name ?? '')), promptStyle: detail.promptStyle === true })
+          if (mode === 'tavern') notePersona('assemble', { agent: String(agent?.id ?? ''), mode, source, card: card.length, kept: rewritten.length, names: rewritten.map((one) => String(one?.name ?? '')), promptStyle: detail.promptStyle === true })
           return { ...transformed, sections: rewritten }
         } catch (error) {
           // 改提示词失败绝不能让这一轮发不出去。

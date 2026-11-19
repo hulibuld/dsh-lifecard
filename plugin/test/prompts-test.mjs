@@ -82,7 +82,7 @@ console.log('=== 4. 真跑一遍：没卡的第一轮拿到的是破冰，第二
   ])
   const later = await table['tavern.prompt']({ id: 'chat-nocard' })
   t('第二轮起不再问破冰', later.ok === true && !String(later.user).startsWith('这个人还没有。'), String(later.user ?? '').slice(0, 40))
-  t('第二轮起照常问「轮到你」', String(later.user).includes('接着说'), String(later.user ?? '').slice(-60))
+  t('第二轮起照常请 TA 开口', String(later.user).includes('该你开口了'), String(later.user ?? '').slice(-60))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

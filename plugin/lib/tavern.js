@@ -898,7 +898,12 @@ export function trimHistory(turns, options = {}) {
 export function buildRoleplayUser({ cardName, turns, anchors }) {
   const name = cardName === '' ? '这个人' : cardName
   const recent = trimHistory(turns)
-  if (recent.length === 0) return `请「${name}」先说一句话，把场面打开。`
+  // 这两句以前是「请『X』先说一句话」「现在轮到『X』接着说。只写『X』会说的话」。
+  // 那是**写作者**的口气：它把模型放到「我在替这个人写台词」的位置上，
+  // 于是模型随时可以退出来想「我该怎么写这段」。整份提示词里别的都改成
+  // 第一人称了，就剩这一句还在按第三人称说话——而它偏偏是开口前读到的
+  // 最后一行。用户报的「演着演着忽然变成旁白腔」，一半来自这里。
+  if (recent.length === 0) return '该你先开口。说一句话，把场面打开。'
   const lines = ['下面是刚才的对话：', '']
   for (const turn of recent) {
     lines.push(`${turn.who === '我' ? '我' : turn.who}：${turn.text}`)
@@ -908,7 +913,7 @@ export function buildRoleplayUser({ cardName, turns, anchors }) {
   // 系统提示离得越远；这一句话就在它要开口的下一行，中间不隔任何东西。
   const first = (Array.isArray(anchors) ? anchors : []).map((one) => String(one ?? '').trim()).find((one) => one !== '')
   if (first !== undefined) lines.push(`（你是「${name}」：${first}）`)
-  lines.push(`现在轮到「${name}」接着说。只写「${name}」会说的话。`)
+  lines.push('该你开口了。用你自己的口气说下去——是说话，不是描述。')
   return lines.join('\n')
 }
 

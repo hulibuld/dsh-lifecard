@@ -287,7 +287,7 @@ console.log('\n=== 4d. 整段重写过：不自动盖，等用户点头 ===')
   t('用户自己那段还在', read(file).includes('我自己写的一整段人设'))
   const forced = mod.applyInstall({ ...plan, allowUpdates: true })
   t('显式 allowUpdates 才写', forced.written.length === 1, forced.written)
-  t('更新后人设换回插件那版', read(file).includes('你在陪用户做角色扮演') && !read(file).includes('我自己写的一整段人设'))
+  t('更新后人设换回插件那版', read(file).includes('这份提示词里只有一个身份') && !read(file).includes('我自己写的一整段人设'))
 }
 
 console.log('\n=== 4e. mergePersonaPrefix 单元行为 ===')
@@ -337,7 +337,7 @@ console.log('\n=== 5. agent-presets 平面：建四个目录 ===')
   const agent = read(path.join(dir, 'agent.cordis.yml'))
   t('agent.cordis.yml 里有 dsh-persona', agent.includes('@deepseek-ai/dsh-persona'))
   t('prefix 是块标量 |-', /^\s*prefix: \|-$/m.test(agent), agent.split('\n').filter((l) => l.includes('prefix:')))
-  t('块标量里确实有人设正文', agent.includes('你在陪用户做角色扮演。演的是一个人物，不是你自己。'))
+  t('块标量里确实有人设正文', agent.includes('这份提示词里只有一个身份，就是你。没有另一个身份在旁边等着接管。'))
   t('人设正文比块头缩进深（YAML 要求）', (() => {
     const ls = agent.split('\n')
     const head = ls.findIndex((l) => /prefix: \|-/.test(l))

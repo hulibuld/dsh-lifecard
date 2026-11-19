@@ -201,6 +201,57 @@ t('正文空的卡不注入', buildPersonaSection(root, 'tavern') === '', buildP
   t('小说门不看 promptStyle，卡一律在最前', index.composePromptSections(assembly, card, 'novel', { promptStyle: true })[0].name === 'lifecard:card')
 }
 
+// ── 按提示词正文认门（真机上唯一还灵的那条）──────────────────────
+// 真机日志里 `agentPreset` 从来都是 standard / ptc，agent 上那些预设字段和
+// 预设注册表都拿不到东西。唯一稳的是「这段提示词正文里有没有某扇门独有的
+// 那句话」——四扇门的 prefix 正文互不复用。这一组盯住它，因为它在真机上
+// 一次都没有被验证过，坏了也没人知道。
+{
+  const realPrefix = {
+    tavern: '这份提示词里只有一个身份，就是你。没有另一个身份在旁边等着接管。',
+    novel: '你在帮用户写小说。',
+    diary: '你在陪用户写今天这一篇日记。',
+    real: '你在帮用户处理现实里的事：简历、升学与求职的方向、眼下该补什么。',
+  }
+  t('酒馆门的正文认得出酒馆', index.modeFromPromptText(realPrefix.tavern) === 'tavern', index.modeFromPromptText(realPrefix.tavern))
+  t('小说门的正文认得出小说', index.modeFromPromptText(realPrefix.novel) === 'novel', index.modeFromPromptText(realPrefix.novel))
+  t('日记门的正文认得出日记', index.modeFromPromptText(realPrefix.diary) === 'diary', index.modeFromPromptText(realPrefix.diary))
+  t('现实门的正文认得出真实', index.modeFromPromptText(realPrefix.real) === 'real', index.modeFromPromptText(realPrefix.real))
+  t('旧门牌「你在陪用户做角色扮演」仍然认得出（用户盘上可能还没更新）', index.modeFromPromptText('你在陪用户做角色扮演。演的是一个人物，不是你自己。') === 'tavern')
+  t('四扇门各自只认自己', ['tavern', 'novel', 'diary', 'real'].every((one) => index.modeFromPromptText(realPrefix[one]) === one))
+  t('什么都没写就认不出（宁可认不出也不要认错）', index.modeFromPromptText('') === '')
+  t('标准预设那套技术话认不出门', index.modeFromPromptText('You are an AI agent powered by DeepSeek.') === '', index.modeFromPromptText('You are an AI agent powered by DeepSeek.'))
+
+  // 段落正文可以是函数（插件自己挂段落时就是函数）。只认字符串的话，
+  // 函数型那一段在判门里读成空串——真机上「门时灵时不灵」有它一份。
+  const asFn = { sections: [{ name: 'deployment:persona-prefix', text: () => realPrefix.tavern }] }
+  const out = index.composePromptSections(asFn, '# 沈九\n\n正文。', 'tavern')
+  t('函数型段落不会被当成空段丢掉', out.some((one) => one.name === 'deployment:persona-prefix'))
+  t('函数型段落照样被换成人设段', out.some((one) => String(one.text ?? '').includes('你就是这个人')))
+  const throwing = { sections: [{ name: 'x', text: () => { throw new Error('boom') } }, { name: 'tool:read', text: 'Use the read tool.' }] }
+  t('段落正文抛错时不影响其余段落', index.composePromptSections(throwing, '卡', 'tavern').some((one) => one.name === 'tool:read'))
+
+  // ── 会话 → 门 这张表 ──────────────────────────────────────────
+  // 判门本来靠正文门牌句；正文被用户改预设、被别的插件重排时判不出来，
+  // 卡就静默不注入。插件自己开会话那一刻是唯一确定知道答案的时刻，
+  // 所以它把「这个会话是哪扇门开的」记在配置里。
+  t('没记过的会话不算任何一扇门', index.doorOfSession(root, 'session-unknown') === '')
+  t('空 id 不算任何一扇门', index.doorOfSession(root, '') === '')
+  t('预设名认得出是酒馆门', index.modeFromPresetId('lc-tavern') === 'tavern')
+  t('预设名认得出是小说门', index.modeFromPresetId('lc-novel') === 'novel')
+  t('预设名认得出是日记门', index.modeFromPresetId('lc-diary') === 'diary')
+  t('别的预设不算任何一扇门', index.modeFromPresetId('ptc') === '')
+  t('空的预设名不算任何一扇门', index.modeFromPresetId('') === '')
+  await rm(path.join(root, 'lifecard.config.json'), { force: true })
+  await writeFile(path.join(root, 'lifecard.config.json'), JSON.stringify({ door_sessions: { 'session-a': 'tavern', 'session-b': 'novel', 'session-c': '瞎写' } }), 'utf8')
+  t('记过的会话认得出是酒馆门', index.doorOfSession(root, 'session-a') === 'tavern')
+  t('记过的小说门也认得出', index.doorOfSession(root, 'session-b') === 'novel')
+  t('表里写歪了的值不认（宁可认不出也不要认错）', index.doorOfSession(root, 'session-c') === '')
+  await rm(path.join(root, 'lifecard.config.json'), { force: true })
+  await writeFile(path.join(root, 'lifecard.config.json'), JSON.stringify({ door_sessions: '不是对象' }), 'utf8')
+  t('表坏成字符串也不崩', index.doorOfSession(root, 'session-a') === '')
+}
+
 await rm(root, { recursive: true, force: true })
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

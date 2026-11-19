@@ -336,11 +336,13 @@ const CSS = `
   --lc-doctor-soft: #e9f7ec;
   --lc-danger: var(--dsw-alias-state-error-primary, #c92a2a);
   --lc-danger-soft: #fdecec;
-  /* 文字游戏那扇门。紫得偏冷——和「真实人物记录」的紫（interview）分得开：
-     那边是「这个人」，这边是「这一局」。 */
-  --lc-game: #7048e8;
-  --lc-game-soft: #f3f0ff;
-  /* 日记那扇门。茶色，跟「拿纸笔记下来」一个意思。 */
+  /* 文字游戏那扇门。原来给的是紫色（#7048e8），和「真实人物记录」的
+     interview 紫（#6741d9）几乎是一个色，深色主题下两扇门的浅底甚至是
+     同一个值（#241d3d）——并排摆出来用户分不出谁是谁。改成暖橙：
+     那边是「这个人」，这边是「这一局」，冷暖一分就认得了。 */
+  --lc-game: #d9480f;
+  --lc-game-soft: #fff4e6;
+  /* 日记那扇门。偏蓝的墨色，跟「夜里拿笔写下来」一个意思。 */
   --lc-diary: #4c6ef5;
   --lc-diary-soft: #edf2ff;
   --lc-radius: 10px;
@@ -388,8 +390,8 @@ const CSS = `
     --lc-doctor-soft: #14301c;
     --lc-danger: #ff6b6b;
     --lc-danger-soft: #3a1a1a;
-    --lc-game: #9775fa;
-    --lc-game-soft: #241d3d;
+    --lc-game: #ff922b;
+    --lc-game-soft: #2b1c10;
     --lc-diary: #748ffc;
     --lc-diary-soft: #1b2540;
     --lc-shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
@@ -1894,7 +1896,13 @@ function LifeCardTab(props) {
     }
     // 「选个文件夹」页一般不该有返回按钮（还没地方可回），
     // 但已经选过文件夹、是从首页主动进来换的时候要能退回去。
+    // 「玩一段」「写日记」和别的门一样：进来就是一整屏，左上角不该有返回。
+    // 以前漏了这两个，于是它们会冒出一个返回键，点下去还落到「真实人物记录」——
+    // 从游戏里退出来却被丢进记真人那扇门，是本轮改掉的那个 bug。
+    // 这两扇门自己的画面上本来就有回去的按钮（GameView 的「回门厅」、
+    // DiaryView 的「回首页」），走那个。
     const atDoor = view === VIEWS.home || view === VIEWS.novel || view === VIEWS.tavern
+      || view === VIEWS.game || view === VIEWS.diary
     const canBack = view !== VIEWS.doors && !atDoor && (view !== VIEWS.setup || state?.exists === true)
     return h('div', { className: 'lc-head' },
       // 顶部返回一律当成「回首页」：上次打开的是谁、刚才点的是哪份材料、
@@ -2310,11 +2318,11 @@ const DOORS = [
     modules: ['角色卡', '世界书', '书架与章节', '文字模拟游戏', '写起来的调子'],
   },
   {
-    id: 'tavern', icon: 'chat', tone: 'analyze',
-    title: '酒馆',
-    desc: '拿一张角色卡，和 TA 你一句一句地演。',
-    bullets: ['挑一张角色卡就开演', '拿现实里的人来演也行（复制一份，原卡不动）', '演到一半能收个尾，把这段备忘接着用'],
-    modules: ['角色卡', '会话存档', '演起来的调子'],
+    id: 'diary', icon: 'calendar', tone: 'diary',
+    title: '写日记',
+    desc: '把今天记下来。它问、你答，最后收成一篇。',
+    bullets: ['问你今天最值得讲的一件事', '往下问三层，问出当时在想什么', '收尾时替你数一遍今天做的决定'],
+    modules: ['五节结构', '历史日记', '后台自动补写'],
   },
   {
     id: 'game', icon: 'dice', tone: 'game',
@@ -2324,11 +2332,11 @@ const DOORS = [
     modules: ['十一种玩法', '存档与结局', '剧本编辑', '导出 ink / 网页'],
   },
   {
-    id: 'diary', icon: 'calendar', tone: 'diary',
-    title: '写日记',
-    desc: '把今天记下来。它问、你答，最后收成一篇。',
-    bullets: ['问你今天最值得讲的一件事', '往下问三层，问出当时在想什么', '收尾时替你数一遍今天做的决定'],
-    modules: ['五节结构', '历史日记', '后台自动补写'],
+    id: 'tavern', icon: 'chat', tone: 'analyze',
+    title: '酒馆',
+    desc: '拿一张角色卡，和 TA 你一句一句地演。',
+    bullets: ['挑一张角色卡就开演', '拿现实里的人来演也行（复制一份，原卡不动）', '演到一半能收个尾，把这段备忘接着用'],
+    modules: ['角色卡', '会话存档', '演起来的调子'],
   },
 ]
 
@@ -2384,7 +2392,7 @@ function DoorsView({ onPick, state, features, hidden, onHide, onShow }) {
     },
     game: {
       fg: 'var(--lc-game)', bg: 'var(--lc-game-soft)', icon: 'dice',
-      glow: 'rgba(112, 72, 232, .18)',
+      glow: 'rgba(217, 72, 15, .18)',
     },
     diary: {
       fg: 'var(--lc-diary)', bg: 'var(--lc-diary-soft)', icon: 'calendar',
@@ -4096,7 +4104,7 @@ function GameView({ bookId, onBack, onPickBook, flash }) {
   // 「没有说是哪本书」）。这里改成让他先挑一本——书单是现成的。
   if (bookId === '') {
     return h('div', { className: 'lc-pad lc-stack' },
-      h(Btn, { size: 'sm', icon: 'back', onClick: onBack }, '回去'),
+      h(Btn, { size: 'sm', icon: 'back', onClick: onBack }, '回门厅'),
       h('h3', { style: { margin: '4px 0 0' } }, '玩哪一本'),
       h('div', { className: 'lc-meta' }, '故事得有个地方起头——挑一本书，从它的正文接着演。挑完就能选这一局按什么玩法走。'),
       bookList.length === 0
@@ -8746,6 +8754,19 @@ function NewCardView({ state, onCreate, presetName }) {
   const [relation, setRelation] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
+  // 草稿箱：`draft.get` 只按 id 读，而新建卡时 id 是从名字算出来的——
+  // 上次写到一半走人、这次把名字换了个写法（「老张」→「张叔」），id 就变了，
+  // 那份草稿再也读不回来，用户在盘上有一份却看不见。`draft.list` 后台
+  // 一直有，界面上一个入口都没有。这里把「还没建完的」列出来，点一下就把
+  // 名字填回去（填回名字 → id 就回来了 → CardForm 打开时自己读得到草稿）。
+  const [drafts, setDrafts] = useState(null)
+  useEffect(() => {
+    let alive = true
+    call('draft.list', {})
+      .then((r) => { if (alive === true) setDrafts(r?.ok === true ? (r.drafts ?? []) : []) })
+      .catch(() => { if (alive === true) setDrafts([]) })
+    return () => { alive = false }
+  }, [])
 
   const create = async () => {
     if (name.trim() === '') { setErr('先给它起个名字'); return }
@@ -8780,6 +8801,24 @@ function NewCardView({ state, onCreate, presetName }) {
     ),
     err === null ? null : h(Err, { text: err }),
     h(Btn, { tone: 'primary', big: true, block: true, onClick: create, disabled: busy, icon: 'check' }, busy ? '正在建…' : '建这张卡'),
+    // 上次没建完的那些。只在真有草稿时才出现——空的时候多一块「草稿箱」
+    // 只会让人以为插件在催他。
+    Array.isArray(drafts) && drafts.length > 0
+      ? h('div', { className: 'lc-sec' },
+          h('h3', null, '上次没建完的'),
+          h('div', { className: 'lc-meta', style: { marginBottom: 6 } },
+            '点一下把名字填回去，进去就能接着写。草稿是按名字存的，名字改了就读不到原来那份。'),
+          ...drafts.map((d) => h('div', {
+            key: d.id,
+            className: 'lc-card-item',
+            style: { cursor: 'pointer' },
+            onClick: () => setName(String(d.name ?? d.id ?? '')),
+          },
+            h('div', { style: { fontWeight: 600 } }, String(d.name ?? '') === '' ? String(d.id ?? '') : String(d.name ?? '')),
+            h('div', { className: 'lc-meta' }, `${humanWhen(d.saved_at)} 存过 · 写了 ${Number(d.filled ?? 0)} 段`),
+          )),
+        )
+      : null,
   )
 }
 

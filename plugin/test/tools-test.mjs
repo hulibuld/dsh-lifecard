@@ -113,7 +113,7 @@ console.log('\n=== 5. lifecard_roleplay：一次取齐 ===')
   t('世界书说的是哪一本', text.includes('潮汐镇') || text.includes('w1'), text.slice(-400))
   const named = await run('lifecard_roleplay', { card: '妈妈' })
   t('点名演谁就演谁', named.includes('妈妈') && named.includes('手上都是茧'), named.slice(0, 200))
-  t('没挂世界书时说清楚', named.includes('没有挂世界书'), named.slice(-300))
+  t('没挂世界书时说清楚', named.includes('没有记下这地方的规矩'), named.slice(-300))
   t('带上开场白', named.includes('饭在锅里'), named)
 }
 

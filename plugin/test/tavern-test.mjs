@@ -231,10 +231,12 @@ console.log('\n=== 5. 给模型的话：演法约束必须写进去 ===')
   t('占位符不会再原样留在提示词里', !filled.text.includes('{{'), filled.text)
 
   const first = tavern.buildRoleplayUser({ cardName: '张三', turns: [] })
-  t('没有历史时请 TA 先说', first.includes('先说'), first)
+  t('没有历史时请 TA 先说', first.includes('该你先开口'), first)
   const next = tavern.buildRoleplayUser({ cardName: '张三', turns: [{ who: '我', text: '在吗' }, { who: '张三', text: '在。' }] })
   t('有历史时把对话带上', next.includes('我：在吗') && next.includes('张三：在。'), next)
-  t('最后那句是「轮到张三」', next.includes('轮到「张三」'), next)
+  // 以前这里断言的是「轮到『张三』接着说。只写『张三』会说的话」。
+  // 那是写作者口气，会把模型放回「替这个人写台词」的位置，已改成第一人称。
+  t('最后那句是第一人称地请 TA 开口', next.includes('该你开口了'), next)
 }
 
 console.log('\n=== 5c. 选项：要不要在这一轮末尾给方向 ===')
@@ -306,7 +308,7 @@ console.log('\n=== 5b. 一致性锚点：每一轮都再抄一遍「你是谁」
   // 用户消息：开口前最后一眼，就在它要说的下一行。
   const user = tavern.buildRoleplayUser({ cardName: '张三', anchors, turns: [{ who: '我', text: '在吗' }, { who: '张三', text: '在。' }] })
   t('用户消息里带上第一条锚点', user.includes('（你是「张三」：我不行的。）'), user.slice(-160))
-  t('括号那句排在「轮到你」前面', user.indexOf('你是「张三」') < user.indexOf('轮到「张三」'), user.slice(-200))
+  t('括号那句排在「该你开口」前面', user.indexOf('你是「张三」') < user.indexOf('该你开口了'), user.slice(-200))
   const bare2 = tavern.buildRoleplayUser({ cardName: '张三', turns: [{ who: '我', text: '在吗' }, { who: '张三', text: '在。' }] })
   t('没有锚点时不加那个括号', !bare2.includes('（你是'), bare2)
 }

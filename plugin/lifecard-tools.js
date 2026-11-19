@@ -3,8 +3,14 @@
  *
  * 为什么单独一个文件：酒馆和写小说原来是在插件自己的界面里说话。用户要的是
  * 「和正常对话一样，在新会话里打开」——那就不能自建聊天框，得让 DSH 的普通
- * 会话能读到这些卡。这个文件就是那条通路：模型想演谁、想写谁，先来这儿把人和
- * 世界取走；聊出来的东西（日记）也从这儿写回去。
+ * 会话能读到这些卡。这个文件就是那条通路：要先知道这人是谁、这地方什么规矩，
+ * 就来这儿取走；聊出来的东西（日记）也从这儿写回去。
+ *
+ * 描述一律用「这个人／这件事」写，不写「演」「扮演」「角色卡」「设定」。
+ * 理由不是措辞洁癖：工具描述每一轮都在模型上下文里，写成「演一个人之前先调它」
+ * 等于每轮提醒它「你正在扮演」，它迟早会在某一句里承认自己是助手，
+ * 用户看到的就是「演到一半被识破」。这个文件里一共有二十来处这种字眼，
+ * 本轮的修法是把它们逐条改成当事人视角的说法。
  *
  * 默认只读。会写盘的只有四把工具，而且都有一道门：改卡走 approved + 原句核对，
  * 写日记只写用户这一回亲口讲的那一天、绝不静默覆盖。其余工具只看不改，
@@ -170,8 +176,8 @@ export function registerTools(ctx, config) {
   register(
     'lifecard_cards',
     [
-      '列出用户在 LifeCard 里写的人物卡（名字、是现实里的人还是虚构角色、关系）。',
-      '演一个人之前、写一章之前先调它，确认要用的卡叫什么。',
+      '列出这台机器上记着的人：名字、是现实里的人还是虚构的、跟你什么关系。',
+      '要写谁、要跟谁说话之前先调它，确认叫得出名字。',
     ].join('\n'),
     {
       kind: { type: 'string', enum: ['real', 'fictional'], description: '可选：只要现实里的人，或只要虚构角色。' },
@@ -192,8 +198,8 @@ export function registerTools(ctx, config) {
   register(
     'lifecard_card',
     [
-      '取一张卡的全部内容：自述、性格、说话习惯、边界、开场白、对话示例。',
-      '演这个人的时候，按这里的「说话习惯」和「不会说的话」来说话，别自己编。',
+      '取一个人的全部记载：自述、性格、说话习惯、边界、开场白、对话示例。',
+      '按这里的「说话习惯」和「不会说的话」来，别自己编。',
     ].join('\n'),
     {
       card: { type: 'string', description: '卡的名字，或者卡的 id（不知道就先调 lifecard_cards）。' },
@@ -220,8 +226,8 @@ export function registerTools(ctx, config) {
   register(
     'lifecard_default',
     [
-      '用户在 LifeCard 里为每扇门选好的「现在用哪张卡」：酒馆那扇门现在演谁、写小说那扇门现在写谁。',
-      '用户没特别指定的时候，就按这里说的来。',
+      '这台机器上记着什么：每扇门现在对着谁——酒馆现在说的是谁，写小说现在写的是谁。',
+      '没特别指定的时候，就按这里说的来。',
     ].join('\n'),
     {},
     [],
@@ -230,7 +236,7 @@ export function registerTools(ctx, config) {
       const state = await store.readConfigState(root)
       const pins = state.config?.default_cards ?? {}
       const rows = [
-        ['tavern', '酒馆（现在的演的是谁）'],
+        ['tavern', '酒馆（现在说的是谁）'],
         ['novel', '写小说（现在写的是谁）'],
         ['real', '真实人物记录（首页先看谁）'],
       ]
@@ -248,11 +254,11 @@ export function registerTools(ctx, config) {
   register(
     'lifecard_roleplay',
     [
-      '一次取齐「演这一段」要用的东西：这个人的全部设定 + 会用到的那本世界书 + 之前收过尾的摘要。',
-      '不给 card 就用用户为酒馆门选好的那一张。',
+      '一次取齐这一段要用的东西：这个人是谁、这地方什么规矩、之前到哪儿为止。',
+      '不给 card 就用酒馆门现在对着的那一个。',
     ].join('\n'),
     {
-      card: { type: 'string', description: '可选：要演谁（名字或 id）。不给就按用户选好的默认卡。' },
+      card: { type: 'string', description: '可选：说的是谁（名字或 id）。不给就按现在对着的那一个。' },
       world: { type: 'string', description: '可选：要用的世界书名字或 id。不给就用这张卡自己挂的那本。' },
     },
     [],
@@ -263,7 +269,7 @@ export function registerTools(ctx, config) {
         const state = await store.readConfigState(root)
         wanted = String(state.config?.default_cards?.tavern ?? '').trim()
       }
-      if (wanted === '') return '还没有挑要演谁。先在 LifeCard 的酒馆那扇门里选一张卡（「现在演谁」）。'
+      if (wanted === '') return '还没有挑说的是谁。先在 LifeCard 的酒馆那扇门里选一个（「现在说的是谁」）。'
       const card = await findCard(root, wanted)
       if (card === null) return `没找到叫「${wanted}」的卡。`
       const data = card.data ?? {}
@@ -281,14 +287,14 @@ export function registerTools(ctx, config) {
       const personaText = persona
       const worldWant = String(args.world ?? '').trim() === '' ? String(data.world ?? '') : String(args.world)
       const entries = await worldEntries(root, worldWant)
-      const out = [`# 要演的人：${cardLine(data)}`, '', personaText === '' ? '（这张卡的正文还是空的，先按名字和关系演）' : personaText]
+      const out = [`# 现在说话的是：${cardLine(data)}`, '', personaText === '' ? '（关于这个人的记载还是空的，只有名字和关系）' : personaText]
       if (worldWant !== '' && worldWant !== 'reality') {
-        out.push('', `# 世界书：${worldWant}`, entriesToText(entries))
+        out.push('', `# 这地方：${worldWant}`, entriesToText(entries))
       } else {
-        out.push('', '# 世界书', '（这一场没有挂世界书，按现实或你俩当下的场景演）')
+        out.push('', '# 这地方', '（没有记下这地方的规矩，就按眼前的样子来）')
       }
       const greeting = String(core.sectionBody(sections, '开场白') ?? '').trim()
-      if (greeting !== '') out.push('', '# 卡上写的开场白（可以参考它开口，不必一字不差）', greeting)
+      if (greeting !== '') out.push('', '# 这个人通常会这样开口（不必一字不差）', greeting)
       const examples = String(core.sectionBody(sections, '对话示例') ?? '').trim()
       if (examples !== '') out.push('', '# 这个人说话的样例', examples.slice(-1600))
       return out.join('\n')
@@ -299,7 +305,7 @@ export function registerTools(ctx, config) {
     'lifecard_world',
     [
       '看一本世界书里有哪些条目：什么情况下会带进来、内容是什么。',
-      '写小说要保证设定前后一致时用；演的时候也可以先看一眼规矩。',
+      '要保证前后一致时用；先看一眼这地方的规矩。',
     ].join('\n'),
     {
       world: { type: 'string', description: '世界书的名字或 id。' },
@@ -375,7 +381,7 @@ export function registerTools(ctx, config) {
   register(
     'lifecard_import_character',
     [
-      '把材料里的一个人写成角色卡。**只有用户明确同意之后才调用。**',
+      '把材料里的一个人记下来。**只有用户明确同意之后才调用。**',
       '流程：先用 lifecard_materials / lifecard_material 读材料，把打算写成什么列给用户看（名字、几段、每段大意），',
       '等用户说「可以 / 就这么写」，再带 approved: true 调这一次。',
       '每一段都必须附一句材料里的原句（quote），写之前会逐字比对；对不上整次不写。',
@@ -513,7 +519,7 @@ export function registerTools(ctx, config) {
   register(
     'lifecard_import_world',
     [
-      '把材料里的一套设定整理成世界书。**只有用户明确同意之后才调用。**',
+      '把材料里的一处地方整理成这个世界的规矩。**只有用户明确同意之后才调用。**',
       '流程同 lifecard_import_character：先读材料、把候选条目（触发词 + 内容 + 依据原句）列给用户看，',
       '等用户点头，再带 approved: true 调这一次。每条都要附原句，逐字比对，对不上整次不写。',
       '已经有同名的世界书时，默认只补空缺：新条目加进去，触发词对得上的并进已有条目，原来的条目一个字不动。',
@@ -523,10 +529,10 @@ export function registerTools(ctx, config) {
       approved: { type: 'boolean', description: '用户是否已经明确同意写入。必须为 true 才会真的建世界书。' },
       material: { type: 'string', description: '素材从哪来：材料的路径或文件名。' },
       name: { type: 'string', description: '这本世界书叫什么（地方/时代/势力都行）。' },
-      genre: { type: 'string', description: '一句话说这是什么类型的设定（可选）。' },
+      genre: { type: 'string', description: '一句话说这是什么地方（可选）。' },
       entries: {
         type: 'array',
-        description: '条目数组。每项 { keys, content, quote }：keys 是触发用的关键词（字符串或数组），content 是这条设定本身，quote 是材料里支撑它的原句。',
+        description: '条目数组。每项 { keys, content, quote }：keys 是触发用的关键词（字符串或数组），content 是这条规矩本身，quote 是材料里支撑它的原句。',
       },
       mode: {
         type: 'string',
@@ -547,7 +553,7 @@ export function registerTools(ctx, config) {
       const source = String(materials[picked] ?? '')
 
       const rows = Array.isArray(args.entries) ? args.entries : []
-      if (rows.length === 0) return '一条设定都没有，那就没东西可写。'
+      if (rows.length === 0) return '一条规矩都没有，那就没东西可写。'
       const bad = []
       const entries = []
       for (const row of rows) {
