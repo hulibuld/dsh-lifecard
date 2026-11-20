@@ -944,7 +944,7 @@ const SECTIONS_REL = [
 
 // ── 主界面 ────────────────────────────────────────────────────────
 
-const VIEWS = { doors: 'doors', novel: 'novel', book: 'book', game: 'game', career: 'career', tavern: 'tavern', tavernChat: 'tavernChat', home: 'home', card: 'card', diary: 'diary', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs', net: 'net', persona: 'persona' }
+const VIEWS = { doors: 'doors', novel: 'novel', book: 'book', shelf: 'shelf', game: 'game', career: 'career', tavern: 'tavern', tavernChat: 'tavernChat', home: 'home', card: 'card', diary: 'diary', interview: 'interview', import: 'import', analyze: 'analyze', doctor: 'doctor', setup: 'setup', newCard: 'newCard', world: 'world', memory: 'memory', jobs: 'jobs', net: 'net', persona: 'persona' }
 
 // ── 开一个新会话去问 ──────────────────────────────────────────────
 //
@@ -1884,6 +1884,7 @@ function LifeCardTab(props) {
       [VIEWS.card]: activeCard?.data?.name ?? '这张卡',
       [VIEWS.interview]: '陪他聊聊',
       [VIEWS.import]: '添加',
+      [VIEWS.shelf]: '书架',
       [VIEWS.analyze]: '让 AI 读材料',
       [VIEWS.doctor]: '检查一下',
       [VIEWS.setup]: '选个文件夹',
@@ -1942,6 +1943,26 @@ function LifeCardTab(props) {
     )
   }
 
+  // 从「一本书」或书架那一屏搬完书之后，接着要让 AI 读这份材料。
+  // 刚存完材料的人是谁，分析页要接着用——以前直接 setView，「这是关于谁」
+  // 到那边就空了，用户得自己再挑一遍，或者以为丢了。
+  // 写成普通函数而不是 useCallback：它自己不前后跑任何逻辑，
+  // 而这里每多一个 hook 都会把后面所有槽位往后挤（测试按槽号摆状态）。
+  const analyzeFromBook = (info) => {
+    const name = String(info?.name ?? '').trim()
+    const id = String(info?.id ?? '').trim()
+    const cards = listing?.cards ?? []
+    const hit = id !== ''
+      ? cards.find((c) => c.id === id)
+      : cards.find((c) => String(c.name ?? '').trim() === name)
+    setMaterialFor(typeof info?.path === 'string' && info.path !== '' ? info.path : null)
+    // 把「要建成真人还是虚构角色」一起带过去：分析页要靠它决定
+    // 读出来的东西往哪种卡里放（虚构的别建成一张真人卡）。
+    const wantKind = info?.kind === 'fictional' ? 'fictional' : 'real'
+    setInterviewFor(hit !== undefined ? { id: hit.id, name: hit.name, kind: hit.kind ?? wantKind } : (name === '' ? null : { name, kind: wantKind }))
+    setView(VIEWS.analyze)
+  }
+
   const body = () => {
     if (error !== null && state === null) {
       return h('div', { className: 'lc-pad' },
@@ -1981,25 +2002,9 @@ function LifeCardTab(props) {
     }
     switch (view) {
       case VIEWS.import:
-        return h(ImportView, {
-          busy, onImport: doImport, listing,
-          // 刚存完材料的人是谁，分析页要接着用。以前这里直接 setView，
-          // 「这是关于谁」到那边就空了——用户得自己再挑一遍，或者以为丢了。
-          onAnalyze: (info) => {
-            const name = String(info?.name ?? '').trim()
-            const id = String(info?.id ?? '').trim()
-            const cards = listing?.cards ?? []
-            const hit = id !== ''
-              ? cards.find((c) => c.id === id)
-              : cards.find((c) => String(c.name ?? '').trim() === name)
-            setMaterialFor(typeof info?.path === 'string' && info.path !== '' ? info.path : null)
-            // 把「要建成真人还是虚构角色」一起带过去：分析页要靠它决定
-            // 读出来的东西往哪种卡里放（虚构的别建成一张真人卡）。
-            const wantKind = info?.kind === 'fictional' ? 'fictional' : 'real'
-            setInterviewFor(hit !== undefined ? { id: hit.id, name: hit.name, kind: hit.kind ?? wantKind } : (name === '' ? null : { name, kind: wantKind }))
-            setView(VIEWS.analyze)
-          },
-        })
+        return h(ImportView, { busy, onImport: doImport, listing, onAnalyze: analyzeFromBook })
+      case VIEWS.shelf:
+        return h(ShelfView, { onAnalyze: analyzeFromBook })
       case VIEWS.interview:
         return h(InterviewView, {
           state, listing, preset: interviewFor, onRecorded: refresh, flash, mode,
@@ -2802,6 +2807,13 @@ function HomeView({ state, listing, mode, onStartInterview, onDiary, onOpen, onO
             onClick: () => onDiary?.(),
           })
         : null,
+      // 空库时也给书架一条路：手上只有电子书、还没建卡的人一样要进来。
+      h(Action, {
+        tone: 'import', icon: 'book',
+        title: '从书架搬一本书进来',
+        desc: '「读书」那个插件书架上的书，挑一本读进来，就成了一份材料。',
+        onClick: () => onNavigate(VIEWS.shelf),
+      }),
       // 写小说最常用的其实不是填表：手里已经有一篇小说、一段人物小传，
       // 想让它读成人设。这条路以前只在「真实人物」那扇门里有。
       h(Action, {
@@ -2836,6 +2848,10 @@ function HomeView({ state, listing, mode, onStartInterview, onDiary, onOpen, onO
     h('div', { className: 'lc-row', style: { marginTop: 2 } },
       h(Btn, { tone: isReal ? 'interview' : fictionActionTone, size: 'sm', icon: 'chat', onClick: () => onStartInterview?.({ about: '', mode }) }, '聊一聊（新开一个对话）'),
       h(Btn, { tone: 'import', size: 'sm', icon: 'import', onClick: () => onNavigate(VIEWS.import) }, '导入'),
+      // 「书架」以前只在「导入」页的第三个 tab 里，叫「一本书」。用户点「导入」
+      // 进来看到的是角色卡那一栏，不知道还有第三个 tab；更新完说「没看到任何跟
+      // 读书有关的东西」。书这条路要能自己站着，就别埋在别人的 tab 里。
+      h(Btn, { size: 'sm', icon: 'book', onClick: () => onNavigate(VIEWS.shelf), title: '从「读书」那个插件的书架上搬一本进来，变成材料' }, '书架'),
       isReal
         ? h(Btn, { tone: 'analyze', size: 'sm', icon: 'person', onClick: () => onNavigate(VIEWS.memory), title: '从你写过的记忆里认出身边的人' }, '从记忆里认人')
         : null,
@@ -9454,7 +9470,9 @@ function ImportView({ busy, onImport, onAnalyze, listing }) {
     h('div', { className: 'lc-row' },
       h(Btn, { tone: tab === 'card' ? 'primary' : undefined, size: 'sm', icon: 'card', onClick: () => setTab('card') }, '角色卡 / 世界书'),
       h(Btn, { tone: tab === 'text' ? 'primary' : undefined, size: 'sm', icon: 'book', onClick: () => setTab('text') }, '一段文字'),
-      h(Btn, { tone: tab === 'book' ? 'primary' : undefined, size: 'sm', icon: 'list', onClick: () => setTab('book') }, '一本书'),
+      // 这一栏原来叫「一本书」——用户从名字上看不出它跟「读书」那个插件有关，
+      // 有人更新完说「没看到任何跟 dsh-reading 有关的信息」。名字里带上书架两个字。
+      h(Btn, { tone: tab === 'book' ? 'primary' : undefined, size: 'sm', icon: 'book', onClick: () => setTab('book') }, '书架'),
     ),
 
     // 两边都常驻，只把不在前面的那一边藏起来。
@@ -9657,6 +9675,24 @@ function BooksPanel({ onAnalyze }) {
           : null,
       ),
     ),
+  )
+}
+
+/** 书架自己一屏。
+ *
+ * 为什么单开一屏：这条能力（从「读书」那个插件搬电子书进来）以前只挂在
+ * 「添加」页的第三个 tab 上，标签写着「一本书」。用户从首页点「导入」进来的
+ * 是「角色卡」那一栏，压根不知道还有第三个 tab；有人更新完说「没看到任何跟
+ * 读书有关的东西」，说的就是这件事——东西在，路没有。
+ *
+ * 现在首页那排按钮里有一个「书架」，一点就到这一屏，标题就写着书架。
+ */
+function ShelfView({ onAnalyze }) {
+  return h('div', { className: 'lc-pad lc-stack' },
+    h('div', { className: 'lc-meta', style: { lineHeight: 1.7 } },
+      '这里列的是「读书」那个插件（dsh-reading）书架上的书。挑一本「读进来」，它就变成一份材料——',
+      '跟贴进来的一段文字一样，能拿去分析、访谈、建成人物卡。'),
+    h(BooksPanel, { onAnalyze }),
   )
 }
 

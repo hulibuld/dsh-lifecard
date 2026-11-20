@@ -1724,6 +1724,40 @@ for (const [label, tree] of [
   t('点下去带的是刚搬进来那份材料', asked !== null && asked.path === 'materials/书-海上.md', JSON.stringify(asked))
 }
 {
+  // 书架得自己有一屏。
+  //
+  // 用户的原话是「我更新完还是没看到任何跟 dsh-reading 有关的信息」。查下来
+  // 后端全通（reading.status 回 connected:true、10 本书），界面也画得出来——
+  // 问题是它只藏在「导入 → 第三个 tab（一本书）」里，从首页点「导入」看到的
+  // 是角色卡那一栏，没人知道还有第三栏。东西在，路没有。
+  // 先渲染一遍那一屏，`seen` 才会记下它里面的组件——seen 是渲染时才收集的。
+  const rootShelf = renderRoot('书架那一屏', base('shelf'))
+  const rootShelfText = rootShelf === null ? '' : JSON.stringify(expand(rootShelf))
+  const Shelf = seen.get('ShelfView')
+  t('书架是一屏自己的组件', typeof Shelf === 'function')
+  t('书架那一屏把「读书」那件事说清楚', rootShelfText.includes('dsh-reading'), rootShelfText.slice(0, 400))
+  t('书架那一屏的标题就叫「书架」', rootShelfText.includes('书架'), rootShelfText.slice(0, 400))
+
+  const shelfTree = renderOne('书架那一屏（题头另画一遍）', Shelf, { onAnalyze: () => {} })
+  const shelfText = shelfTree === null ? '' : JSON.stringify(expand(shelfTree))
+  t('书架那一屏摆着书架本体', shelfText.includes('书架'), shelfText.slice(0, 300))
+
+  // 首页那排按钮里要有一个「书架」，不能只有埋在导入页里的第三个 tab。
+  const homeBtns = flatButtons(expand(homeTree)).map((b) => textOf(b))
+  t('首页那排按钮里有「书架」', homeBtns.includes('书架'), homeBtns.join('|'))
+
+  // 空库（一张卡都没有）也得给路：手上只有电子书的人一样要能进来。
+  const EMPTY = {
+    ok: true, workspace: '/tmp/x',
+    cards: [], withdrawn: [], worlds: [], systems: [], relations: [],
+    materials: [], errors: [], proposals: [], avatars: {},
+  }
+  const emptyHome = renderRoot('空库首页', base('home', { 2: EMPTY }))
+  const emptyText = JSON.stringify(expand(emptyHome))
+  t('空库首页也给得出书架', emptyText.includes('从书架搬一本书进来'), emptyText.slice(0, 400))
+}
+
+{
   // 模拟面试：后台回「开不了」（不是网络抛错，是后台自己的 ok:false）时，
   // 按钮不能永远卡在「正在开始…」——这一页没有第二个入口，用户只能退出去重进。
   // 以前只有 catch 里复位 busy，这条 ok:false 的出口直接 return 了。
