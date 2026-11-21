@@ -5825,6 +5825,13 @@ function BookView({ bookId, onBack, flash, flushRef }) {
   const [preset, setPreset] = useState('')
   const [worldList, setWorldList] = useState([])
   const [world, setWorld] = useState('')
+  // ── 吃书检查 ──
+  // 加在整个 hook 区最末尾，不是随手放：前面那些槽位有测试按序号摆状态
+  // （见 test/render-all.mjs 里 `/槽位按 BookView 里 useState 的次序排/`），
+  // 插在中间会让后面每一个槽位集体后移，测试摆的数据就全串了。
+  const [radar, setRadar] = useState(null)
+  const [radarBusy, setRadarBusy] = useState('')
+  const [radarErr, setRadarErr] = useState(null)
 
   const load = async (want, opts) => {
     setErr(null)
@@ -5970,6 +5977,31 @@ function BookView({ bookId, onBack, flash, flushRef }) {
       setSplit(null); setSplitPicked([])
       flash?.(`收下了：世界观 ${Number(r.world ?? 0)} 条、人物 ${Number(r.people ?? 0)} 张卡`)
     } catch (e) { setSplitErr(humanizeError(e)) } finally { setSplitBusy('') }
+  }
+
+  // ── 吃书检查：查一遍、存一份 ──
+  //
+  // 这两件事跟上面所有按钮都不同：不调模型、不等一会儿、不花钱。
+  // 三十万字在本地算完不到一秒，所以按钮按下就出结果，没有「正在想…」
+  // 那种要等两分半的过程。那个 ms 也如实报出来——它就是这个功能的卖点之一。
+  const runRadar = async () => {
+    if (radarBusy !== '') return
+    setRadarBusy('scan'); setRadarErr(null)
+    try {
+      const r = await call('novel.radar.scan', { id: bookId })
+      if (r?.ok !== true) { setRadarErr(r?.error ?? '这次没查成'); return }
+      setRadar(r)
+    } catch (e) { setRadarErr(humanizeError(e)) } finally { setRadarBusy('') }
+  }
+
+  const exportRadar = async () => {
+    if (radarBusy !== '') return
+    setRadarBusy('export'); setRadarErr(null)
+    try {
+      const r = await call('novel.radar.report', { id: bookId })
+      if (r?.ok !== true) { setRadarErr(r?.error ?? '报告没存下来'); return }
+      flash?.(`存好了：${r.chars} 字，在材料里（${r.path}）`)
+    } catch (e) { setRadarErr(humanizeError(e)) } finally { setRadarBusy('') }
   }
 
   // 剧本改了没存，要走之前先替人存好。
@@ -6979,6 +7011,73 @@ function BookView({ bookId, onBack, flash, flushRef }) {
                 splitBusy === 'apply' ? '正在写进库里…' : `收下（世界观 ${Array.isArray(split.world) ? split.world.length : 0} 条 · 人物 ${splitPicked.length} 张）`),
               h(Btn, { size: 'sm', ghost: true, disabled: splitBusy !== '', onClick: () => { setSplit(null); setSplitPicked([]); setSplitErr(null) } }, '不要这份'),
             ),
+          ),
+    ),
+
+    // ── 第五段：查一遍有没有吃书 ──
+    //
+    // 这一节跟上面四段不一样：它不调模型。规则抽取 + 集合比对，全在本地算，
+    // 同一本书永远给同一份结果，每条都能点回原句核对。
+    // 为什么值得单开一段：上面那四段全是「让 AI 帮我想/写」，而这一件
+    // 「我前面写的和后面写的打没打架」是纯查错，交给模型反而会编。
+    h('div', { className: 'lc-sec' },
+      h('div', { className: 'lc-row' },
+        h('div', { className: 'lc-grow' }, h('span', { style: { fontWeight: 650 } }, '⑤ 查一遍有没有吃书')),
+        h(Btn, {
+          size: 'sm', tone: 'doctor', icon: 'doctor',
+          disabled: radarBusy !== '' || chapters.length === 0,
+          onClick: runRadar,
+        }, radarBusy === 'scan' ? '正在翻…' : (radar === null ? '查一遍' : '再查一遍')),
+        radar === null || !Array.isArray(radar.holes) || radar.holes.length === 0
+          ? null
+          : h(Btn, { size: 'sm', ghost: true, icon: 'download', disabled: radarBusy !== '', onClick: exportRadar },
+              radarBusy === 'export' ? '正在存…' : '存成材料'),
+      ),
+      h('div', { className: 'lc-meta', style: { marginTop: 4, lineHeight: 1.7 } },
+        '把已经写出来的正文整本翻一遍，找出前后对不上的地方：年龄倒回去了、人死了又出场、瞳色发色变了。',
+        h('br'),
+        '这一步不联网、不叫模型，书里是什么就算什么，每条都带原句，能点回去核对。'),
+      chapters.length === 0 ? h('div', { className: 'lc-meta' }, '一章都还没写，没什么可查的。') : null,
+      radarErr === null ? null : h('div', { style: { marginTop: 6 } }, h(Note, { tone: 'warn', icon: 'warning' }, radarErr)),
+      radar === null
+        ? null
+        : h('div', { className: 'lc-stack', style: { marginTop: 8, gap: 6 } },
+            // 认出来几个人这件事必须摆在最前面。一个人都没认出来时，
+            // 下面那句「0 处矛盾」是假的——不是书干净，是这个功能没找到人。
+            Array.isArray(radar.people) && radar.people.length > 0
+              ? h(Note, { tone: 'ok', icon: 'check' },
+                  `翻完了 ${radar.chapters} 章、${radar.chars} 字，认出 ${radar.people.length} 个人`
+                  + `（${radar.people.slice(0, 8).map(String).join('、')}${radar.people.length > 8 ? ' 等' : ''}），`
+                  + `找到 ${radar.holes.length} 处对不上的地方。用时 ${radar.ms} 毫秒。`)
+              : h(Note, { tone: 'warn', icon: 'warning' },
+                  `翻完了 ${radar.chapters} 章、${radar.chars} 字，但这本书里一个人名都没认出来——`
+                  + '这一步只认「名字 + 说道/笑道」「名字 + 十七岁」这类句式。'
+                  + '本书里的人名如果都靠代称（他、那个男人），它就查不出东西来。'),
+            Array.isArray(radar.holes) && radar.holes.length > 0
+              ? h('div', { className: 'lc-stack', style: { gap: 8 } },
+                  radar.holes.map((one, i) => h('div', {
+                    key: i,
+                    className: 'lc-sec',
+                    style: { padding: '8px 10px' },
+                  },
+                    h('div', { className: 'lc-row', style: { justifyContent: 'space-between', gap: 8 } },
+                      h('div', { style: { fontWeight: 650, fontSize: 14 } }, String(one.title ?? '')),
+                      h(Tag, { tone: one.severity === 'hard' ? 'err' : 'warn' },
+                        one.severity === 'hard' ? '对不上' : '有点怪'),
+                    ),
+                    h('div', { className: 'lc-meta', style: { marginTop: 4, lineHeight: 1.7 } },
+                      h('div', null, `第 ${one.left?.chapter} 章：${String(one.left?.sentence ?? '')}`),
+                      h('div', null, `第 ${one.right?.chapter} 章：${String(one.right?.sentence ?? '')}`),
+                    ),
+                    h('div', { className: 'lc-row', style: { marginTop: 6, gap: 6 } },
+                      h(Btn, {
+                        size: 'sm', ghost: true, icon: 'edit',
+                        onClick: () => { goChapter(Number(one.right?.chapter ?? 1)) },
+                        title: '跳到后出现的那一章',
+                      }, '去看那一章'),
+                    ),
+                  )))
+              : null,
           ),
     ),
 

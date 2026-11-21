@@ -29,6 +29,7 @@ import * as story from './story.js'
 // 它不是「可以整个删掉」的功能，只是写小说用的一份库；而且账本读不出来时
 // 这一章照样得写，走按需加载反而多一层「模块没加载」的分支要判断。
 import * as foreshadow from './foreshadow.js'
+import * as radar from './radar.js'
 import * as prose from './prose.js'
 import * as prompts from './prompts.js'
 import * as diary from './diary.js'
@@ -5302,6 +5303,98 @@ function buildApi(ctx, workspace, config, options) {
       const wrote = await foreshadow.writeForeshadows(ws, id, next)
       if (wrote.ok !== true) return { ok: false, error: wrote.error }
       return { ok: true, list: next }
+    },
+
+    /**
+     * 吃书检查：把整本书翻一遍，找出前后对不上的设定。
+     *
+     * 为什么这件事不交给模型：模型会编。让它读三十万字找矛盾，它一定会
+     * 报出几条书里根本没有的东西，而且每次报的还不一样——作者拿着这么一份
+     * 报告，得先花半天分辨哪条是真的，比不查还累。
+     *
+     * 这里走的是另一条路：抽取用确定性规则（句式模板 + 人名表 + 别名归并），
+     * 判定用纯集合比对。同一本书永远给同一份结果，每一条都能点回原句核对。
+     * 代价是只能认数字和死活这一类硬线索，说服不了人的地方它看不出来——
+     * 但宁可漏，不许冤枉。
+     *
+     * 全部在本地算，不联网、不调模型、正文不出这台机器。
+     */
+    'novel.radar.scan': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      const book = await novel.readBook(ws, id)
+      if (book.ok !== true) return book
+      const chapters = Array.isArray(book.chapters) ? book.chapters : []
+      if (chapters.length === 0) {
+        return { ok: false, error: '这本书还一章都没有，没有东西可以查。先写几章再来。' }
+      }
+      // 整本读进内存。三十万字是几兆，这个量级不需要流式处理；
+      // 真到几百万字的时候，慢的是磁盘不是这段。
+      const pieces = []
+      let total = 0
+      for (const chapter of chapters) {
+        const read = await novel.readChapter(ws, id, chapter.index)
+        if (read.ok !== true) continue
+        const text = String(read.body ?? '')
+        if (text.trim() === '') continue
+        total += text.length
+        pieces.push({ index: chapter.index, title: chapter.title, body: text })
+      }
+      if (pieces.length === 0) {
+        return { ok: false, error: '这本书的正文是空的，没有东西可以查。' }
+      }
+      // 用户点名的别名：{ 本名: [别名...] }。「阿昭」和「昭姐」是同一个人的时候，
+      // 不归并就会被当成两个人，各自成一套记录，谁也不会跟谁比。
+      const alias = body?.alias !== null && typeof body?.alias === 'object' ? body.alias : {}
+      const extra = Array.isArray(body?.people) ? body.people : []
+      const started = Date.now()
+      const scan = radar.scanBook(pieces, { alias, people: extra })
+      const holes = radar.findHoles(scan)
+      return {
+        ok: true,
+        title: String(book.data?.title ?? id),
+        chapters: pieces.length,
+        chars: total,
+        ms: Date.now() - started,
+        people: scan.people,
+        holes,
+        // 认出来几个人、扫了多久，这两个数字让用户知道这份报告覆盖了什么。
+        // 一个人都没认出来时，界面要说清「这本书里我没认出人名」，
+        // 而不是摆一份「0 处矛盾」让人以为书是干净的。
+        names: scan.names,
+      }
+    },
+
+    /** 同一份结果导出成 Markdown，作者拿去改稿。 */
+    'novel.radar.report': async (body) => {
+      if ((await ensureModules()).novel !== true) return missingFeature('novel')
+      const ws = await root(body)
+      const id = String(body?.id ?? '').trim()
+      if (id === '') return { ok: false, error: '没有说是哪本书' }
+      const book = await novel.readBook(ws, id)
+      if (book.ok !== true) return book
+      const chapters = Array.isArray(book.chapters) ? book.chapters : []
+      const pieces = []
+      let total = 0
+      for (const chapter of chapters) {
+        const read = await novel.readChapter(ws, id, chapter.index)
+        if (read.ok !== true) continue
+        const text = String(read.body ?? '')
+        if (text.trim() === '') continue
+        total += text.length
+        pieces.push({ index: chapter.index, title: chapter.title, body: text })
+      }
+      const alias = body?.alias !== null && typeof body?.alias === 'object' ? body.alias : {}
+      const scan = radar.scanBook(pieces, { alias })
+      const holes = radar.findHoles(scan)
+      const title = String(book.data?.title ?? id)
+      const markdown = radar.renderReport(title, holes, { chapters: pieces.length, chars: total })
+      const name = core.safeId(`吃书检查-${title}`).slice(0, 80)
+      const saved = await store.appendMaterial(ws, name, markdown, { replace: true })
+      if (saved?.ok !== true) return { ok: false, error: saved?.error ?? '报告没能存下来。' }
+      return { ok: true, path: saved.path, chars: markdown.length, holes: holes.length }
     },
 
     /**

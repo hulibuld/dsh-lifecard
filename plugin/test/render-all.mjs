@@ -2412,6 +2412,49 @@ renderRoot('酒馆里的一场（先注册组件）', base('tavernChat'))
 }
 
 {
+  // 吃书检查：这一段跟写小说里其他所有按钮都不同——它不调模型，是本地的
+  // 规则比对。所以界面上要交代的也就不同：不用等、不花钱、每一条都能核对。
+  // 槽位：41 radar / 42 radarBusy / 43 radarErr（都加在 useState 末尾）。
+  const BOOK = { ok: true, id: 'demo', data: { title: '长夜' }, chapters: [{ index: 1 }, { index: 2 }, { index: 3 }] }
+  const baseProps = { bookId: 'demo', flash: () => {}, onBack: () => {} }
+  const baseSlots = { 0: BOOK, 1: { ok: true, chapters: 0, text: '', theme: '', ending: '' }, 2: 1, 3: '' }
+
+  const idle = renderOne('吃书检查（还没查过）', seen.get('BookView'), baseProps, baseSlots)
+  const idleWords = textOf(expand(idle))
+  t('有「查一遍有没有吃书」这一节', idleWords.includes('查一遍有没有吃书'), idleWords.slice(-400))
+  t('说清这一步不联网、不叫模型', idleWords.includes('不联网') && idleWords.includes('不叫模型'), idleWords.slice(-400))
+
+  // 一个人都没认出来时，绝不能摆一句「找到 0 处」——那是在告诉用户书是干净的，
+  // 而真相是这个功能没认出人名，什么都没查。
+  const nobody = renderOne('吃书检查（一个人都没认出来）', seen.get('BookView'), baseProps,
+    { ...baseSlots, 41: { ok: true, chapters: 3, chars: 9000, ms: 12, people: [], names: [], holes: [] } })
+  const nobodyWords = textOf(expand(nobody))
+  t('没认出人时如实说', nobodyWords.includes('一个人名都没认出来'), nobodyWords.slice(-400))
+  t('没认出人时不说「找到 0 处」', !nobodyWords.includes('找到 0 处'), nobodyWords.slice(-400))
+
+  const found = renderOne('吃书检查（查出两处）', seen.get('BookView'), baseProps,
+    { ...baseSlots,
+      41: {
+        ok: true, chapters: 3, chars: 9000, ms: 12,
+        people: ['阿昭', '李四'], names: ['阿昭', '李四'],
+        holes: [
+          { kind: 'attr', severity: 'hard', attr: 'age', who: '阿昭', title: '阿昭的年龄倒回去了',
+            left: { chapter: 3, sentence: '阿昭今年二十岁。' }, right: { chapter: 9, sentence: '阿昭今年十七岁。' } },
+          { kind: 'dead', severity: 'hard', attr: 'alive', who: '李四', title: '李四死了之后又出场',
+            left: { chapter: 4, sentence: '李四被乱刀杀死。' }, right: { chapter: 6, sentence: '李四说道：「我又回来了。」' } },
+        ],
+      } })
+  const foundWords = textOf(expand(found))
+  t('查完报出认了几个人', foundWords.includes('认出 2 个人'), foundWords.slice(-600))
+  t('查完报出用时', foundWords.includes('毫秒'), foundWords.slice(-600))
+  t('两条矛盾都摆出标题', foundWords.includes('阿昭的年龄倒回去了') && foundWords.includes('李四死了之后又出场'), foundWords.slice(-600))
+  t('每条矛盾都带两处原句', foundWords.includes('阿昭今年二十岁') && foundWords.includes('阿昭今年十七岁'), foundWords.slice(-600))
+  t('每条矛盾能跳过去看', foundWords.includes('去看那一章'), foundWords.slice(-600))
+  t('查得出来时能给「再查一遍」', foundWords.includes('再查一遍'), foundWords.slice(-600))
+  t('查得出来时能存成材料', foundWords.includes('存成材料'), foundWords.slice(-600))
+}
+
+{
   // 「末尾给三条路」：后台 `novel.chapter.draft` 一直支持 `wantChoices`，
   // 界面从来没给过开关，于是小说这边等于没这个功能。
   // 槽位：18 wantChoices / 19 draftChoices（排在 chapterBroken=17 之后）。
